@@ -8,7 +8,8 @@ see timing_state.py), told apart by `meta.json`:
               car positions; the extension forwards those from the viewer's F1 TV login
               (POST /positions), so the server never sees the token.
   * archive - livetiming.formula1.com/static/<path>, published ~20 min after a session
-              (403 until then), no auth. Replaces the live capture once it appears.
+              (403 until then), no auth until 2026-10-18 (401 for everyone since). Replaces
+              the live capture once it appears; while it refuses, nothing stored is pruned.
 UTC of a message = t0 + its offset; t0 is the archive's AudioStreams/ContentStreams
 "Utc", or for a capture the moment its first message arrived. Feed messages are written
 at their own timestamp (the archive's clock), so captures and archives line up.
@@ -339,10 +340,26 @@ class TimingService:
             self._spawn_fetch(key)
         if now - self._pruned_at > 3600:
             self._pruned_at = now
-            await asyncio.to_thread(self.prune, now)
+            await self.maybe_prune(now)
+
+    async def maybe_prune(self, now: float) -> list[int] | None:
+        """Prune, but only while F1's archive answers: a session deleted while it doesn't is gone
+        for good. (Since 2026-10-18 it answers 401 to everyone, and what was captured live here
+        is the only copy left.) None: not pruned."""
+        year = time.gmtime(now).tm_year
+        try:
+            r = await self._client().get(f"{self.settings.static_base}/{year}/Index.json")
+            up = r.status_code == 200
+        except httpx.HTTPError:
+            up = False
+        if not up:
+            log.info("timing: F1's archive isn't answering: keeping every stored session")
+            return None
+        return await asyncio.to_thread(self.prune, now)
 
     def prune(self, now: float) -> list[int]:
-        """Delete sessions stored more than keep_days ago (the archive can be fetched again)."""
+        """Delete sessions stored more than keep_days ago (the archive can be fetched again:
+        maybe_prune checks it can)."""
         gone = []
         for key in self.store.keys():
             meta = self.store.meta(key) or {}
@@ -509,6 +526,8 @@ class TimingService:
                 r = await client.get(base + "Index.json")
                 if r.status_code in (403, 404):
                     return "not published"
+                if r.status_code == 401:  # since 2026-10-18, for every session
+                    return "refused"
                 r.raise_for_status()
                 feeds = json.loads(r.content.decode("utf-8-sig")).get("Feeds", {})
                 staged = self.store.staging(key)

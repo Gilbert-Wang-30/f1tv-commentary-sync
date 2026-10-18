@@ -7,6 +7,10 @@ PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
 # Test image: built from server/ as fone:dev (never fone:latest, which production runs).
 # E2E_IMAGE=<tag> E2E_BUILD=0 reuses an existing image instead of building.
 # E2E_ONLY=onboards runs Phase A3 alone (the dashboard's onboard views; a dev shortcut).
+# E2E_CONTENT_SEED=<file.json> ({content id: /api/f1tv answer}, e.g. from a server's cache) seeds
+# the fixtures' F1 TV mapping instead of deriving it: F1's live-timing archive, which the exact
+# anchor comes from, has answered 401 to everyone since 2026-10-18. E2E_NO_TIMING=1 skips the one
+# check that needs that archive's timing data (the dashboard's tower).
 IMAGE=${E2E_IMAGE:-fone:dev}
 # Container/network names: fone-dev-* per docs/architecture.md; override to run in parallel.
 NAME=${E2E_NAME:-fone-dev-e2e}
@@ -26,7 +30,8 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "${E2E_BUILD:-1}" != 0 ]; then docker build -q -t "$IMAGE" server >/dev/null; fi
-mkdir -p "$WORK/rec/胡闹P房" "$WORK/data" "$WORK/media"
+mkdir -p "$WORK/rec/胡闹P房" "$WORK/data" "$WORK/media" "$WORK/seed"
+if [ -n "${E2E_CONTENT_SEED:-}" ]; then cp "$E2E_CONTENT_SEED" "$WORK/seed/content.json"; fi
 chmod -R 777 "$WORK"
 
 echo "== generating synthetic commentary (30 min) and mock F1 TV video"
@@ -37,12 +42,15 @@ import json, os, subprocess, urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 p0 = None
-# Same anchor the server will compute (re-derived here independently).
-get = lambda u: urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "fone-e2e/0.1"})).read()
-mv = json.loads(get("https://api.multiviewer.app/api/v1/meetings/1308/sessions/11730"))
-sd = json.loads(get("https://livetiming.formula1.com/static/" + mv["session_info"]["Path"] + "SessionData.json").decode("utf-8-sig"))
-started = [e["Utc"] for e in sd["StatusSeries"] if e.get("SessionStatus") == "Started"][0]
-p0 = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp() - float(mv["session_start"])
+if os.path.exists("seed/content.json"):  # E2E_CONTENT_SEED
+    p0 = json.load(open("seed/content.json"))["1000011024"]["p0"]
+else:
+    # Same anchor the server will compute (re-derived here independently).
+    get = lambda u: urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "fone-e2e/0.1"})).read()
+    mv = json.loads(get("https://api.multiviewer.app/api/v1/meetings/1308/sessions/11730"))
+    sd = json.loads(get("https://livetiming.formula1.com/static/" + mv["session_info"]["Path"] + "SessionData.json").decode("utf-8-sig"))
+    started = [e["Utc"] for e in sd["StatusSeries"] if e.get("SessionStatus") == "Started"][0]
+    p0 = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp() - float(mv["session_start"])
 wall_start = p0 + 40 - 300
 dur = 1800
 name = datetime.fromtimestamp(wall_start, ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M") + "-【胡闹P房】16点 巴林 排位赛.flv"
@@ -85,13 +93,17 @@ EOF
 # The live fixture is the 2026-10-04 race (content 1000011022), which F1 TV now lists as a
 # REPLAY: keep its real data (anchor, p0) but seed it as LIVE in the server's content cache.
 echo "== seeding the race fixture as LIVE"
-docker run --rm $CAP -v "$WORK/data":/data "$IMAGE" python3 -c '
-import asyncio
+docker run --rm $CAP -v "$WORK/data":/data -v "$WORK/seed":/seed "$IMAGE" python3 -c '
+import asyncio, json, os
 from pathlib import Path
 from fone.f1 import F1Mapper
 from fone.store import Store
 async def main():
     s = Store(Path("/data/fone.sqlite3")); m = F1Mapper(s)
+    seed = json.load(open("/seed/content.json")) if os.path.exists("/seed/content.json") else {}
+    for cid, d in seed.items():  # the exact anchors; a lookup then adds the onboard streams around them
+        s.put_content(cid, {k: v for k, v in d.items() if k != "streams"})
+        await m.content(cid)
     d = await m.content("1000011022"); await m.close()
     assert d.get("anchor") == "multiviewer", d
     d["subtype"] = "LIVE"; s.put_content("1000011022", d)
@@ -137,4 +149,4 @@ for label,a,b in (('replay window',p0+40-7200,p0+33609),('wide window',time.time
 echo "== running headless Chrome"
 docker run --rm $CAP_CHROME --ipc=host --network $NET -e FONE_SERVER=http://$NAME-server:8788 \
   -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro \
-  -e E2E_DIAG_PROBE -e E2E_ONLY "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/test_e2e.py'
+  -e E2E_DIAG_PROBE -e E2E_ONLY -e E2E_NO_TIMING "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/test_e2e.py'

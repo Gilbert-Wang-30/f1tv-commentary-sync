@@ -7,8 +7,8 @@ const vm = require('node:vm');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 
-function boot({ running, served, storage = {} }) {
-  const env = { now: 1_000_000, served, reloads: 0, refreshed: [], listeners: {}, intervals: [] };
+function boot({ running, served, storage = {}, rules = null }) {
+  const env = { now: 1_000_000, served, reloads: 0, refreshed: [], listeners: {}, intervals: [], rules };
   const local = { ...storage };
   const on = (name) => ({ addListener: (f) => { (env.listeners[name] ||= []).push(f); } });
   const chrome = {
@@ -22,9 +22,18 @@ function boot({ running, served, storage = {} }) {
       query: async () => [{ id: 7 }], reload: (id) => env.refreshed.push(id),
     },
     action: { onClicked: on('action') },
-    cookies: { getAll: async () => env.cookies || [] },
+    cookies: {
+      getAll: async (q) => (env.cookies || []).filter((c) => !q?.domain || !c.domain || c.domain.endsWith(q.domain)),
+      get: async ({ name }) => (env.jar || []).find((c) => c.name === name) || null,
+    },
     alarms: { create() {}, onAlarm: on('alarm') },
     offscreen: { createDocument: async () => {} },
+    declarativeNetRequest: {
+      getSessionRules: async () => env.rules || [],
+      updateSessionRules: async ({ removeRuleIds, addRules }) => {
+        env.rules = [...(env.rules || []).filter((r) => !removeRuleIds.includes(r.id)), ...addRules];
+      },
+    },
     storage: {
       sync: { get: async (d) => d },
       local: {
@@ -43,7 +52,7 @@ function boot({ running, served, storage = {} }) {
     setInterval: (f) => env.intervals.push(f),
     fetch: async (url) => ({ ok: env.served != null, json: async () => ({ build: env.served }), url }),
     importScripts: (f) => {
-      if (f === 'f1token.js') return vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+      if (f === 'f1token.js' || f === 'streams.js') return vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
       if (f === 'local.js') { ctx.self.FONE_LOCAL = { servers: ['http://fone.test:8788'] }; return; } // a published build's defaults
       if (f !== 'build.js') return; // dashproxy.js: not under test here
       if (running == null) throw new Error(`NetworkError: ${f}`);
@@ -61,6 +70,44 @@ function boot({ running, served, storage = {} }) {
 
 const tests = [];
 const test = (name, f) => tests.push([name, f]);
+
+test('the platforms\' headers: a session rule each, on the extension\'s own requests only', async () => {
+  const e = boot({ running: 'b1', served: 'b1' });
+  await new Promise((r) => setImmediate(r));
+  const byDomain = (d) => e.rules.find((r) => r.condition.requestDomains.includes(d));
+  assert.equal(e.rules.length, 5);
+  assert.ok(e.rules.every((r) => JSON.stringify(r.condition.initiatorDomains) === '["fone"]' && r.action.type === 'modifyHeaders'));
+  const h = (d) => Object.fromEntries(byDomain(d).action.requestHeaders.map((x) => [x.header, x.value]));
+  assert.deepEqual(h('bilivideo.com'), { Referer: 'https://live.bilibili.com/', Origin: 'https://live.bilibili.com' });
+  assert.equal(h('ttvnw.net').Origin, 'https://www.twitch.tv');
+  assert.equal(h('youtube.com').Cookie, 'SOCS=CAI');
+  // a service worker restart puts the same rules back, not a second set
+  const again = boot({ running: 'b1', served: 'b1', rules: e.rules });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(again.rules.length, 5);
+});
+
+test('Douyin: only its anonymous ttwid cookie is sent, through a session rule', async () => {
+  const e = boot({ running: 'b1', served: 'b1' });
+  const ask = (sender = { id: 'fone', url: 'chrome-extension://fone/offscreen.html' }) => new Promise((res) => {
+    for (const f of e.listeners.message) if (f({ target: 'background', type: 'douyin-cookie' }, sender, res) === true) return;
+  });
+  e.jar = [{ name: 'ttwid', value: '1%7Cabc.def' }];
+  assert.equal(await ask(), true);
+  const rule = e.rules.find((r) => r.id === 199);
+  assert.equal(JSON.stringify(rule.action.requestHeaders), JSON.stringify([{ header: 'Cookie', operation: 'set', value: 'ttwid=1%7Cabc.def' }]));
+  assert.equal(JSON.stringify(rule.condition), JSON.stringify({ requestDomains: ['douyin.com'], initiatorDomains: ['fone'] }));
+  // no ttwid, but a login's Douyin cookies: no visit is made with them to get one
+  e.jar = [];
+  e.cookies = [{ name: '__ac_nonce', domain: '.douyin.com', value: 'n' }, { name: 'sessionid', domain: '.douyin.com', value: 'x' }];
+  e.rules = [];
+  assert.equal(await ask(), false);
+  assert.equal(e.rules.length, 0);
+  // the settings page (a tab) can ask; a content script (its url is the site's) can't
+  e.jar = [{ name: 'ttwid', value: 'v2' }];
+  assert.equal(await ask({ id: 'fone', tab: { id: 4 }, url: 'chrome-extension://fone/options.html' }), true);
+  assert.equal(await ask({ id: 'fone', tab: { id: 3 }, url: 'https://f1tv.formula1.com/' }), false);
+});
 
 test('up to date: never reloads', async () => {
   const e = boot({ running: 'b1', served: 'b1' });

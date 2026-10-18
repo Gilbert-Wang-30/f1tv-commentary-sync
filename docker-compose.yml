@@ -66,6 +66,29 @@ services:
       - UMASK=002
       - TZ=Asia/Shanghai
 
+  # Streamers on other sites (YouTube, Twitch, Douyin, Huya, Kick, … anything streamlink plays):
+  # `docker compose --profile streamlink up -d --build fone-streamlink` (name the service: a bare
+  # --build also rebuilds and restarts fone from the working tree). Same folder layout as
+  # fone-recorder, so each channel below shows up in the server like a Bilibili one, with the sync,
+  # the stats and sponsor muting (once its clips are in the reference set). No 弹幕 or backfill
+  # (those are Bilibili's), and no measured delay or video handoff: those read FLV recordings,
+  # and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has the options.
+  fone-streamlink:
+    build: ./recorder/streamlink
+    image: fone-streamlink:latest
+    container_name: fone-streamlink
+    profiles: ["streamlink"]
+    restart: unless-stopped
+    user: "1000:1000"
+    volumes:
+      - /mnt/nas/media/library/recordings/fone:/rec
+    environment:
+      - TZ=Asia/Shanghai # = the server's FONE_FILENAME_TZ: the filenames are read in it
+      # channel=URL, several separated by spaces
+      - STREAMS=example=https://www.twitch.tv/example
+      # - QUALITY=audio_only,360p,480p,worst
+      # - GATE_RECORD=F1|Formula|Grand Prix
+
   # Keeps fone-recorder to F1: stops (and deletes the seconds-long stub of) any recording
   # whose stream title isn't F1, e.g. game streams, and restarts it if the title turns F1.
   # If the gate is down the recorder simply records everything, as before.

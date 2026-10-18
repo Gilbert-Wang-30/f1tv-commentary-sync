@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "fone — F1 TV × 解说 sync",
-  "version": "0.2.27",
-  "description": "Plays a Bilibili streamer's recorded commentary in sync with F1 TV, live or replay.",
-  "permissions": ["offscreen", "storage", "alarms", "cookies"],
+  "name": "fone — F1 TV × live commentary sync",
+  "version": "0.3.0",
+  "description": "Plays a streamer's live commentary (Bilibili, Twitch, YouTube, …) in sync with F1 TV: recorded in the browser, or from a fone server for replays.",
+  "permissions": ["offscreen", "storage", "alarms", "cookies", "declarativeNetRequestWithHostAccess"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

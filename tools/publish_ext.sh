@@ -33,7 +33,7 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir "$STAGE/ext"
 cp -r extension/. "$STAGE/ext/"
-rm -f "$STAGE/ext"/*.test.js
+rm -rf "$STAGE/ext"/*.test.js "$STAGE/ext/testdata"
 # The build's default servers go into local.js (a placeholder in the repo), as JSON so any URL survives.
 python3 - "$STAGE/ext/local.js" "${FONE_SERVERS:-}" <<'PY'
 import json, sys

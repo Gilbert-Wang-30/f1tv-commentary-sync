@@ -318,6 +318,17 @@
 
   async function poll() {
     const st = status;
+    // The stream recorded in this browser has no danmaku (those are a fone server's capture):
+    // drop any a server's left behind, nothing to fetch
+    if (st?.source === 'local') {
+      if (items.length || net.channel) {
+        Object.assign(net, { channel: null, server: null, a: null, b: null, at: 0, err: null, live: false });
+        items.length = 0;
+        seen.clear();
+        S.disp = null;
+      }
+      return;
+    }
     if (!settings.on || !st?.channel || !st.server || !st.dm) return;
     if (st.channel !== net.channel || st.server !== net.server) {
       Object.assign(net, { channel: st.channel, server: st.server, a: null, b: null, at: 0, err: null, live: false });
@@ -446,7 +457,7 @@
 
   // D (Bilibili's key) turns the danmaku on and off, on a video page
   window.addEventListener('keydown', (e) => {
-    if (e.code !== 'KeyD' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || !status) return;
+    if (e.code !== 'KeyD' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || !status || status.source === 'local') return;
     const t = e.composedPath()[0];
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     e.preventDefault();

@@ -9,6 +9,9 @@ const S = {
   gen: 0,
   key: null, tab: null, cid: null, channel: null, channels: [],
   servers: [], base: null,
+  // source 'local': no fone server for the commentary, the extension records the stream itself
+  // (recorder.js); local = what it records, lplayer = its <audio> feed (localplayer.js)
+  source: 'server', stream: null, local: null, lplayer: null,
   content: null, contentAt: 0, clock: null, clockFinal: false,
   delay: null, delaySource: null, saveTimer: null,
   manualBase: null,
@@ -48,9 +51,12 @@ function detach() {
   FoneLivePos.stop();
   clearTimeout(S.timelineTimer);
   if (S.hls) { S.hls.destroy(); S.hls = null; }
+  if (S.lplayer) { S.lplayer.destroy(); S.lplayer = null; } // the recorder itself goes on (LINGER)
+  S.local = null;
+  S.base = null; // picked again on attach (the settings may list another, or none)
   audio.pause();
   audio.removeAttribute('src');
-  Object.assign(S, { liveLock: null, minBehind: undefined, synced: false, dashDelay: null, dashDelayAt: 0, dashAt: 0,
+  Object.assign(S, { liveLock: null, minBehind: undefined, synced: false, dashDelay: null, dashDelayAt: 0, dashAt: 0, lbuf: null, contentBusy: false,
     key: null, content: null, clock: null, clockFinal: false, delay: null, timeline: null, playlist: null,
     error: null, lastTarget: null, manualBase: null, steer: C.newSteer(), resync: true, nominal: null });
 }
@@ -58,9 +64,14 @@ function detach() {
 async function attach(msg, key) {
   detach();
   const gen = S.gen;
-  Object.assign(S, { key, tab: msg.tab, cid: msg.cid, channel: msg.channel || null, servers: msg.settings.servers });
+  const local = msg.settings.source === 'local';
+  Object.assign(S, { key, tab: msg.tab, cid: msg.cid, channel: msg.channel || null, servers: msg.settings.servers || [],
+    source: local ? 'local' : 'server', stream: local ? String(msg.settings.stream || '').trim() : null });
   try {
-    S.base = await pickServer(S.servers);
+    if (local) return await attachLocal(msg, gen);
+    const base = await pickServer(S.servers);
+    if (gen !== S.gen) return;
+    S.base = base;
     S.channels = await api('/api/channels');
     if (!S.channel) S.channel = S.channels[0]?.name ?? null;
     if (!S.channel) throw new Error('No recordings found on the server yet');
@@ -72,8 +83,80 @@ async function attach(msg, key) {
   }
 }
 
+// ---- without a server: the stream recorded here ---------------------------------------------
+// The commentary is the streamer's live stream, recorded by this browser (recorder.js) while
+// F1 TV is open, the last few minutes kept: live sessions only, edge to edge as with a server's
+// recording, and rewinding F1 TV works as far back as the recording goes. A server listed in
+// the settings is still used for what only it has (the stats, the diagnostics), if reachable.
+async function attachLocal(msg, gen) {
+  if (!S.stream) throw new Error("No stream set: open fone's settings (toolbar icon) and paste the streamer's live URL");
+  S.local = true;
+  S.bufferMin = msg.settings.bufferMin;
+  S.channel = FoneStreams.parse(S.stream).label;
+  S.channels = [];
+  S.lplayer = FoneLocalPlayer.create(audio, () => FoneRecorder.buffer(S.stream));
+  S.resync = true;
+  wantRecording();
+  const base = S.servers.length ? await pickServer(S.servers).catch(() => null) : null;
+  if (gen !== S.gen) return;
+  S.base = base;
+  await loadContent(gen);
+  if (gen !== S.gen) return;
+  refreshLocal(gen);
+}
+
+// The stream is recorded while the video is live, or may be (the player hasn't said yet): not
+// on a replay, which it can't play with (it would only cost the stream's bandwidth).
+function wantRecording() {
+  if (S.local && (!S.clockFinal || S.clock === 'edge')) FoneRecorder.want(S.stream, S.bufferMin);
+}
+
+function refreshLocal(gen) {
+  clearTimeout(S.timelineTimer);
+  if (gen !== S.gen || !S.local) return;
+  const B = FoneRecorder.buffer(S.stream);
+  // a fresh buffer (the recorder had stopped, or the stream changed): its positions are new ones
+  if (B !== S.lbuf) { S.lbuf = B; S.liveLock = null; S.resync = true; }
+  S.timeline = B ? FoneLocal.timeline(B, now()) : null;
+  const rs = FoneRecorder.status();
+  if (rs.url === S.stream) {
+    S.channel = rs.name || rs.label;
+    if (rs.state === 'recording') S.error = null; // (an interrupted play() left in it, say)
+  }
+  if (S.content && !S.clockFinal) decideClock(gen).catch(() => {});
+  else if (S.content && now() - S.contentAt > 600 && !S.contentBusy) {
+    S.contentBusy = true;
+    S.contentAt = now(); // next try in 10 min, answered or not
+    loadContent(gen).catch(() => {}).finally(() => { S.contentBusy = false; });
+  }
+  S.timelineTimer = setTimeout(() => refreshLocal(gen), 500);
+}
+
+// F1 TV's own description of the video (anonymous, as the server's f1.py reads it): only what
+// the engine needs without a server, whether it's live.
+const F1TV_META = 'https://f1tv.formula1.com/2.0/R/ENG/WEB_DASH/ALL/CONTENT/VIDEO/{cid}/F1_TV_Pro_Annual/2';
+async function f1Content(cid) {
+  try {
+    const r = await fetch(F1TV_META.replace('{cid}', encodeURIComponent(cid)), { credentials: 'omit', signal: AbortSignal.timeout(8000) });
+    const m = (await r.json())?.resultObj?.containers?.[0]?.metadata;
+    if (!m) throw new Error('no metadata');
+    return { contentId: cid, title: m.title || null, subtype: m.contentSubtype || null, p0: null, anchor: null };
+  } catch (e) {
+    return { contentId: cid, error: `F1 TV: ${e.message || e}` };
+  }
+}
+
+// The delay set for this stream last time (live, edge to edge), kept in this browser.
+const localDelayKey = () => `delay|${FoneStreams.parse(S.stream).key}`;
+function localSync() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(localDelayKey()) || 'null'); } catch { /* none */ }
+  return Number.isFinite(saved?.delay) ? { delay: saved.delay, source: 'stream' } : { delay: C.LIVE_EDGE_DELAY, source: 'live' };
+}
+
 async function loadContent(gen) {
-  const content = await api(`/api/f1tv/${S.cid}`);
+  const content = S.source !== 'local' ? await api(`/api/f1tv/${S.cid}`)
+    : S.base ? await api(`/api/f1tv/${S.cid}`).catch(() => f1Content(S.cid)) : await f1Content(S.cid);
   if (gen !== S.gen) return;
   S.content = content;
   S.contentAt = now();
@@ -94,18 +177,18 @@ async function decideClockOnce(gen) {
   const v = S.video;
   const clock = C.chooseClock(S.content, v, now());
   if (clock !== S.clock) {
-    const sync = await api(`/api/sync/${S.cid}?channel=${encodeURIComponent(S.channel)}&clock=${clock}`);
+    const sync = S.source === 'local' ? localSync() : await api(`/api/sync/${S.cid}?channel=${encodeURIComponent(S.channel)}&clock=${clock}`);
     if (gen !== S.gen) return;
     S.clock = clock;
     S.sync = sync;
     S.delay = sync.source === 'measured' ? measuredDelay(sync) : sync.delay;
     S.delaySource = sync.source;
-    if (clock === 'edge' && sync.source !== 'content') {
+    if (clock === 'edge' && sync.source !== 'content' && sync.source !== 'stream') {
       // Replay calibrations measure lag behind real events; live works edge to edge.
       S.delay = C.LIVE_EDGE_DELAY;
       S.delaySource = 'live';
     }
-    if (clock === 'edge') refreshDashDelay(gen);
+    if (clock === 'edge' && S.source !== 'local') refreshDashDelay(gen);
     S.manualBase = null;
     S.resync = true;
   }
@@ -335,8 +418,14 @@ function fileTitle(idx) {
 // or from the server's wall-clock mapping (delivery jitter) — those made it chase.
 const LIVE = { LAG_DEFAULT: C.DEFAULT_LIVE_LATENCY - C.LIVE_EDGE_DELAY, IN: 0.4, OUT: 1.0 };
 const EDGE_STEP = 6; // s: F1 TV's live edge advances in 5.76 s steps
+const LOCAL_IDLE = 30; // s without audio from the stream recorded here before it counts as stopped
 
 function commentaryEdge(t) {
+  if (S.local) { // the stream recorded here: its live edge, but never past what can be played yet
+    const B = FoneRecorder.buffer(S.stream);
+    const e = B && FoneLocal.liveEdge(B, t), end = B && FoneLocal.playableEnd(B);
+    return e == null || end == null ? null : Math.min(e, end + 0.25);
+  }
   const tl = S.timeline;
   if (!tl?.live) return null;
   const last = tl.pieces[tl.pieces.length - 1];
@@ -353,13 +442,25 @@ function liveTarget(t, vn) {
   // distance clearly past one step counts as rewound.
   const behind = vn.seekEnd != null ? Math.max(0, vn.seekEnd - vn.p) : null;
   if (behind != null) S.minBehind = Math.min(S.minBehind ?? behind, behind);
-  if (L && L.cid === S.cid && !(L.relock)) return L.m0 + (vn.p - L.p0);
-  const edge = commentaryEdge(t);
+  // the stream recorded here: its edge as judged by the freshest arrivals so far
+  const B = S.local && FoneRecorder.buffer(S.stream);
+  if (L && L.cid === S.cid && !(L.relock)) {
+    // Recorded here, the edge firms up over the first minute: HLS segments arrive in steps and
+    // the first playlist can't say how long its newest one has been out, so the freshest
+    // arrival keeps improving for a while. Keep the commentary as far behind the edge as was
+    // chosen: follow the edge forward then (never back: an arrival only ever shows it fresher).
+    if (B && L.edgeRef != null && t - L.at < 90) {
+      const e = FoneLocal.liveEdge(B, t) - t;
+      if (e > L.edgeRef + 0.1) { L.m0 += e - L.edgeRef; L.edgeRef = e; }
+    }
+    return L.m0 + (vn.p - L.p0);
+  }
+  const edge = B ? FoneLocal.liveEdge(B, t) : commentaryEdge(t);
   if (edge == null) return null; // commentary not live: caller falls back to the wall mapping
   const lag = C.DEFAULT_LIVE_LATENCY - S.delay; // delay ↔ seconds behind the commentary edge
   const rewound = behind == null ? 0 : Math.max(0, behind - S.minBehind - EDGE_STEP);
   const m0 = edge - lag - rewound;
-  S.liveLock = { cid: S.cid, m0, p0: vn.p, at: t };
+  S.liveLock = { cid: S.cid, m0, p0: vn.p, at: t, edgeRef: B ? edge - t : null };
   return m0;
 }
 
@@ -499,7 +600,8 @@ function dashClock(t, v, vn, E, liveM) {
   S.dashAt = t;
   let e = E;
   if (S.clock === 'edge') {
-    if (t - S.dashDelayAt > DASH.DELAY_TTL) refreshDashDelay(S.gen);
+    // (the stream recorded here has no measured delay on a server: the long guess below)
+    if (S.source !== 'local' && t - S.dashDelayAt > DASH.DELAY_TTL) refreshDashDelay(S.gen);
     const w = liveM != null && S.synced && S.dashDelay != null ? C.wallOf(S.timeline?.pieces, liveM) : null;
     e = w != null ? w - S.dashDelay : t - DASH.LIVE_LATENCY - Math.max(0, (vn.seekEnd ?? vn.p) - vn.p);
   }
@@ -519,6 +621,7 @@ function tick() {
     channel: S.channel, channels: S.channels.map((c) => c.name), server: S.base,
     clock: S.clock, delay: S.delay, delaySource: S.delaySource, cid: S.cid,
     title: S.content?.title, session: S.content?.sessionName, anchor: S.content?.anchor,
+    source: S.source, rec: S.local ? { ...FoneRecorder.status(), player: S.lplayer?.state() ?? null } : null,
     playing: !v.paused && t - v.receivedAt <= 4, // the picture is moving (self-update waits)
     diag: { q: diagQ.length, sent: DG.sent, err: DG.err },
     livepos: livePosBrief(),
@@ -529,7 +632,34 @@ function tick() {
   }
   if (!S.timeline || !S.content || S.delay == null) {
     pauseAudio();
-    return report({ ...base, state: S.error ? 'error' : 'loading', text: S.error || 'Connecting…' });
+    return report({ ...base, state: S.error ? 'error' : 'loading', text: S.error || (S.local ? base.rec.text : '') || 'Connecting…' });
+  }
+  if (S.local) { // recorded here: live only, and only once there is something recorded
+    const rec = base.rec;
+    if (S.clock !== 'edge') {
+      pauseAudio();
+      return report({ ...base, state: S.clockFinal ? 'none' : 'loading',
+        text: S.clockFinal ? 'Without a fone server, commentary plays on live sessions only' : 'Waiting for the F1 TV player…' });
+    }
+    const who = rec.name || rec.label;
+    if (!S.timeline.pieces.length) {
+      pauseAudio();
+      const state = rec.state === 'offline' ? 'none' : rec.state === 'error' ? 'error' : 'loading';
+      return report({ ...base, state, text: rec.state === 'offline' ? `${who}: ${rec.text.toLowerCase()}` : rec.text || 'Connecting to the stream…', error: rec.err });
+    }
+    // The stream stopped coming in (off air, or nothing for LOCAL_IDLE s): no live edge to be
+    // behind, so no lead either (auto-hold lets F1 TV go), and the panel says why. What was
+    // recorded still plays when F1 TV is rewound into it.
+    const idle = rec.state === 'offline' || rec.state === 'error' || (rec.lastAt != null && t - rec.lastAt > LOCAL_IDLE);
+    if (idle) {
+      const m = liveTarget(t, C.videoNow(v, t));
+      const end = FoneLocal.playableEnd(FoneRecorder.buffer(S.stream));
+      if (m == null || end == null || m > end - 3.5) { // (before auto-hold's zone, 3 s from the edge)
+        pauseAudio();
+        const text = rec.state === 'offline' ? `${who}: ${rec.text.toLowerCase()}` : `The stream stopped coming in${rec.err ? ` (${rec.err})` : ''}`;
+        return report({ ...base, state: 'after', text, lead: null, error: rec.err });
+      }
+    }
   }
   audio.volume = S.muted ? 0 : S.volume;
 
@@ -572,7 +702,7 @@ function tick() {
     }
     const text = {
       none: 'No recording covers this session',
-      before: `Commentary starts in ${fmtDur(map.wait)}`,
+      before: S.local ? `Before the recording: it has the last ${fmtDur(base.rec.kept)}` : `Commentary starts in ${fmtDur(map.wait)}`,
       gap: `Stream dropped — back in ${fmtDur(map.wait)}`,
       after: 'Commentary recording ended',
     }[map.state];
@@ -610,17 +740,24 @@ function fmtDur(s) {
 function nudge(delta) {
   if (S.delay == null) return;
   S.delay = Math.round((S.delay + delta) * 100) / 100;
-  S.delaySource = 'content';
+  S.delaySource = S.source === 'local' ? 'stream' : 'content';
   S.resync = true; // jump to the new position now
   if (S.liveLock) S.liveLock.m0 += delta; // live: move the lock, don't re-derive it
   clearTimeout(S.saveTimer);
-  const { cid, channel, clock, delay } = S;
+  if (S.source === 'local') { // kept in this browser, per stream
+    try { localStorage.setItem(localDelayKey(), JSON.stringify({ delay: S.delay, at: Date.now() })); } catch { /* private mode */ }
+    return;
+  }
+  const { cid, channel, clock, delay, base } = S; // (a re-attach may come before the save)
+  if (!base) return;
   S.saveTimer = setTimeout(() => {
-    api(`/api/sync/${cid}`, {
+    fetch(`${base}/api/sync/${cid}`, {
+      signal: AbortSignal.timeout(10000),
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ channel, clock, delay }),
-    }).catch((e) => { S.error = `save failed: ${e.message}`; });
+    }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
+      .catch((e) => { S.error = `save failed: ${e.message}`; });
   }, 800);
 }
 
@@ -649,7 +786,9 @@ chrome.runtime.onMessage.addListener((msg) => {
       S.anticipate = !!msg.settings.anticipate;
       if (S.delaySource === 'measured' && S.sync) { S.delay = measuredDelay(S.sync); S.resync = true; }
     }
-    const key = `${msg.tab}|${msg.cid}|${msg.channel || ''}|${msg.settings.servers.join(',')}`;
+    const st = msg.settings;
+    const key = `${msg.tab}|${msg.cid}|${msg.channel || ''}|${(st.servers || []).join(',')}|${st.source || ''}|${st.source === 'local' ? st.stream || '' : ''}`;
+    if (S.local && key === S.key) { S.bufferMin = st.bufferMin; wantRecording(); } // still wanted (and the buffer's length)
     if (key !== S.key) attach(msg, key);
     // Paused, seeked or resumed: act now rather than on the next 100 ms tick (a quick
     // F1 TV seek can come and go between two ticks, skipping the silent pre-seek).

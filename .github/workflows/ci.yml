@@ -18,7 +18,7 @@ jobs:
       - name: run the unit tests
         working-directory: extension
         run: |
-          for t in core dashcore dmcore background livepos; do
+          for t in core dashcore dmcore background livepos demux localcore recorder; do
             echo "== $t"
             node "$t.test.js"
           done

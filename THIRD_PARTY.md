@@ -7,6 +7,7 @@ fone itself is MIT (see `LICENSE`). It ships, pulls in or runs these:
 | | Licence | Where |
 |---|---|---|
 | **hls.js** 1.7.3, light build (video-dev/hls.js) | Apache-2.0 | `extension/vendor/hls.light.min.js`; licence text in `extension/vendor/LICENSE.hls.js` |
+| two silent AAC-LC frames (mono, stereo), as hls.js uses them | Apache-2.0 (hls.js) | `extension/demux.js` (`SILENT`), for the gaps in a recording |
 
 ## Python packages (installed into the server image by pip, see `server/requirements.txt`)
 
@@ -32,6 +33,7 @@ fone itself is MIT (see `LICENSE`). It ships, pulls in or runs these:
 | | Licence | Used for |
 |---|---|---|
 | **BililiveRecorder** (录播姬), Docker image `bililive/recorder` | GPL-3.0 | recording the Bilibili room (`docker-compose.yml`, `recorder/`) |
+| **streamlink** 8.6.2 and **ffmpeg** (Alpine), in the image `recorder/streamlink/Dockerfile` builds | BSD-2-Clause; LGPL-2.1+ / GPL-2+ | recording streams on other sites (the optional `fone-streamlink` service) |
 | **Playwright** Python image `mcr.microsoft.com/playwright/python` | Apache-2.0 | the end-to-end tests only (`e2e/`) |
 
 The licences above are those published by each project at the time of writing; check the

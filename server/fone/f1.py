@@ -120,6 +120,16 @@ class F1Mapper:
             if "streams" in data and (data.get("anchor") == "multiviewer" or time.time() - fetched_at < 600):
                 return data
         data = await self._resolve(cid)
+        # A lookup that failed (F1 TV down for a moment) never replaces what was known: the
+        # cached answer is served again, and the next lookup tries once more.
+        if cached and data.get("error") and not cached[0].get("error"):
+            return cached[0]
+        # A video's exact anchor never changes. One known already is kept when this lookup
+        # couldn't make it again: F1's live-timing archive, its Started time, has answered 401 to
+        # everyone since 2026-10-18, so re-resolving an old replay (for its stream list) would
+        # otherwise trade the exact anchor for the pre-roll estimate.
+        if cached and cached[0].get("anchor") == "multiviewer" and data.get("anchor") != "multiviewer" and not data.get("error"):
+            data.update({k: cached[0][k] for k in ("anchor", "p0", "startedUtc", "sessionStartVideo") if k in cached[0]})
         self.store.put_content(cid, data)
         return data
 

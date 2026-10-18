@@ -5,6 +5,12 @@
   window.__foneContent = true;
 
   const DEFAULTS = {
+    // Where the commentary comes from: 'server' (a fone server's recordings: replays too) or
+    // 'local' (no server: this browser records the stream itself, for live sessions). Until
+    // it's chosen in the settings: a server if one is set (local.js or the settings), else local.
+    source: null,
+    stream: '', // 'local': the streamer's live URL (streams.js)
+    bufferMin: 15, // 'local': minutes of the stream kept, for rewinding F1 TV
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -19,6 +25,7 @@
     anticipate: false, // measured delay + 0.9 s: commentary a little before the picture
   };
   const F1_AUDIO = ['mute', 'fx', 'off'];
+  const sourceOf = (s) => (s.source === 'local' || s.source === 'server' ? s.source : s.servers?.length ? 'server' : 'local');
   const SPEEDS = [1, 1.5, 2];
   let settings = { ...DEFAULTS };
   let speedStallSince = 0;
@@ -129,7 +136,8 @@
       cid,
       channel: settings.channel,
       video: state,
-      settings: { servers: settings.servers, volume: settings.volume, muted: settings.muted, anticipate: !!settings.anticipate },
+      settings: { servers: settings.servers, volume: settings.volume, muted: settings.muted, anticipate: !!settings.anticipate,
+        source: settings.source, stream: settings.stream, bufferMin: settings.bufferMin },
     });
   }
 
@@ -300,11 +308,14 @@
   function render() {
     if (host.hidden) return;
     wrap.classList.toggle('collapsed', settings.collapsed);
-    // No server to try (a build without local.js defaults, or the list emptied): say so up front
-    // rather than letting the engine report every server as unreachable.
-    const s = !settings.servers?.length
+    // Nothing to play from (no server listed, or no stream to record): say so up front rather
+    // than letting the engine report every server as unreachable.
+    const local = settings.source === 'local';
+    const s = !local && !settings.servers?.length
       ? { state: 'error', text: "No server set — open fone's settings (toolbar icon) and enter its URL" }
-      : status || { state: 'loading', text: 'Connecting…' };
+      : local && !String(settings.stream || '').trim()
+        ? { state: 'error', text: "No stream set — open fone's settings (toolbar icon) and paste the streamer's live URL" }
+        : status || { state: 'loading', text: 'Connecting…' };
     $('dot').className = `dot ${s.state}`;
     $('name').textContent = s.channel || '解说';
     let text = s.text || '';
@@ -328,6 +339,9 @@
     root.querySelectorAll('button[data-s]').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === (Number(settings.speed) || 1)));
     $('fxRow').hidden = !FonePlayer.isTiledmedia();
     $('stats').classList.toggle('on', !!window.FoneLayout?.isOn());
+    // the stats need a fone server (its timing service), the 弹幕 its capture of the room
+    $('statsRow').hidden = serverless();
+    $('dm').hidden = $('dmSet').hidden = $('dmInfo').hidden = local;
     root.querySelectorAll('button[data-fa]').forEach((b) => b.classList.toggle('on', b.dataset.fa === settings.f1Audio));
     const au = tm?.audio;
     $('faInfo').textContent = !au ? '' : settings.f1Audio === 'mute' ? (au.muted ? 'off' : au.err ? 'not muted: ' + au.err : '')
@@ -348,6 +362,7 @@
 
     const chans = s.channels || [];
     const sel = $('channel');
+    sel.parentNode.hidden = local;
     if (sel.dataset.v !== chans.join('|')) {
       sel.innerHTML = '';
       for (const c of chans) sel.add(new Option(c, c));
@@ -359,12 +374,21 @@
     const rows = [
       ['F1 TV', s.title || cid],
       ['sync', `<span class="badge ${est}">${clockText}</span>`],
-      ['delay from', { content: 'this video', channel: 'your last calibration', default: 'default guess', live: 'live default (edge to edge)', measured: 'measured from the stream' }[s.delaySource] || '–'],
+      ['delay from', { content: 'this video', channel: 'your last calibration', default: 'default guess', live: 'live default (edge to edge)',
+        measured: 'measured from the stream', stream: 'your last setting for this stream' }[s.delaySource] || '–'],
       ['on screen', fmtTime(s.E)],
       ['commentary', fmtTime(s.W)],
-      ['recording', s.file || '–'],
-      ['server', s.server || '–'],
     ];
+    const rec = s.rec;
+    if (local && rec) {
+      const pf = { bilibili: 'Bilibili', twitch: 'Twitch', youtube: 'YouTube', douyin: 'Douyin', huya: 'Huya', url: 'stream URL' }[rec.platform] || rec.platform;
+      rows.push(['recording', `this computer · ${pf}${rec.name ? ` · ${rec.name}` : ''} · ${rec.state}${rec.text && rec.state !== 'recording' ? ` (${rec.text})` : ''}`]);
+      rows.push(['kept', `${fmtDur(rec.kept)} of ${settings.bufferMin} min${rec.kbps ? ` · audio ${rec.kbps} kbps` : ''}${rec.fmt ? ` · ${rec.fmt}` : ''}${rec.net ? ` · stream ${rec.net} kbps` : ''}${rec.filled ? ` · ${rec.filled}s of gaps` : ''}`]);
+      if (rec.title) rows.push(['stream', rec.title]);
+      if (s.server) rows.push(['server', `${s.server} (stats)`]);
+    } else {
+      rows.push(['recording', s.file || '–'], ['server', s.server || '–']);
+    }
     if (video) rows.push(['player', `${FonePlayer.diag()} · id ${cid} · v${chrome.runtime.getManifest().version}`]);
     const nRate = video ? rateChangesPerMin() : 0;
     if (video && (nRate || video.playbackRate !== 1)) {
@@ -401,6 +425,16 @@
       $('kv').append(b, d);
     }
   }
+
+  const fmtDur = (x) => {
+    x = Math.max(0, Math.round(x || 0));
+    const m = Math.floor(x / 60), ss = String(x % 60).padStart(2, '0');
+    return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  };
+  // no fone server at all: the commentary recorded here, nothing for the stats to ask
+  const serverless = () => settings.source === 'local' && !settings.servers?.length;
+  // for layout.js and danmaku.js (same content-script world): what needs a server stays off
+  window.FoneContent = Object.freeze({ serverless, local: () => settings.source === 'local' });
 
   let toastTimer;
   function toast(msg) {
@@ -475,12 +509,14 @@
     // new default, muted (no track switch, no echo against the recording's F1 TV sound)
     if (!F1_AUDIO.includes(s.f1Audio)) s.f1Audio = s.autoFx === false ? 'off' : DEFAULTS.f1Audio;
     delete s.autoFx;
+    s.source = sourceOf(s);
     settings = s;
     setInterval(poll, 250);
     poll();
   });
   chrome.storage.onChanged.addListener((changes) => {
     for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
+    settings.source = sourceOf(settings);
     push(true);
     syncPage(true);
   });

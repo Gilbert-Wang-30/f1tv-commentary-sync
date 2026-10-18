@@ -25,6 +25,32 @@ def test_bililiverecorder_default_template_millis():
     assert title == "【胡闹P房】15点 巴林 正赛"
 
 
+def test_streamlink_template_micros():
+    # recorder/streamlink: {time:%Y%m%d-%H%M%S-%f}-{title}
+    t, prec, title = parse_name("20261018-131700-123456-F1 watchalong - 2026 US GP", SH)
+    assert abs(t - (utc(2026, 10, 18, 5, 17, 0) + 0.123)) < 1e-6
+    assert prec == 0.001
+    assert title == "F1 watchalong - 2026 US GP"
+
+
+def test_a_seconds_stamp_before_a_title_starting_with_a_number():
+    # only exactly 3 or 6 fraction digits are a fraction: '…-143012-2026赛季' is seconds + title
+    t, prec, title = parse_name("20261004-143012-2026赛季 第16站", SH)
+    assert t == utc(2026, 10, 4, 6, 30, 12)
+    assert prec == 1
+    assert title == "2026赛季 第16站"
+
+
+def test_a_name_that_isnt_utf8_is_skipped_not_the_scan(tmp_path):
+    # a title cut inside a UTF-8 character (a recorder truncating by bytes)
+    (tmp_path / "胡闹P房").mkdir()
+    (tmp_path / "胡闹P房" / "20261004-1430-正赛.flv").write_bytes(b"x")
+    bad = os.fsencode(str(tmp_path / "other")) + b"/20261018-135106-046913-x\xe5\xa4\xa7\xe5\xae.ts"
+    os.mkdir(os.fsencode(str(tmp_path / "other")))
+    open(bad, "wb").write(b"x")
+    assert [r.channel for r in scan(tmp_path, SH)] == ["胡闹P房"]
+
+
 def test_blrec_style():
     t, prec, _ = parse_name("23954427_2026-10-04_14-30-12", SH)
     assert t == utc(2026, 10, 4, 6, 30, 12)

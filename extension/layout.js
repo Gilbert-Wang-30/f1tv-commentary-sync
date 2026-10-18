@@ -367,6 +367,7 @@
     const t = e.composedPath()[0];
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!want && !document.querySelector(GRID)) return; // no player here: nothing to show it with
+    if (!want && window.FoneContent?.serverless()) return; // no fone server: no stats to show
     e.preventDefault();
     e.stopPropagation();
     toggle();
@@ -412,7 +413,13 @@
     }
   });
 
-  chrome.storage.local.get('layout').then(({ layout }) => {
-    if (!chosen && layout === 'split') setWant(true);
-  }).catch(() => {});
+  // Back to the split the last page had, unless there's no fone server to fill it (the
+  // commentary recorded in this browser, no server listed: content.js's settings, read here
+  // as they're stored since it may not have loaded them yet).
+  const servers = self.FONE_LOCAL?.servers || [];
+  Promise.all([chrome.storage.local.get('layout'), chrome.storage.sync.get({ source: null, servers })])
+    .then(([{ layout }, s]) => {
+      const local = s.source === 'local' || (s.source !== 'server' && !s.servers?.length);
+      if (!chosen && layout === 'split' && !(local && !s.servers?.length)) setWant(true);
+    }).catch(() => {});
 })();

@@ -3,6 +3,7 @@
 
 importScripts('dashproxy.js'); // the stats dashboard's timing reads (mixed content in F1 TV)
 importScripts('f1token.js'); // the F1 TV token for live car positions (livepos.js)
+importScripts('streams.js'); // the platforms' headers for the stream recorder (platformRules)
 
 let creating = null;
 
@@ -48,6 +49,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   FoneF1Token.f1Token().then(sendResponse, () => sendResponse(null));
+  return true; // answered asynchronously
+});
+
+// The stream recorder (recorder.js, in offscreen.html) talks to the platforms as their own web
+// players do: the Origin/Referer each wants (FoneStreams.HEADERS: Bilibili's API refuses the
+// extension's Origin, its CDN a request without a Referer), which fetch() can't set. Session
+// rules add them, only to this extension's own requests to those domains.
+const DOUYIN_RULE = 199; // douyinCookie's (below): kept when the platforms' rules are set again
+async function platformRules() {
+  const addRules = FoneStreams.HEADERS.map((h, i) => ({
+    id: 100 + i, priority: 1,
+    action: { type: 'modifyHeaders', requestHeaders: Object.entries(h.set).map(([header, value]) => ({ header, operation: 'set', value })) },
+    condition: { requestDomains: h.domains, initiatorDomains: [chrome.runtime.id] },
+  }));
+  const old = await chrome.declarativeNetRequest.getSessionRules();
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: old.map((r) => r.id).filter((id) => id !== DOUYIN_RULE), addRules });
+}
+platformRules().catch((e) => console.warn('fone: platform header rules', e));
+
+// Douyin's room API answers nothing without its anonymous `ttwid` cookie. The recorder sends no
+// cookies, so this one is added by a session rule: the browser's own, or the one a visit to
+// live.douyin.com hands out (its first answer may only set a challenge cookie: a second visit
+// gets the ttwid). Never the user's other Douyin cookies: and when a login's are there without a
+// ttwid, no visit is made with them.
+const DOUYIN_LOGIN = /^(sessionid|sessionid_ss|sid_tt|sid_guard|uid_tt|uid_tt_ss|passport_|odin_tt|sid_ucp)/;
+async function douyinCookie() {
+  const read = () => chrome.cookies.get({ url: 'https://live.douyin.com/', name: 'ttwid' });
+  let c = await read();
+  for (let visit = 0; !c && visit < 2; visit++) {
+    if ((await chrome.cookies.getAll({ domain: 'douyin.com' })).some((x) => DOUYIN_LOGIN.test(x.name))) return false;
+    await fetch('https://live.douyin.com/', { credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10000) }).catch(() => {});
+    c = await read();
+  }
+  if (!c?.value || !/^[\w%.=+\/-]+$/.test(c.value)) return false;
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [DOUYIN_RULE],
+    addRules: [{ id: DOUYIN_RULE, priority: 1,
+      action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Cookie', operation: 'set', value: `ttwid=${c.value}` }] },
+      condition: { requestDomains: ['douyin.com'], initiatorDomains: [chrome.runtime.id] } }],
+  });
+  return true;
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.target !== 'background' || msg.type !== 'douyin-cookie') return;
+  // the extension's own pages only (the settings page is a tab; a content script's url is the site's)
+  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) { sendResponse(false); return; }
+  douyinCookie().then(sendResponse, () => sendResponse(false));
   return true; // answered asynchronously
 });
 

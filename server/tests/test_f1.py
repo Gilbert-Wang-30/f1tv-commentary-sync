@@ -112,3 +112,38 @@ def test_an_old_cached_replay_is_fetched_once_more_for_its_streams(tmp_path):
     m.store.put_content("1000011024", old)
     again = asyncio.run(m.content("1000011024"))
     assert again["streams"] and again["p0"] == first["p0"]
+
+
+def test_an_exact_anchor_is_kept_when_the_timing_archive_refuses(tmp_path):
+    # 2026-10-18: livetiming.formula1.com/static answers 401 to everything. An old cached
+    # replay re-resolved for its streams keeps the exact anchor it had.
+    m = mapper(tmp_path)
+    first = asyncio.run(m.content("1000011024"))
+    assert first["anchor"] == "multiviewer"
+    m.store.put_content("1000011024", {k: v for k, v in first.items() if k != "streams"})
+    inner = mock_transport()
+    def refuse_archive(request):
+        if "livetiming.formula1.com" in str(request.url):
+            return httpx.Response(401)
+        return inner.handle_request(request)
+    m.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse_archive))
+    again = asyncio.run(m.content("1000011024"))
+    assert again["streams"] and again["anchor"] == "multiviewer" and again["p0"] == first["p0"]
+    assert again["startedUtc"] == first["startedUtc"]
+    # never seen before, the same refusal gives the estimate
+    fresh = mapper(tmp_path / "x") if (tmp_path / "x").mkdir() is None else None
+    fresh.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse_archive))
+    est = asyncio.run(fresh.content("1000011024"))
+    assert est["anchor"] == "preroll"
+
+
+def test_a_failed_lookup_never_replaces_the_cached_answer(tmp_path):
+    # an old replay re-resolved (for its streams) while F1 TV answers 503 and the archive 401:
+    # the exact anchor it had is served, not an error, and not stored over it
+    m = mapper(tmp_path)
+    first = asyncio.run(m.content("1000011024"))
+    m.store.put_content("1000011024", {k: v for k, v in first.items() if k != "streams"})
+    m.http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    again = asyncio.run(m.content("1000011024"))
+    assert not again.get("error") and again["anchor"] == "multiviewer" and again["p0"] == first["p0"]
+    assert m.store.get_content("1000011024")[0]["anchor"] == "multiviewer"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -10,14 +11,18 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+log = logging.getLogger("fone.recordings")
+_reported: set[str] = set()  # names already logged as unreadable (the scan runs every few seconds)
+
 MEDIA_EXTS = {".flv", ".mp4", ".ts", ".m4a", ".mkv"}
 SKIP_DIRS = {"log", "logs", "@eaDir", "#recycle"}
 
 # Ordered most- to least-precise. Each entry: (regex, precision in seconds).
-# Covers BililiveRecorder's default `yyyyMMdd-HHmmss-fff`, the minute-precision
-# template this recorder currently uses, and blrec-style `YYYY-MM-DD_HH-MM-SS`.
+# Covers BililiveRecorder's default `yyyyMMdd-HHmmss-fff`, streamlink's `%f` (microseconds,
+# recorder/streamlink), the minute-precision template this recorder currently uses, and
+# blrec-style `YYYY-MM-DD_HH-MM-SS`.
 _PATTERNS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[-_ ](\d{2})(\d{2})(\d{2})[-_.](\d{3})(?!\d)"), 0.001),
+    (re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[-_ ](\d{2})(\d{2})(\d{2})[-_.](\d{3})(?:\d{3})?(?!\d)"), 0.001),
     (re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[-_ ](\d{2})(\d{2})(\d{2})(?!\d)"), 1.0),
     (re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})[-:.](\d{2})[-:.](\d{2})(?!\d)"), 1.0),
     (re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[-_ ](\d{2})(\d{2})(?!\d)"), 60.0),
@@ -87,6 +92,13 @@ def scan(rec_dir: Path, tz: ZoneInfo, aliases: dict[str, str] | None = None,
                 except OSError:
                     continue
                 relpath = prefix + path.relative_to(root_dir).as_posix()
+                try:  # a name that isn't valid UTF-8 (cut inside a character) can't be served: skip it, not the scan
+                    relpath.encode("utf-8")
+                except UnicodeEncodeError:
+                    if relpath not in _reported:
+                        _reported.add(relpath)
+                        log.warning("skipping %r: its name isn't valid UTF-8", relpath)
+                    continue
                 # The recorder's `{{ name }}/` template puts each streamer in its own folder,
                 # wherever that folder sits (one or several recorder roots under rec_dir).
                 channel = path.parent.name if path.parent != root_dir else ""

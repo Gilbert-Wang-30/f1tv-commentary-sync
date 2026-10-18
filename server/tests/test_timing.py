@@ -313,6 +313,23 @@ def test_old_sessions_are_pruned(svc):
     assert not svc.store.dir(KEY).exists() and KEY not in svc._loaded
 
 
+def test_nothing_is_pruned_while_the_archive_refuses(archived_root, tmp_path):
+    # 2026-10-18: livetiming.formula1.com/static answers 401 to everyone. A stored session
+    # (a live capture, for one) couldn't be fetched again: keep it.
+    def refusing(request):
+        if str(request.url).startswith(STATIC + "/"):
+            return httpx.Response(401)
+        return archive_handler(request)
+
+    root = clone(archived_root, tmp_path)
+    old = make_service(root, handler=refusing).store.meta(KEY)["fetched"] + 31 * 86400
+    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) is None
+    assert make_service(root).store.dir(KEY).exists()
+    assert asyncio.run(make_service(root, handler=refusing).fetch_archive(KEY)) == "refused"
+    # the archive answering again: pruned as before
+    assert asyncio.run(make_service(root).maybe_prune(old)) == [KEY]
+
+
 def test_schedule_refresh_is_cached_on_disk(tmp_path):
     svc = make_service(tmp_path)
     asyncio.run(svc._refresh_schedule(time.time()))

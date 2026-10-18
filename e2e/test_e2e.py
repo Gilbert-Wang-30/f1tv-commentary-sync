@@ -670,10 +670,14 @@ async def main():
 
         d, s = await dash_wait(lambda d, s: abs(d["E"] - s["E"]) < 1.0, 15, "the dashboard to follow the on-screen time")
         check(True, f"stats window follows the on-screen time (err {d['E'] - s['E']:+.2f}s)")
-        d, s = await dash_wait(lambda d, s: d["rows"] >= 20 and d.get("stateT") is not None and abs(d["stateT"] - d["E"]) < 3,
-                               60, "the dashboard's timing tower")
-        check(d["stateT"] <= d["E"] + 0.5, f"stats: {d['rows']}-driver tower as of the on-screen time, never past it "
-              f"(state t {d['stateT'] - d['E']:+.2f}s), {d['part'] or 'no part'} {d['clock']}, flag {d['flag']}")
+        if os.environ.get("E2E_NO_TIMING") == "1":
+            # (F1's live-timing archive has refused everyone since 2026-10-18: no timing to show)
+            print("skip - the dashboard's timing tower (E2E_NO_TIMING=1)")
+        else:
+            d, s = await dash_wait(lambda d, s: d["rows"] >= 20 and d.get("stateT") is not None and abs(d["stateT"] - d["E"]) < 3,
+                                   60, "the dashboard's timing tower")
+            check(d["stateT"] <= d["E"] + 0.5, f"stats: {d['rows']}-driver tower as of the on-screen time, never past it "
+                  f"(state t {d['stateT'] - d['E']:+.2f}s), {d['part'] or 'no part'} {d['clock']}, flag {d['flag']}")
         await page.evaluate("() => tmSeek(900)")
         t0 = time.time()
         d, s = await dash_wait(lambda d, s: abs(d["E"] - p0 - 900) < 3 and abs(d["E"] - s["E"]) < 1.0, 10, "the dashboard to follow a seek")
@@ -1298,4 +1302,5 @@ async def onboards(ctx, page):
     check(not ours, f"no page errors from page.js/layout.js ({len(errors)} page errors in all)")
 
 
-asyncio.run(main())
+if __name__ == "__main__":  # (e2e/local/test_local.py imports the mocks and helpers)
+    asyncio.run(main())

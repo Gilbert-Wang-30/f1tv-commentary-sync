@@ -9,8 +9,9 @@ a general F1-data reference this page was cut down from and are not exercised by
 treat them as leads, not facts.
 
 None of these APIs is documented or supported by its owner; they are what F1 TV, MultiViewer
-and F1's own live-timing page use, and they change without notice. A `User-Agent` naming the
-project is sent on every request.
+and F1's own live-timing page use, and they change without notice. The server sends a
+`User-Agent` naming the project on every request; the extension's requests carry the browser's
+own.
 
 - [How the anchor is built](#how-the-anchor-is-built)
 - [F1 TV content API](#f1-tv-content-api)
@@ -38,9 +39,18 @@ publishes (live, and the first hours after a session) the fallback is
 (`−307.0` s qualifying, `−307.3` race, `−249.7` sprint, `−1162.3` sprint qualifying, `−1165`
 practice).
 
+F1's live-timing archive has answered 401 to everyone since 2026-10-18
+([below](#f1-live-timing-the-static-archive)), so the `Started` UTC can't be fetched while it
+refuses. Replays anchored before then stay exact (`f1.py` keeps a cached exact anchor); newer
+replays use the pre-roll estimate. The same goes for the stats: a session has timing only if
+the server captured it live (`FONE_TIMING_RECORD`), and nothing stored is pruned while the
+archive refuses (`timing.py`, `maybe_prune`).
+
 ## F1 TV content API
 
-*As used by fone* (`f1.py`): one GET per content id, no login.
+*As used by fone* (`server/fone/f1.py`; and, without a server, `extension/offscreen.js`, which
+reads only `title` and `contentSubtype`, for whether the video is live): one GET per content
+id, no login.
 
 ```
 https://f1tv.formula1.com/2.0/R/ENG/WEB_DASH/ALL/CONTENT/VIDEO/{contentId}/F1_TV_Pro_Annual/2
@@ -89,8 +99,15 @@ live timing's `SessionInfo` (`Meeting.Circuit.Key`, `StartDate`).
 
 ## F1 live timing: the static archive
 
+> **Since 2026-10-18 the archive answers `401` to every request** (a CloudFront function, for
+> every year and `Index.json` too); the live SignalR Core feed below still answers anonymously.
+> fone keeps what it has: sessions it captured live, and the exact replay anchors already in its
+> content cache (`f1.py` doesn't trade a known one for the pre-roll estimate). A replay it never
+> anchored gets the pre-roll estimate, and a session it never captured has no timing. While the
+> archive refuses, `timing.py` prunes nothing it has stored.
+
 *As used by fone* (`timing.py`, `f1.py`). Every session's timing feed is published as flat
-files about 20 minutes after it ends (403 until then), no auth, under
+files about 20 minutes after it ends (403 until then), no auth until 2026-10-18, under
 
 ```
 https://livetiming.formula1.com/static/{year}/Index.json
