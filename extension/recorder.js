@@ -167,6 +167,15 @@
     V.wantUntil = Date.now() + V.WANT * 1000;
     const audioOnly = R.state === 'recording' && ((R.info?.kind && R.info.kind !== 'flv')
       || (!R.vseen && R.audioSince != null && Date.now() - R.audioSince > 5000));
+    // Douyin's audio-only stream (what's recorded, for its few bytes): its smallest with the
+    // picture instead, from a new connection now, while a window is open (and after)
+    if (audioOnly && R.spec?.platform === 'douyin' && !R.spec.video && !R.switching) {
+      R.spec.video = true;
+      R.switching = true;
+      R.alt = 0;
+      try { R.abort?.abort(); } catch { /* gone already */ }
+      return;
+    }
     if (audioOnly) return vpost({ type: 'novideo', url: R.url, gen: R.gen });
     if (V.url !== R.url || V.gen !== R.gen || !V.cfg) return;
     if (fresh || lapsed) vpost(V.cfg);
@@ -283,6 +292,26 @@
       for (const s of segs) {
         if (run !== R.run) return;
         if (s.disc && last != null) { conn = ++R.conn; ref = null; ctx = {}; }
+        // An ad stitched in (Twitch) replaces the stream: not fetched (its segments are the full
+        // picture whatever was asked for: 6 Mbps for a 160 kbps audio rendition, 2026-10-26).
+        // Silence meanwhile, once there's audio to go on from, so the commentary isn't held up: on
+        // from the audio before it, on its connection, up to the live edge and no further (an ad
+        // listed again after a reconnect, or a run of them at once, adds nothing past it; the
+        // stream after it is placed by its arrival, a new connection). Not while a connection
+        // waits to be placed: that would drop it.
+        if (s.ad) {
+          const B = R.buf, f = B?.fmt, sil = f ? D.silentFrame(f) : null;
+          if (sil && B.conn != null && !B.pend) {
+            const edge = L.liveEdge(B, nowS());
+            const n = edge == null ? 0 : Math.floor(((edge - B.end) * f.rate) / 1024);
+            if (n > 0) L.push(B, Array.from({ length: n }, () => ({ t: null, data: sil, rate: f.rate, ch: f.ch, samples: 1024 })), { conn: B.conn, at: nowS(), tl: B.tl });
+          }
+          last = s.seq;
+          R.hls = { tl: tlOf(s), seq: s.seq }; // (a reconnect carries on after it)
+          newAt = Date.now();
+          if (R.state !== 'recording') set('connecting', 'An ad on the stream: its audio after it');
+          continue;
+        }
         let bytes = null;
         for (let tries = 0; !bytes && tries < 2; tries++) {
           try {
@@ -306,8 +335,6 @@
         ctx = out.ctx || ctx;
         if (ctx.codec != null) throw new Error(`the stream's audio isn't AAC (stream type 0x${ctx.codec.toString(16)})`);
         for (const f of out.frames) if (f.t != null) { f.t = D.ptsUnwrap(f.t, ref); ref = f.t; }
-        // an ad stitched in (Twitch) replaces the commentary: record silence instead
-        if (s.ad && R.buf.fmt) { const sil = D.silentFrame(R.buf.fmt); if (sil) for (const f of out.frames) f.data = sil; }
         L.push(R.buf, out.frames, { conn, at: nowS(), tl: tlOf(s) });
         last = s.seq;
         R.hls = { tl: tlOf(s), seq: s.seq };

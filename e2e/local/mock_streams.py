@@ -78,7 +78,7 @@ FLV_HEAD, FLV_HDRS, FLV_TAGS = read_flv(f"{MEDIA}/live.flv")
 HLS_SEGS = {d: set(os.listdir(f"{MEDIA}/{d}")) for d in ("hls", "fmp4")}
 SEG = 2.0
 
-STATE = {"flv": [], "kills": 0, "refused": 0, "hls_playlists": 0, "hls_segments": 0, "offline": False, "refuse": False,
+STATE = {"flv": [], "kills": 0, "refused": 0, "hls_playlists": 0, "hls_segments": 0, "hls_ad": None, "hls_ad_fetched": 0, "offline": False, "refuse": False,
          "ads": [], "ads_lag": 0.0, "fone_timelines": 0, "diag": [], "on6666": False, "fone_end": None, "fone_cuts": []}
 FONE_CH = "测试解说"
 FONE_CH2 = "测试频道"
@@ -178,6 +178,11 @@ class H(BaseHTTPRequestHandler):
         return json_body(self, {"error": f"no mock for fone.test{path}"}, 404)
 
     def ctl(self, what, q):
+        if what == "hls_ad":  # Twitch's stitched ad: the next n segments of /live/ (a discontinuity each side)
+            k = int(pos() // SEG)
+            with LOCK:
+                STATE["hls_ad"] = (k, k + int(q.get("n", 3)))
+            return json_body(self, {"ok": True, "from": k})
         if what == "on6666":
             with LOCK:
                 STATE["on6666"] = True
@@ -286,13 +291,25 @@ class H(BaseHTTPRequestHandler):
                 if d == "fmp4":
                     lines.append('#EXT-X-MAP:URI="init.mp4"')
                 suffix = "m4s" if d == "fmp4" else "ts"
+                ad = STATE["hls_ad"] if d == "live" else None
                 for k in range(first, newest + 1):
+                    if ad and ad[0] <= k < ad[1]:  # (as Twitch marks its stitched ads)
+                        if k == ad[0]:
+                            lines += ["#EXT-X-DISCONTINUITY", f'#EXT-X-DATERANGE:ID="stitched-ad-{k}",CLASS="twitch-stitched-ad",START-DATE="2026-10-26T00:00:00.000Z",DURATION={SEG * (ad[1] - ad[0]):.3f}']
+                        lines += [f"#EXTINF:{SEG:.3f},Amazon|1", f"ad_{k:05d}.ts"]
+                        continue
+                    if ad and k == ad[1]:
+                        lines.append("#EXT-X-DISCONTINUITY")
                     lines += [f"#EXTINF:{SEG:.3f},live", f"seg_{k:05d}.{suffix}"]
                 with LOCK:
                     STATE["hls_playlists"] += 1
                 return self.send_bytes(("\n".join(lines) + "\n").encode(), "application/vnd.apple.mpegurl")
             if path.startswith(f"/{d}/"):
                 name = path.rsplit("/", 1)[-1]
+                if name.startswith("ad_"):  # (an ad: fone shouldn't fetch it)
+                    with LOCK:
+                        STATE["hls_ad_fetched"] += 1
+                    name = "seg_00000.ts"
                 k = int(name[4:9]) if name.startswith("seg_") else -1
                 if name in HLS_SEGS[ext] and (name == "init.mp4" or 0 <= k <= newest):
                     with LOCK:

@@ -16,7 +16,7 @@
   root.innerHTML = `
 <style>
   :host { all: initial; }
-  :host([hidden]) { display: none !important; }
+  :host([hidden]), [hidden] { display: none !important; }
   .box { position: fixed; z-index: 2147483646; display: flex; flex-direction: column; background: #000; border-radius: 10px;
     overflow: hidden; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 8px 28px rgba(0,0,0,.5);
     font: 12px/1 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #eee; }
@@ -32,7 +32,7 @@
 </style>
 <div class="box" id="box">
   <div class="bar" id="bar"><span class="ttl" id="ttl">The streamer</span>
-    <button id="pop" title="In a window of its own">⧉</button><button id="close" title="Close (V)">✕</button></div>
+    <button id="page" hidden title="Their live page, in a new tab">↗</button><button id="pop" title="In a window of its own">⧉</button><button id="close" title="Close (V)">✕</button></div>
   <iframe id="frame" allow="autoplay" title="The streamer's picture"></iframe>
   <div class="grip" id="grip" title="Drag to resize"></div>
 </div>`;
@@ -115,10 +115,16 @@
     chrome.runtime.sendMessage({ target: 'background', type: 'popout-streamer' }).catch(() => {});
   }
 
-  // the channel's name, from the engine's status (it reaches every content script of the tab)
+  // the channel's name and its live page (↗), from the engine's status (it reaches every content
+  // script of the tab)
+  let page = null;
   chrome.runtime.onMessage.addListener((m) => {
-    if (m?.type === 'fone-status' && m.status?.channel) $('ttl').textContent = `${m.status.channel} · the streamer`;
+    if (m?.type !== 'fone-status') return;
+    if (m.status?.channel) $('ttl').textContent = `${m.status.channel} · the streamer`;
+    page = m.status?.page || null;
+    $('page').hidden = !page;
   });
+  $('page').addEventListener('click', () => { if (page) window.open(page, '_blank', 'noopener'); });
 
   window.FoneStreamer = Object.freeze({ toggle: () => show(!on), isOn: () => on, popOut });
   window.addEventListener('keydown', (e) => {

@@ -37,7 +37,7 @@ if [ "${1:-}" = real ]; then # the real platforms (real.py), streams given as th
   shift
   mkdir -p "$WORK/out" && chmod 777 "$WORK/out"
   docker run --rm --cpus 4 --cpu-shares 256 --ipc=host \
-    -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e REAL_TRACE -e REAL_SECS -e REAL_PICTURE \
+    -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e REAL_TRACE -e REAL_SECS -e REAL_PICTURE -e REAL_FULL \
     "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/local/real.py "$@"' real "$@"
   if [ -n "${E2E_OUT:-}" ]; then cp "$WORK/out/"* "$E2E_OUT"/; fi
   exit

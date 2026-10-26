@@ -91,6 +91,16 @@ async def main():
                 f"the CDN got Bilibili's Referer/Origin (the session rule): {len(stats['flv'])} connection, {stats['refused']} refused")
         E.check(st["delaySource"] == "live" and abs(st["delay"] - 28) < 1e-6 and abs(st.get("f1Lat", 0) - 32) < 0.5,
                 f"live default delay {st['delay']} (HTTP-FLV), F1 TV {st.get('f1Lat')} s behind its own clock")
+        # ↗ Live page: the room's own page on Bilibili, in a new tab
+        shown = await page.evaluate(f"() => !{E.PANEL}.getElementById('picPage').hidden")
+        await ctx.route("https://live.bilibili.com/**", lambda r: r.fulfill(body="<title>room</title>", content_type="text/html"))
+        async with ctx.expect_page() as newtab:
+            await page.evaluate(f"() => {E.PANEL}.getElementById('picPage').click()")
+        tab = await newtab.value
+        await tab.wait_for_load_state()
+        E.check(st.get("page") == "https://live.bilibili.com/5555" and shown and tab.url.startswith("https://live.bilibili.com/5555"),
+                f"↗ Live page: {st.get('page')} opened in a new tab ({tab.url})")
+        await tab.close()
         await asyncio.sleep(4)
         st = await E.status(page)
         E.check(st["state"] == "sync" and abs(st["drift"]) < 0.05, f"in sync: drift {st['drift'] * 1000:+.0f} ms ({st['text']})")
@@ -368,8 +378,25 @@ async def main():
                     and abs((edge - st["m"]) - (st["f1Lat"] - st["delay"])) < 0.3 and abs(st["delay"] - 25) < 1e-6,
                     f"HLS, {what}: in sync (drift {st['drift'] * 1000:+.0f} ms, {edge - st['m']:.2f}s behind its edge), "
                     f"{st['rec']['kept']}s kept, {st['rec']['fmt']}")
+            if "/live/" in url:
+                # an ad stitched in (Twitch's): its segments not fetched, silence for as long, the
+                # commentary going on through it (F1 TV not held), the stream after it in step
+                a0, ad = st["audioTime"], mock("/_ctl/hls_ad?n=3")
+                held = False
+                for _ in range(28):
+                    await asyncio.sleep(0.5)
+                    held |= bool((await E.status(page)).get("holding"))
+                st = await E.wait_status(page, lambda s: s.get("state") == "sync", 15, "in sync after the ad")
+                stats = mock("/_ctl/stats")
+                placed = (st["rec"]["edge"] - st["m"]) - (st["f1Lat"] - st["delay"])
+                E.check(stats["hls_ad_fetched"] == 0 and not held and st["audioTime"] - a0 > 12 and abs(st["drift"]) < 0.08 and abs(placed) < 0.3,
+                        f"HLS, a stitched ad (3 segments): not fetched ({stats['hls_ad_fetched']}), F1 TV not held ({held}), "
+                        f"the commentary on {st['audioTime'] - a0:.1f}s, then in step (drift {st['drift'] * 1000:+.0f} ms, "
+                        f"the stream after it {placed:+.2f}s from where it belongs)")
         stats = mock("/_ctl/stats")
         E.check(stats["hls_segments"] >= 12, f"{stats['hls_segments']} segments fetched over {stats['hls_playlists']} playlist loads")
+        hidden = await page.evaluate(f"() => {E.PANEL}.getElementById('picPage').hidden")
+        E.check(st.get("page") is None and hidden, "a stream URL given straight: no live page, no ↗")
         # F1 TV nearer live than where it usually starts (31 s behind its clock: the commentary 6 s
         # behind its HLS edge, nearer than Go live's 7): Go live leaves it there, not a step back
         # (the commentary isn't held, nor near it).

@@ -286,7 +286,7 @@
       <div class="row" id="speedRow" hidden><span class="lbl">Speed</span><button data-s="1">1×</button><button data-s="1.5">1.5×</button><button data-s="2">2×</button><span class="hint" id="speedInfo">keys <b>&lt; &gt;</b></span></div>
       <div class="row" id="statsRow"><button id="stats" title="Timing, track map and conditions beside the video (key S)">📊 Stats</button><button id="statsPop" title="Open the stats in a window of their own">⧉</button>
         <button id="dm" title="The live room's 弹幕 over the picture, in step with the commentary (key D)">弹 弹幕</button><button id="dmSet" title="弹幕设置">⚙</button><span class="hint" id="dmInfo"></span></div>
-      <div class="row" id="picRow"><button id="pic" title="The streamer's picture, in step with the commentary: a window over F1 TV you can move and size (key V)">📺 Streamer</button><button id="picPop" title="The streamer's picture in a window of its own">⧉</button></div>
+      <div class="row" id="picRow"><button id="pic" title="The streamer's picture, in step with the commentary: a window over F1 TV you can move and size (key V)">📺 Streamer</button><button id="picPop" title="The streamer's picture in a window of its own">⧉</button><button id="picPage" hidden title="The streamer's live page on their platform, in a new tab">↗ Live page</button></div>
       <div class="row" id="fxRow" hidden><span class="lbl">F1 TV</span><button data-fa="mute" title="F1 TV's own sound off: the commentary carries the streamer's F1 TV sound (no track switch, no echo)">muted</button><button data-fa="fx" title="F1 TV switched to its commentary-free track (a track switch, which F1 TV's player sometimes crashes on)">track sound</button><button data-fa="eng" title="F1 TV's international English commentary (English Int.), not F1 TV's own (English F1 Live)">English Int.</button><button data-fa="off" title="F1 TV's sound left as it is">as is</button><span class="hint" id="faInfo"></span></div>
       <div class="row" id="ffRow" hidden><span class="lbl">Picture</span><button data-ff="intl" title="Live: F1 TV switched to INTERNATIONAL, the world feed the streamer watches (its graphics, its replays), once per video">International</button><button data-ff="off" title="F1 TV's channel left as it is">as is</button><span class="hint" id="ffInfo"></span></div>
       <label class="row hint" id="antRow" hidden><input type="checkbox" id="anticipate"> Anticipate reactions: commentary 0.9 s early</label>
@@ -355,6 +355,7 @@
     $('fxRow').hidden = !FonePlayer.isTiledmedia();
     $('stats').classList.toggle('on', !!window.FoneLayout?.isOn());
     $('pic').classList.toggle('on', !!window.FoneStreamer?.isOn());
+    $('picPage').hidden = !s.page;
     // the stats need a fone server (its timing service), the 弹幕 its capture of the room
     $('statsRow').hidden = serverless();
     $('dm').hidden = $('dmSet').hidden = $('dmInfo').hidden = local;
@@ -498,6 +499,7 @@
   // streamerbox.js (same content-script world) owns the streamer window
   $('pic').addEventListener('click', () => { window.FoneStreamer?.toggle(); render(); });
   $('picPop').addEventListener('click', () => window.FoneStreamer?.popOut());
+  $('picPage').addEventListener('click', () => { if (status?.page) window.open(status.page, '_blank', 'noopener'); });
   // danmaku.js (same content-script world) owns the danmaku and their settings panel
   $('dm').addEventListener('click', () => { window.FoneDanmaku?.toggle(); render(); });
   $('dmSet').addEventListener('click', () => window.FoneDanmaku?.openSettings());

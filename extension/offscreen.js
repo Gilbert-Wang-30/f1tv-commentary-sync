@@ -84,7 +84,7 @@ function detach() {
   Object.assign(S, { liveLock: null, minBehind: undefined, minLagW: undefined, synced: false, dashDelay: null, dashDelayAt: 0, dashAt: 0, lbuf: null, contentBusy: false,
     key: null, content: null, clock: null, clockFinal: false, delay: null, timeline: null, playlist: null,
     error: null, lastTarget: null, manualBase: null, steer: C.newSteer(), resync: true, nominal: null,
-    direct: null, directErrAt: null, directBack: false, directOff: false, offArmed: false, offAt: null, recheckAt: 0, serverSync: null, serverTl: null, adSeenAt: null, carry: null, serverMutes: null, mutesAt: 0, mutesBusy: false,
+    direct: null, room: null, directErrAt: null, directBack: false, directOff: false, offArmed: false, offAt: null, recheckAt: 0, serverSync: null, serverTl: null, adSeenAt: null, carry: null, serverMutes: null, mutesAt: 0, mutesBusy: false,
     edgeStepAt: null, edgeMissAt: null, edgeSeenAt: null, flBest: undefined, upAges: [], upU: null, screen: null, clockAt: null });
 }
 
@@ -104,7 +104,8 @@ async function attach(msg, key) {
     if (!S.channel) S.channel = S.channels[0]?.name ?? null;
     if (!S.channel) throw new Error('No recordings found on the server yet');
     S.bufferMin = msg.settings.bufferMin;
-    S.direct = msg.settings.liveDirect === false ? null : await directStream(S.channel);
+    S.room = await directStream(S.channel); // (its live page, ↗; and live straight from it)
+    S.direct = msg.settings.liveDirect === false ? null : S.room;
     if (gen !== S.gen) return;
     await loadContent(gen);
     if (gen !== S.gen) return;
@@ -980,6 +981,11 @@ function goLive(held = false, chase = false, pMax = null) {
   const w = L ? lockWall(L, vn) : K.w + (vn.p - K.p); // the moment playing, by wall time (across a server's files too)
   const edge = S.local && localIdle(FoneRecorder.status(), t) ? null : commentaryEdge(t);
   const ew = edge != null ? wallAt(edge) : null;
+  // (the stream recorded here: its aim is behind its live edge, as its lock's is, not behind what
+  // can be played yet, which trails it by a segment on HLS: 2-6 s)
+  const B = S.local && edge != null ? FoneRecorder.buffer(S.stream) : null;
+  const le = B ? FoneLocal.liveEdge(B, t) : null;
+  const ewAim = le != null ? wallAt(le) : ew;
   // F1 TV: how far it is behind its most recent (by its clock, else by its reported edge and its
   // own best this session), and how far a seek can take it now
   const c = f1Clock(vn), fl = c != null ? trueNow(t) - c : null, up = c != null ? upFreshest(t) : null;
@@ -988,7 +994,7 @@ function goLive(held = false, chase = false, pMax = null) {
     : reach != null ? Math.max(reach - GOLIVE.F1 - (EDGE_STEP - edgePhase(t)), rewoundBy(t, vn), 0) : null;
   // The commentary: as near its edge as liveAllow; a server's recording, as near the time now as
   // its lock goes (its edge is only as fresh as its last keyframe group: 0-8 s stale)
-  let dC = w == null || ew == null ? null : !S.local && L ? trueNow(t) - C.SERVER_LIVE_LAG - w : ew - liveAllow() - w;
+  let dC = w == null || ew == null ? null : !S.local && L ? trueNow(t) - C.SERVER_LIVE_LAG - w : ewAim - liveAllow() - w;
   // rewound into the server's recording from the stream: the way back is to the stream's edge
   // (its wall time is now), at the stream's own allowance
   const rs = !S.local && S.directBack ? FoneRecorder.status() : null;
@@ -1186,6 +1192,7 @@ function tick() {
     onAir: rec ? (rec.state === 'offline' ? false : rec.state === 'recording' && !localIdle(rec, t) ? true : null)
       : S.timeline ? serverLive() : null,
     playing: !v.paused && t - v.receivedAt <= 4, // the picture is moving (self-update waits)
+    page: FoneStreams.pageOf(S.local ? S.stream : S.room) ?? null, // the streamer's live page (↗)
     diag: { q: diagQ.length, sent: DG.sent, err: DG.err },
     livepos: livePosBrief(),
   };

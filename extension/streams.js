@@ -63,6 +63,23 @@
     return { platform: 'url', id: u.href, url: u.href, key: `url:${u.origin}${u.pathname}`, label: u.hostname };
   }
 
+  // The stream's own page on its platform, where people watch it (fone's ↗), or null: a stream URL
+  // given straight has none.
+  function pageOf(input) {
+    const s = typeof input === 'string' ? parse(input) : input;
+    if (!s || s.error) return null;
+    switch (s.platform) {
+      case 'bilibili': return `https://live.bilibili.com/${s.id}`;
+      case 'twitch': return `https://www.twitch.tv/${s.id}`;
+      case 'youtube': return /^[\w-]{11}$/.test(s.id) ? `https://www.youtube.com/watch?v=${s.id}`
+        : s.id.startsWith('@') ? `https://www.youtube.com/${s.id}/live`
+          : s.id.startsWith('UC') ? `https://www.youtube.com/channel/${s.id}/live` : `https://www.youtube.com/${s.id}/live`;
+      case 'douyin': return `https://live.douyin.com/${s.id}`;
+      case 'huya': return `https://www.huya.com/${s.id}`;
+      default: return null;
+    }
+  }
+
   // ---- asking the platform ---------------------------------------------------------------
   // Each answers {live, kind: 'flv' | 'hls' | 'auto', url, alt?, name?, title?, reason?}; alt:
   // other URLs for the same stream, tried in turn when one fails.
@@ -120,17 +137,23 @@
   const TWITCH_TOKEN = 'query PlaybackAccessToken($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!, $platform: String!) {'
     + ' streamPlaybackAccessToken(channelName: $login, params: {platform: $platform, playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) { value signature authorization { isForbidden forbiddenReasonCode } __typename }'
     + ' videoPlaybackAccessToken(id: $vodID, params: {platform: $platform, playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) { value signature __typename } }';
+  // (asked as Twitch's embedded player: as the site's player, logged out, every connection began
+  // with a 30 s pre-roll ad stitched into the stream, 2026-10-26; embedded, none. A channel that
+  // won't play embedded: as the site's.)
   async function twitch(spec) {
     const gql = (body) => json('https://gql.twitch.tv/gql', { method: 'POST', headers: { 'Client-ID': TWITCH_CLIENT }, body: JSON.stringify(body) });
-    const [tok, who] = await Promise.all([
-      gql({ operationName: 'PlaybackAccessToken', query: TWITCH_TOKEN,
-        variables: { isLive: true, login: spec.id, isVod: false, vodID: '', playerType: 'site', platform: 'web' } }),
+    const token = (playerType) => gql({ operationName: 'PlaybackAccessToken', query: TWITCH_TOKEN,
+      variables: { isLive: true, login: spec.id, isVod: false, vodID: '', playerType, platform: 'web' } });
+    const [embed, who] = await Promise.all([
+      token('embed').catch(() => null),
       gql({ query: `query { user(login: ${JSON.stringify(spec.id)}) { displayName stream { id type title } } }` }).catch(() => null),
     ]);
     const user = who?.data?.user;
     const name = user?.displayName || null, title = user?.stream?.title || null;
     if (who && !user) throw new Error(`Twitch: no channel ${spec.id}`);
     if (who && !user.stream) return { live: false, name, title, reason: 'Not live right now' };
+    const e = embed?.data?.streamPlaybackAccessToken;
+    const tok = e && !e.authorization?.isForbidden ? embed : await token('site');
     const t = tok?.data?.streamPlaybackAccessToken;
     if (!t) throw new Error(`Twitch: no access token for ${spec.id}`);
     if (t.authorization?.isForbidden) throw new Error(`Twitch: ${t.authorization.forbiddenReasonCode || 'not allowed'}`);
@@ -170,7 +193,12 @@
     const hls = r.streamingData?.hlsManifestUrl;
     if (!hls) {
       if (d.isLive === false || !d.isLiveContent) return { live: false, name, title, reason: 'Not live right now' };
-      throw new Error(`YouTube: ${r.playabilityStatus?.reason || r.playabilityStatus?.status || 'no live stream to record'}`);
+      const why = r.playabilityStatus?.reason || r.playabilityStatus?.status || 'no live stream to record';
+      // (a video's stream that has ended: the channel's own URL follows whatever it streams next)
+      if (/^[\w-]{11}$/.test(id) && /not available|ended|recording/i.test(why)) {
+        return { live: false, name, title, reason: `${why} (that video's stream is over: its channel's URL, youtube.com/@name, follows what it streams next)` };
+      }
+      throw new Error(`YouTube: ${why}`);
     }
     return { live: true, kind: 'hls', url: hls, name, title };
   }
@@ -214,9 +242,11 @@
     if (room.status !== 2) return { live: false, name, title, reason: 'Not live right now' };
     let qs = {};
     try { qs = JSON.parse(room.stream_url.live_core_sdk_data.pull_data.stream_data).data || {}; } catch { /* the older map below */ }
-    const order = ['ao', 'ld', 'sd', 'md', 'hd', 'origin', 'uhd'];
+    // (the picture wanted, the streamer window: the smallest with it, spec.video)
+    const order = [...(spec.video ? [] : ['ao']), 'ld', 'sd', 'md', 'hd', 'origin', 'uhd'];
     const flvs = order.map((k) => qs[k]?.main?.flv).filter(Boolean);
     for (const k of ['SD2', 'SD1', 'HD1', 'FULL_HD1']) if (room.stream_url?.flv_pull_url?.[k]) flvs.push(room.stream_url.flv_pull_url[k]);
+    if (spec.video && qs.ao?.main?.flv) flvs.push(qs.ao.main.flv); // (no picture to be had: the audio still)
     if (!flvs.length) throw new Error('Douyin: the room gave no stream URL');
     const https = flvs.map((u) => u.replace(/^http:/, 'https:'));
     return { live: true, kind: 'flv', url: https[0], alt: https.slice(1).map((url) => ({ kind: 'flv', url })), name, title };
@@ -293,5 +323,5 @@
     return RESOLVERS[spec.platform](spec);
   }
 
-  root.FoneStreams = { parse, resolve, PLATFORMS, HEADERS, _playerResponse: playerResponse, _md5: md5 };
+  root.FoneStreams = { parse, pageOf, resolve, PLATFORMS, HEADERS, _playerResponse: playerResponse, _md5: md5 };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

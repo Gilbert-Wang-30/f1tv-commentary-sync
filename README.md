@@ -103,12 +103,16 @@ extension and the install paths all go by that name.
 - A window over F1 TV with the streamer's own picture (their facecam, their screen), in step with
   the commentary you hear: move it by its bar, size it by its corner, it stays where you left it;
   ⧉ puts it in a window of its own (a second screen, say). Muted: the sound is fone's commentary.
-- Live from the stream pulled into the browser (HTTP-FLV with its video: Bilibili, Huya), the
-  picture is that same stream's video, put on the commentary's own timeline: lip-sync to the frame, rewinds
-  included (the last 3 minutes since the window opened). From a server's recording (replays, or
-  rewound into it), the recording's own picture (its video handoff), at the commentary's position
-  in it. Twitch, YouTube and Douyin give fone only their audio: no picture from them. Bilibili's HEVC
-  stream where the browser decodes HEVC (Chrome does with most graphics hardware), else its H.264.
+- Live from the stream pulled into the browser (HTTP-FLV with its video: Bilibili, Huya, and
+  Douyin, which switches from its audio-only stream to its smallest with the picture when the
+  window opens), the picture is that same stream's video, put on the commentary's own timeline:
+  lip-sync to the frame, rewinds included (the last 3 minutes since the window opened). From a
+  server's recording (replays, or rewound into it), the recording's own picture (its video
+  handoff), at the commentary's position in it. Twitch and YouTube give fone only their audio: no
+  picture from them yet. Bilibili's HEVC stream where the browser decodes HEVC (Chrome does with
+  most graphics hardware), else its H.264.
+- **↗ Live page** (beside 📺, and ↗ on the window's bar): the streamer's own live page on their
+  platform (their Bilibili room, Twitch channel, YouTube live, Douyin or Huya room) in a new tab.
 
 **Stats beside the video** (📊 Stats or the S key; needs a server)
 - F1 TV shrinks to the top-left 77% of the tab. The timing tower (gaps, intervals, last and best
@@ -293,6 +297,7 @@ Open any F1 TV video. The fone panel sits top-right:
 | **1× 1.5× 2×** | replay speed (live stays 1×) |
 | **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own |
 | **📺 Streamer** and **⧉** | the streamer's picture in step with the commentary: a window over F1 TV (move it by its bar, size it by its corner), or in a window of its own |
+| **↗ Live page** | the streamer's live page on their platform, in a new tab |
 | **弹 弹幕** and **⚙** | danmaku on/off and their settings |
 | **F1 TV: muted / track sound / English Int. / as is** | what to do with F1 TV's own sound. *Muted* (default): F1 TV silent, the commentary carries the streamer's F1 TV sound, so no echo and no track switching. *Track sound*: F1 TV switched to its commentary-free Track FX track on every video (a track switch, which F1 TV's player sometimes crashes on). *English Int.*: its international English commentary (the world feed's), not F1 TV's own *English F1 Live*. *As is*: left alone. |
 | **Picture: International / as is** | live, F1 TV switched to its INTERNATIONAL channel (the world feed the streamer watches: its graphics, its replays) instead of F1 LIVE, once per video, by F1 TV's own channel switcher (default *International*; go back to F1 LIVE and it's left there). Replays are left as they are |
@@ -362,9 +367,9 @@ except Douyin's anonymous `ttwid`):
 | | what fone asks | what it records |
 |---|---|---|
 | Bilibili | the room's player API | the anonymous 超清 stream (the lowest offered logged out, 0.5–1.3 Mbit/s with its video) as HTTP-FLV (it arrives as it's made, ~1 s before the same moment in the fMP4 HLS), else fMP4 HLS (its own timeline: reconnects land to the sample); only its AAC 48 kHz audio is kept |
-| Twitch | the web player's access token, then its HLS | the audio-only rendition (the channel's own AAC); stitched ads become silence. A logged-out viewer can get a pre-roll ad: it comes as full video even on the audio-only rendition, and is recorded as silence |
+| Twitch | the embedded player's access token (the site player's gave every logged-out connection a 30 s pre-roll ad, 2026-10-26; the embedded one's none), then its HLS | the audio-only rendition (the channel's own AAC). A stitched ad isn't fetched (its segments are the full picture, ~6 Mbit/s, whatever rendition was asked for): silence for as long |
 | YouTube | the watch page, then the player API as YouTube's visionOS app (no JavaScript, no PO token) | its own audio rendition, AAC-LC 128 kbps |
-| Douyin | the web room API, with Douyin's anonymous `ttwid` cookie and no other: the one in your browser, or a fresh one from live.douyin.com if there is none | the audio-only FLV |
+| Douyin | the web room API, with Douyin's anonymous `ttwid` cookie and no other: the one in your browser, or a fresh one from live.douyin.com if there is none | the audio-only FLV; with the streamer window open, its smallest FLV with the picture |
 | Huya | the mobile room API, the stream URL signed as Huya's web player signs it | the lowest-bitrate FLV (only its audio is kept) |
 | any other site | nothing: the URL is the stream | HTTP-FLV, HLS (TS, fMP4, packed AAC) or an AAC stream, with AAC audio. `streamlink --stream-url <page> worst` (`audio_only` where the site has it) or `yt-dlp -g <page>` prints one. Such URLs are usually signed and expire within hours: get a fresh one for each session |
 
@@ -440,6 +445,10 @@ docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https
 # end to end, headless Chrome with the real extension
 ./e2e/run.sh                  # real server + mock F1 TV player: replay, Tiledmedia, 2x, live, danmaku, onboards
 ./e2e/local/run.sh            # no server: the stream recorded in the browser (mock Bilibili, HLS) with a live F1 TV
+./tools/platform_check.sh     # any day, no F1 session needed: a stream live right now on each platform (Bilibili,
+                              # Twitch, YouTube, Douyin, Huya, plain HLS) against the mock live F1 TV: in step,
+                              # where the commentary sits, Go live after a pause, 20 s back and Go live again,
+                              # its live page, the streamer window's picture
 ./e2e/livepos/run.sh          # the live car-position relay (livepos.js + f1token.js) against a mock F1 feed
 DASH=real ./e2e/layout_run.sh # the split view on a mock F1 TV page
 ./e2e/dash_shots.sh           # the dashboard in 20+ window sizes and race states, as screenshots
@@ -457,7 +466,10 @@ as `E2E_CONTENT_SEED=<file.json> E2E_NO_TIMING=1 ./e2e/run.sh`. The seed is a JS
 content cache: `1000011024` (the replay, for its `p0`) and `1000011022` (the race, which
 `run.sh` seeds as LIVE; its `anchor` must be `multiviewer`). `E2E_NO_TIMING=1` skips the one
 check that needs the archive's timing data (the dashboard's tower). `e2e/local/run.sh` talks to
-no real platform: its platforms are mocks under the real host names. CI
+no real platform: its platforms are mocks under the real host names. `tools/platform_check.sh`
+does talk to them (logged out, public streams): what only the real ones show (their APIs as
+they are today, their CDNs' rules, Twitch's stitched ads, Douyin's cookie); `e2e/local/run.sh
+real <live URLs>` runs the same on streams you name. CI
 (`.github/workflows/ci.yml`) runs the unit and server tests on every push.
 
 - **Ship the extension:** bump `extension/manifest.json`'s version, then run
