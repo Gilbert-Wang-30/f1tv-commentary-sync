@@ -27,6 +27,8 @@
     clockBad: false,
     lastCheck: 0,
     utcOrigin: null, // live: UTC seconds of content position 0 (cached; survives fallbacks)
+    utcKey: null, utcAt: null, // (the handle and player it was learned on, and the last sample's time)
+    utcProvedAt: 0, // the last sample that proved it (its bounds agreeing): handed on only while recent
     liveSeen: false, // this view has reported 'live' or 'finished-live'
     feed: null,
     last: null,
@@ -35,6 +37,7 @@
     rate: null, // the chosen speed for this video, last we knew (rate())
   };
   const now = () => Date.now();
+  const UTC_PROOF = 2500; // ms: F1 TV's clock handed on while a sample this recent proved it (they come every 100-250 ms; a hidden tab's every second)
   const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const LIVEISH = new Set(['live', 'finished-live']);
 
@@ -118,6 +121,15 @@
     const c = d.c, w = d.w;
     if (!c) return;
     if (d.ch !== S.feed) { S.feed = d.ch; S.utcOrigin = null; } // feeds have their own timelines
+    // So may another MSE handle (a rebuilt pipeline), another player, a gap in the reports (F1 TV
+    // rebuilds its player while they stop) or bounds the player hasn't got: the clock is learned
+    // again then, from a sample that proves it (a cached one would put a re-based position on
+    // the old timeline's clock, and the engine would follow the picture minutes off).
+    const key = `${d.h ?? ''}|${d.sdk?.pid ?? ''}`;
+    // (a hidden tab's samples come about a second apart: a rebuild's gap is longer)
+    if (key !== S.utcKey || (S.utcAt != null && d.at - S.utcAt > UTC_PROOF) || c.eventType === 'unknown' || !Number.isFinite(c.seekUpperBound)) S.utcOrigin = null;
+    S.utcKey = key;
+    S.utcAt = d.at;
     if (LIVEISH.has(c.eventType)) S.liveSeen = true;
     // The wall-clock report's own eventType isn't reliable; consistency of the three
     // bound differences is what proves the mapping.
@@ -126,7 +138,8 @@
       const o2 = w.seekLowerBound - c.seekLowerBound;
       const o3 = w.bufferUpperBound - c.bufferUpperBound;
       if (o1 > 1e12 && Math.abs(o1 - o2) < 20 && Math.abs(o1 - o3) < 20) {
-        if (S.utcOrigin == null || Math.abs(o1 / 1000 - S.utcOrigin) > 1) S.utcOrigin = o1 / 1000;
+        if (S.utcOrigin == null || Math.abs(o1 / 1000 - S.utcOrigin) > 0.05) S.utcOrigin = o1 / 1000;
+        S.utcProvedAt = d.at;
       }
     }
   }
@@ -189,12 +202,14 @@
     S.clockBad = S.bad >= 3;
   }
 
-  // Content position -> what we hand the engine: UTC when live (and the origin is
-  // known), content seconds otherwise. Never mix the two domains.
-  // Live stays on the content timeline with its live edge (the engine works edge-relative);
-  // the wall-clock origin is only shown in Details — it reads ~40 s late on live streams.
+  // Content position -> what we hand the engine: content seconds, with the live edge, and live
+  // the player's own clock for them (utc0: its wall-clock time at content position 0, so utc0 + p
+  // is the time F1 TV's packager put on the picture playing). Its picture plays some 31-34 s
+  // behind that clock where the player starts it (measured 2026-10-25, a different place each
+  // load), plus any pause or rewind: the engine's measure of how live F1 TV is.
   function finish(contentPos, live, seekEnd, src) {
-    return { p: contentPos, live, seekEnd, src, contentPos };
+    const proven = S.utcOrigin != null && now() - S.utcProvedAt <= UTC_PROOF;
+    return { p: contentPos, live, seekEnd, src, contentPos, utc0: live && proven ? S.utcOrigin : null };
   }
 
   // Returns {p, live, seekEnd, src, contentPos} or null when we can't tell yet.
@@ -264,7 +279,7 @@
     const d = S.tm;
     if (!d || now() - S.tmAt > 3000) return null;
     return { eventType: d.c ? d.c.eventType : null, r: d.r || null, audio: S.audio, tracks: S.tracks,
-      ob: d.ob || null, obErr: d.obErr || null, h: d.h ?? null, nViews: d.nViews ?? null, sdk: d.sdk || null };
+      ob: d.ob || null, obErr: d.obErr || null, h: d.h ?? null, nViews: d.nViews ?? null, sdk: d.sdk || null, feed: d.feed || null };
   }
 
   function diag() {

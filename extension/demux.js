@@ -86,11 +86,14 @@
   // Incremental: push() each network chunk as it arrives and get the audio frames it
   // completed, [{t: the tag's timestamp (s), data: one ADTS frame, rate, ch, samples}].
   // Throws on a stream that isn't FLV, or isn't AAC (codec: FLV's SoundFormat number).
-  function flvReader() {
+  // Video tags too with `video`: R.vtags gets {t, cts, key, seq, codec, data} per tag (a copy;
+  // seq: data is the decoder configuration record), legacy FLV (AVC 7, the Chinese CDNs' HEVC 12)
+  // and Enhanced RTMP (FourCC avc1/hvc1/av01).
+  function flvReader({ video = false } = {}) {
     let buf = new Uint8Array(0);
     let started = false;
     let fmt = null;
-    const R = { codec: null, fmt: null, video: false };
+    const R = { codec: null, fmt: null, video: false, vtags: [] };
     R.push = (chunk) => {
       buf = buf.length ? concat(buf, chunk) : chunk;
       const frames = [];
@@ -107,7 +110,13 @@
         const size = (buf[i + 1] << 16) | (buf[i + 2] << 8) | buf[i + 3];
         if (type !== 8 && type !== 9 && type !== 18) throw new Error(`FLV stream out of step (tag type ${type})`);
         if (i + 15 + size > buf.length) break;
-        if (type === 9) R.video = true;
+        if (type === 9) {
+          R.video = true;
+          if (video && size >= 5) {
+            const tag = videoTag(buf.subarray(i + 11, i + 11 + size), ((buf[i + 7] << 24) | (buf[i + 4] << 16) | (buf[i + 5] << 8) | buf[i + 6]) >>> 0);
+            if (tag) R.vtags.push(tag);
+          }
+        }
         if (type === 8 && size >= 2) {
           const d = i + 11;
           const ts = ((buf[i + 7] << 24) | (buf[i + 4] << 16) | (buf[i + 5] << 8) | buf[i + 6]) >>> 0;
@@ -128,6 +137,28 @@
       return frames;
     };
     return R;
+  }
+
+  const FOURCC = { avc1: 'avc', hvc1: 'hevc', av01: 'av1' };
+  const si24 = (b, i) => { const v = (b[i] << 16) | (b[i + 1] << 8) | b[i + 2]; return v & 0x800000 ? v - 0x1000000 : v; };
+  function videoTag(b, ts) {
+    let codec, pt, cts = 0, at;
+    const key = (b[0] >> 4 & 7) === 1;
+    if (b[0] & 0x80) { // Enhanced RTMP: [frame type, packet type] FourCC [cts]
+      pt = b[0] & 0x0f;
+      codec = FOURCC[String.fromCharCode(b[1], b[2], b[3], b[4])];
+      if (!codec || pt > 3 || pt === 2) return null;
+      if (pt === 1 && codec !== 'av1') { cts = si24(b, 5); at = 8; } else at = 5;
+      pt = pt === 0 ? 0 : 1;
+    } else { // legacy: [frame type, codec] [packet type] [cts]
+      codec = { 7: 'avc', 12: 'hevc' }[b[0] & 0x0f];
+      if (!codec || b.length < 5) return null;
+      pt = b[1];
+      if (pt > 1) return null;
+      cts = si24(b, 2);
+      at = 5;
+    }
+    return { t: ts / 1000, cts: cts / 1000, key, seq: pt === 0, codec, data: b.slice(at) };
   }
 
   // ---- bare ADTS (an Icecast-style .aac stream) ----------------------------------------------

@@ -15,7 +15,7 @@
   const KEEP_MIN = 1, KEEP_MAX = 180; // minutes of buffer allowed
 
   const R = {
-    url: null, spec: null, buf: null, run: 0, conn: 0, state: 'idle', text: '', err: null,
+    url: null, spec: null, buf: null, gen: 0, run: 0, conn: 0, state: 'idle', text: '', err: null,
     info: null, // what the resolver said: {platform, name, title, kind}
     wantUntil: 0, abort: null, since: 0, bytes: [],
     fails: 0, // connections in a row that died young (the backoff)
@@ -64,6 +64,7 @@
     if (!res.ok) throw new Error(`stream → HTTP ${res.status}`);
     const reader = res.body.getReader();
     const conn = ++R.conn;
+    Object.assign(R, { vcodec: null, vseen: false, audioSince: null }); // (this connection's picture, for the window)
     let parser = null, kind = null, tl = undefined;
     try {
       for (;;) {
@@ -74,24 +75,103 @@
         if (!parser) {
           kind = src.kind === 'auto' ? D.sniff(value) : src.kind;
           if (kind === 'hls') { // a direct URL that turned out to be a playlist
+            if (R.info) R.info.kind = 'hls';
             ctrl.abort();
             return pullHls({ ...src, kind: 'hls' }, run, tlBase);
           }
           if (kind !== 'flv' && kind !== 'ts' && kind !== 'adts' && kind !== 'aac') throw new Error("this URL isn't an FLV, HLS, MPEG-TS or AAC stream");
-          parser = kind === 'flv' ? D.flvReader() : kind === 'ts' ? D.tsReader() : D.adtsReader();
+          if (R.info) R.info.kind = kind; // (a stream URL as is: what it turned out to be)
+          parser = kind === 'flv' ? D.flvReader({ video: true }) : kind === 'ts' ? D.tsReader() : D.adtsReader();
         }
         const frames = parser.push(value);
-        if (!frames.length) continue;
-        if (kind === 'ts') for (const f of frames) if (f.t != null) { f.t = D.ptsUnwrap(f.t, R.ref ?? f.t); R.ref = f.t; }
-        // The stream's own timeline when its timestamps don't start at 0 with the connection
-        // (Douyin's and Huya's FLV run on from the stream's start; Bilibili's start again at 0).
-        if (tl === undefined) tl = frames[0].t != null && frames[0].t >= 2 ? `${tlBase}|${kind}` : null;
-        L.push(R.buf, frames, { conn, at: nowS(), tl });
-        if (R.state !== 'recording') set('recording', '');
+        if (frames.length) {
+          if (kind === 'ts') for (const f of frames) if (f.t != null) { f.t = D.ptsUnwrap(f.t, R.ref ?? f.t); R.ref = f.t; }
+          // The stream's own timeline when its timestamps don't start at 0 with the connection
+          // (Douyin's and Huya's FLV run on from the stream's start; Bilibili's start again at 0).
+          if (tl === undefined) tl = frames[0].t != null && frames[0].t >= 2 ? `${tlBase}|${kind}` : null;
+          L.push(R.buf, frames, { conn, at: nowS(), tl });
+          R.audioSince ??= Date.now();
+          if (R.state !== 'recording') set('recording', '');
+        }
+        if (parser.vtags?.length) picture(parser.vtags.splice(0), conn);
       }
     } finally {
       ctrl.abort();
+      R.vcodec = null; // (this connection's: preferAvc doesn't act on a gone one)
     }
+  }
+
+  // ---- the picture ---------------------------------------------------------------------------
+  // An FLV stream's video, for the streamer window (streamer.js), on the audio's m axis: the same
+  // connection's timestamps (localcore.tOffset; a reconnect's once its audio is placed). Sent on
+  // BroadcastChannel 'fone-video' while a window has asked in the last V.WANT s, with the decoder
+  // configuration and the last V.BACK s kept here, so a window just opened has a keyframe to
+  // start from. Every message names the recording (url, gen: a fresh buffer is a new recording,
+  // its m from 0 again) and the chunks are numbered (seq), so a window can tell what it missed.
+  // Only the picture: the window shows it muted, the commentary is the engine's.
+  const V = { BACK: 20, WANT: 10, ch: null, url: null, gen: null, cfg: null, back: [], pend: [], conn: null, seq: 0, wantUntil: 0 };
+  const vpost = (msg) => {
+    try { (V.ch ??= new BroadcastChannel('fone-video')).postMessage(msg); } catch { /* no channel: no window */ }
+  };
+  const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  function picture(tags, conn) {
+    R.vseen = true;
+    if (V.url !== R.url || V.gen !== R.gen) Object.assign(V, { url: R.url, gen: R.gen, cfg: null, back: [], pend: [], conn: null });
+    if (conn !== V.conn) Object.assign(V, { conn, pend: [] });
+    V.pend.push(...tags);
+    const off = L.tOffset(R.buf, conn);
+    if (off == null) { // (its audio not placed yet: a reconnect settling)
+      if (V.pend.length > 1500) V.pend.splice(0, V.pend.length - 1500);
+      return;
+    }
+    const out = [], wanted = Date.now() < V.wantUntil;
+    for (const g of V.pend.splice(0)) {
+      if (g.seq) {
+        R.vcodec = g.codec;
+        if (!V.cfg || V.cfg.codec !== g.codec || !sameBytes(V.cfg.desc, g.data)) {
+          // another configuration (the H.264 instead, the encoder restarted): what's kept is the old one's
+          V.cfg = { type: 'cfg', url: R.url, gen: R.gen, codec: g.codec, desc: g.data, avc: R.spec?.platform === 'bilibili' };
+          V.back = [];
+          if (wanted) vpost(V.cfg);
+        }
+        continue;
+      }
+      if (!V.cfg) continue;
+      const c = { m: g.t + g.cts + off, key: g.key, data: g.data, seq: ++V.seq };
+      V.back.push(c);
+      out.push(c);
+    }
+    const last = V.back[V.back.length - 1];
+    while (V.back.length && last.m - V.back[0].m > V.BACK) V.back.shift();
+    while (V.back.length && !V.back[0].key) V.back.shift();
+    if (wanted && out.length) vpost({ type: 'chunks', url: R.url, gen: R.gen, list: out });
+  }
+  // A window that can't decode the stream's HEVC: its H.264 instead, where the platform has both
+  // (Bilibili: the same audio, about twice the video bytes), from a new connection now (not a
+  // failure: no backoff, no next URL).
+  function preferAvc() {
+    if (!R.spec || R.spec.platform !== 'bilibili') return;
+    R.spec.avc = true;
+    if (R.vcodec === 'hevc' && !R.switching) {
+      R.switching = true;
+      R.alt = 0;
+      try { R.abort?.abort(); } catch { /* gone already */ }
+    }
+  }
+  // A window asks (every 2 s while open): `fresh`, it has nothing yet (the configuration and
+  // what's kept come first); `since`, it missed what came after that chunk. A stream with no
+  // picture (HLS: only its audio; an audio-only FLV) says so.
+  function wantPicture(fresh, since) {
+    // (asking again after a lapse: what changed meanwhile wasn't sent, so all of it, as to a fresh one)
+    const lapsed = Date.now() >= V.wantUntil;
+    V.wantUntil = Date.now() + V.WANT * 1000;
+    const audioOnly = R.state === 'recording' && ((R.info?.kind && R.info.kind !== 'flv')
+      || (!R.vseen && R.audioSince != null && Date.now() - R.audioSince > 5000));
+    if (audioOnly) return vpost({ type: 'novideo', url: R.url, gen: R.gen });
+    if (V.url !== R.url || V.gen !== R.gen || !V.cfg) return;
+    if (fresh || lapsed) vpost(V.cfg);
+    const list = fresh || lapsed ? V.back : since != null ? V.back.filter((c) => c.seq > since) : null;
+    if (list?.length) vpost({ type: 'chunks', url: R.url, gen: R.gen, list });
   }
 
   // ---- HLS ---------------------------------------------------------------------------------
@@ -250,7 +330,8 @@
   async function loop(run) {
     while (run === R.run) {
       if (Date.now() > R.wantUntil) { set('idle', 'Stopped: no live F1 TV video'); R.run++; return; }
-      if (R.state !== 'recording') set('resolving', 'Looking for the stream…', R.err);
+      // (off air, looking again: still off air until the platform says otherwise)
+      if (R.state !== 'recording' && R.state !== 'offline') set('resolving', 'Looking for the stream…', R.err);
       let src;
       try {
         src = await ST.resolve(R.spec);
@@ -265,7 +346,9 @@
       R.info = { platform: R.spec.platform, name: src.name || null, title: src.title || null, kind: src.kind };
       if (!src.live) {
         set('offline', src.reason || 'Not live right now');
-        await sleep(OFFLINE_RETRY);
+        let wake;
+        await new Promise((r) => { wake = R.wake = r; setTimeout(r, OFFLINE_RETRY); }); // (recheck() cuts it short)
+        if (R.wake === wake) R.wake = null;
         continue;
       }
       if (R.state !== 'recording') set('connecting', 'Connecting to the stream…');
@@ -288,7 +371,8 @@
       if (run !== R.run) return;
       // a connection that died young: back off and try the next URL; one that ran a while:
       // reconnect right away to the same
-      if (Date.now() - t0 < YOUNG) { R.fails++; R.alt++; } else R.fails = 0;
+      if (R.switching) { R.switching = false; R.fails = 0; } // (preferAvc's own reconnect)
+      else if (Date.now() - t0 < YOUNG) { R.fails++; R.alt++; } else R.fails = 0;
       set('reconnecting', R.err ? `Reconnecting (${R.err})` : 'Reconnecting…', R.err);
       await sleep(R.fails ? Math.min(30000, 1000 * 2 ** Math.min(R.fails, 5)) : 200);
     }
@@ -298,6 +382,8 @@
     R.run++;
     try { R.abort?.abort(); } catch { /* already */ }
     R.abort = null;
+    R.wake?.(); // (a loop asleep off air: done now)
+    R.wake = null;
   }
 
   function start() {
@@ -318,16 +404,19 @@
       R.url = url;
       R.spec = ST.parse(url);
       R.buf = L.newBuffer(keep);
+      R.gen++;
       R.info = null;
       R.alt = 0;
       R.hls = null;
       R.ref = null;
       if (R.spec.error) { set('error', R.spec.error, R.spec.error); return R; }
+      set('resolving', 'Looking for the stream…'); // (a new stream: not the old one's off air, nor its error)
       start();
     } else if (R.buf) {
       R.buf.keep = keep;
       if (R.state === 'idle' && !R.spec.error) {
         R.buf = L.newBuffer(keep);
+        R.gen++;
         R.hls = null;
         R.ref = null;
         start();
@@ -336,11 +425,16 @@
     return R;
   }
 
+  // Off air, look again now (the engine has seen the streamer back on a server's recording).
+  function recheck(url) {
+    if (url === R.url && R.state === 'offline') R.wake?.();
+  }
+
   // For the panel and the diagnostics.
   function status() {
     const s = R.buf ? L.stats(R.buf) : null;
     return {
-      state: R.state, text: R.text, err: R.err, url: R.url, platform: R.spec?.platform ?? null, label: R.spec?.label ?? null,
+      state: R.state, text: R.text, err: R.err, url: R.url, gen: R.gen, platform: R.spec?.platform ?? null, label: R.spec?.label ?? null,
       name: R.info?.name ?? null, title: R.info?.title ?? null, kept: s ? Math.round(s.kept) : 0, kbps: s?.kbps ?? null,
       net: netKbps(), filled: s?.filled ?? 0, end: R.buf ? Math.round(R.buf.end * 1000) / 1000 : null,
       edge: R.buf && R.buf.offset != null ? Math.round(L.liveEdge(R.buf, nowS()) * 1000) / 1000 : null, // the m arriving now
@@ -352,5 +446,5 @@
   // The buffer of the stream at `url` (null for any other: the recorder may hold another's).
   const buffer = (url) => (url == null || url === R.url ? R.buf : null);
 
-  root.FoneRecorder = { want, stop, status, buffer, pickVariant, parseMedia, pickSegments, _R: R };
+  root.FoneRecorder = { want, stop, status, buffer, wantPicture, preferAvc, recheck, pickVariant, parseMedia, pickSegments, _R: R, _V: V };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

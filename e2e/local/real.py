@@ -66,7 +66,7 @@ async def main(urls):
             await sw.evaluate(f"chrome.storage.sync.set({{source: 'local', stream: {json.dumps(url)}, bufferMin: 5, servers: []}})")
             await page.goto(f"https://f1tv.formula1.com/detail/{CID}/test?action=play&tm=1&ev=live")
             await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
-            await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 5000 - contentPos() * 1000; }")
+            await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 32000 - contentPos() * 1000; }")
             t0, st, synced = time.time(), {}, None
             while time.time() - t0 < 45:
                 st = await E.status(page)
@@ -80,6 +80,18 @@ async def main(urls):
                     print(f"    t {time.time() - t0:5.1f}  p {p:8.2f}  m {st['m']:8.2f}  edge-m {st['rec']['edge'] - st['m']:5.2f}  "
                           f"drift {round((st.get('drift') or 0) * 1000):+5d} ms  seeks {fx.get('nSeeks')} rates {fx.get('nRates')} rate {fx.get('rate')}  {st.get('state')}", flush=True)
                 await asyncio.sleep(0.5 if not os.environ.get("REAL_TRACE") else 2)
+            if os.environ.get("REAL_PICTURE"):  # the streamer window too: what it decodes and shows
+                await page.keyboard.press("v")
+                pic = None
+                for _ in range(60):
+                    fr = next((f for f in page.frames if "streamer.html" in f.url), None)
+                    pic = fr and await fr.evaluate("() => JSON.parse(document.documentElement.dataset.state || 'null')")
+                    if pic and pic.get("drawn", 0) > 30:
+                        break
+                    await asyncio.sleep(0.5)
+                hevc = await page.evaluate("async () => { try { return (await VideoDecoder.isConfigSupported({codec: 'hvc1.1.6.L120.90'})).supported; } catch (e) { return String(e); } }")
+                print(f"    picture: {json.dumps(pic, ensure_ascii=False)} · this browser decodes HEVC: {hevc}", flush=True)
+                await page.keyboard.press("v")
             rec = st.get("rec") or {}
             ok = st.get("state") == "sync" and abs(st.get("drift") or 9) < 0.08 and not (rec.get("player") or {}).get("err")
             bad += not ok

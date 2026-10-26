@@ -10,7 +10,9 @@
 //
 // content.js steers us with 'fone-cmd' CustomEvents (JSON string detail):
 //   {cmd: 'rate', value: 2}                    speed for replays; live always plays at 1x
-//   {cmd: 'audio', prefer: 'fx'|'mute'|'none', cid}   F1 TV's audio: its no-commentary track
+//   {cmd: 'audio', prefer: 'fx'|'mute'|'eng'|'none', feed: 'intl'|'none', live, cid}   F1 TV's audio: its
+//                                                       no-commentary track, muted, or its international English
+//                                                       commentary; and its picture: INTERNATIONAL (live)
 //                                              (a track switch), muted (no switch), untouched
 // It re-sends both every 2 s; after LEASE ms without them we stop steering and undo
 // our speed change (extension reloaded or removed).
@@ -167,17 +169,75 @@
   let view = null;
   let sub = null; // {view, id}: a ViewListenerID belongs to the view that issued it
   let gen = 0;
+  // A relative seek of the main player (fone's Go live), made as F1 TV's own ±10 s buttons make
+  // it: Player.seek with a RELATIVE_TIME timing config. The SDK takes only its own TimingConfig
+  // (Player.seek checks instanceof): F1 TV's page exports the class as Tiledmedia.TimingConfig.
+  // Without it, the SDK's self.Tiledmedia.disableStrictJSChecks lets a plain object through: set
+  // for that one synchronous check and put back at once (the core gets a copy of the fields
+  // either way).
+  const TIMING = { RELATIVE_TIME: 3, PRECISE: 1 };
+  // Answered with a 'fone-seek' event {ok, by, did, err}. Another call of ours holding the SDK (an
+  // audio-track switch, the mute, onboards) is waited for, up to 2 s, rather than the seek dropped.
+  // Forward, live, no further than the edge the player reports when it's made (Go live's seeks are
+  // worked out against it; F1 TV plays on past it between its steps, so a seek past it, which the
+  // player stops at the edge, would go back): `did`, what was sought (0: nothing to go).
+  async function seekBy(by) {
+    let ok = false, err = null, did = by;
+    try {
+      for (let i = 0; i < 20 && SDK.busy; i++) await new Promise((r) => setTimeout(r, 100));
+      const player = view?.associatedPlayer;
+      if (!Number.isFinite(by) || Math.abs(by) < 0.1) throw new Error('nothing to seek');
+      const c = view?.currentContentTime;
+      if (by > 0 && c?.eventType === 'live' && Number.isFinite(c.seekUpperBound) && Number.isFinite(c.currentPosition)) {
+        did = Math.min(by, (c.seekUpperBound - c.currentPosition) / 1000);
+      }
+      if (by > 0 && did < 0.1) { did = 0; ok = true; } else {
+        if (isDead(player) || typeof player.seek !== 'function') throw new Error('no player');
+        if (!lock('seek')) throw new Error('the player is busy');
+        try {
+          await seekCall(player, did);
+          ok = true;
+        } finally {
+          unlock();
+        }
+      }
+    } catch (e) {
+      err = errText(e);
+    }
+    document.dispatchEvent(new CustomEvent('fone-seek', { detail: JSON.stringify({ ok, by, did, err }) }));
+  }
+
+  function seekCall(player, by) {
+    const fields = { target: Math.round(by * 1000), timingType: TIMING.RELATIVE_TIME, targetPositionStrategy: TIMING.PRECISE, scrubType: 'none' };
+    return sdkCall('seek', `${by > 0 ? '+' : ''}${by.toFixed(1)}s`, player, () => {
+      const TC = self.Tiledmedia?.TimingConfig;
+      if (typeof TC === 'function') return player.seek(Object.assign(new TC(), fields));
+      const had = Object.prototype.hasOwnProperty.call(self, 'Tiledmedia');
+      const T = had ? self.Tiledmedia : (self.Tiledmedia = {});
+      const prev = T.disableStrictJSChecks;
+      T.disableStrictJSChecks = true;
+      try {
+        return player.seek(fields);
+      } finally {
+        if (!had) delete self.Tiledmedia;
+        else if (prev === undefined) delete T.disableStrictJSChecks;
+        else T.disableStrictJSChecks = prev;
+      }
+    }, 8000);
+  }
+
   let lastListenerAt = 0;
   let lastEvent = null; // eventType of the main view's latest content-time report
 
   // ---- commands from content.js ---------------------------------------------------
 
-  const want = { rate: null, fx: false, audio: 'none', cid: null, at: 0 };
+  const want = { rate: null, fx: false, audio: 'none', feed: 'none', live: false, cid: null, at: 0 };
   document.addEventListener('fone-cmd', (e) => {
     let m;
     try { m = JSON.parse(e.detail); } catch { return; }
     if (!m || typeof m !== 'object') return;
     if (m.cmd === 'onboards') { obCommand(m.slots); return; } // its own lease: not the speed/audio one
+    if (m.cmd === 'seek') { seekBy(Number(m.by)); return; } // one shot (Go live): no lease
     want.at = Date.now();
     if (m.cmd === 'rate') {
       const r = Number(m.value);
@@ -189,10 +249,12 @@
       if (next !== want.rate || m.force) Object.assign(R, { pending: null, fails: 0, lastTry: Math.min(R.lastTry, Date.now() - 500), err: null });
       want.rate = next;
     } else if (m.cmd === 'audio') {
-      const mode = m.prefer === 'fx' || m.prefer === 'mute' ? m.prefer : 'none';
+      const mode = ['fx', 'mute', 'eng'].includes(m.prefer) ? m.prefer : 'none';
       if (mode !== want.audio) { A.override.clear(); A.tries = 0; A.v++; } // an explicit request: start over
       want.audio = mode;
-      want.fx = mode === 'fx';
+      want.fx = mode === 'fx' || mode === 'eng'; // (a track of ours to keep: Track FX, or English Int.)
+      want.feed = m.feed === 'intl' ? 'intl' : 'none';
+      want.live = !!m.live;
       if (m.cid != null) want.cid = String(m.cid);
     }
   });
@@ -423,6 +485,23 @@
     return ok.find((x) => x.t._feedID === feed && x.score >= SAME_FEED_MIN) || ok[0] || null;
   }
 
+  // Mode 'eng': F1 TV's international English commentary (the world feed's, 'English Int.'), not
+  // F1 TV's own on F1 LIVE ('English F1 Live'): a name with 'Int' first, then any English not F1
+  // TV's own, the picture's feed first.
+  const F1LIVE_NAME = /f1\s*live/i, INT_NAME = /(^|[^a-z])int(\.|ernational)?([^a-z]|$)/i;
+  function engScore(x) {
+    if (!x) return 0;
+    const l = x.lang.toLowerCase().split(/[-_]/)[0];
+    const english = l === 'eng' || l === 'en' || /english/i.test(x.name);
+    if (!english || F1LIVE_NAME.test(x.name) || x.kind === 'radio') return 0;
+    return INT_NAME.test(x.name) ? 100 : 60;
+  }
+  function bestEng(list, feed) {
+    const ok = list.filter((x) => engScore(x) > 0)
+      .sort((a, b) => engScore(b) - engScore(a) || (b.t._feedID === feed) - (a.t._feedID === feed));
+    return ok[0] || null;
+  }
+
   // Mode 'mute': F1 TV's own sound off (setAudioIsMuted, the call its mute button makes: a
   // plain command, no pipeline change) once per video, since F1 TV unmutes on a content load;
   // back on when the mode goes, the lease ends, or the player changes under us.
@@ -467,14 +546,14 @@
     const list = tracksFor(cur);
     if (!list) return;
     A.cur = list.find((x) => x.key === ck) || trackInfo(cur, ck);
-    A.best = bestFx(list, vq?._feedID);
+    A.best = want.audio === 'eng' ? bestEng(list, vq?._feedID) : bestFx(list, vq?._feedID);
     if (!want.fx || !leased() || (want.cid && A.override.has(want.cid))) { A.due = 0; return; }
 
     const c = A.change;
     if (c && !c.ours && !c.judged) {
       // F1 TV's audio menu: a click or key just before, same content item, no switch around it.
       const yours = c.fromUid != null && c.fromUid === cur._uid && c.at - A.switchAt > 1500
-        && c.inputAt > 0 && c.at - c.inputAt < 15000 && A.cur?.kind !== 'fx';
+        && c.inputAt > 0 && c.at - c.inputAt < 15000 && (want.audio === 'eng' ? engScore(A.cur) < 100 : A.cur?.kind !== 'fx');
       if (!yours) c.judged = true; // F1 TV (content load, channel switch) or the player
       else if (now - c.at < 1500) return; // a feed switch may still show itself (and reset all this)
       else {
@@ -484,7 +563,10 @@
         return;
       }
     }
-    if (A.cur?.kind !== 'commentary' || !A.best || A.tries >= 3) { A.due = 0; return; } // already commentary-free (or unknown)
+    // already where it's wanted (commentary-free; the international English), or unknown
+    const there = want.audio === 'eng' ? !A.best || A.cur?.key === A.best.key || engScore(A.cur) >= engScore(A.best)
+      : A.cur?.kind !== 'commentary';
+    if (there || !A.best || A.tries >= 3) { A.due = 0; return; }
     if (!A.due) A.due = now;
     // Only into a settled player: a track switch is a pipeline change in the core, and the
     // deaths came on calls into one still starting. So: playing (or paused, visible) for a
@@ -518,6 +600,41 @@
     }
   }
   const AUDIO_SETTLE = 3000; // ms playing before we switch the track
+
+  // ---- F1 TV's picture: INTERNATIONAL ----------------------------------------------------
+  // Streamers watch the world feed: its picture (graphics, replays) is what they react to, and F1
+  // TV opens a live session on F1 LIVE (its own studio and commentary). With feed 'intl', on a live
+  // video, fone picks INTERNATIONAL in F1 TV's own channel switcher (its item's click, as yours: F1
+  // TV loads the channel and its audio), once per video, into a settled player, and not again if
+  // you go back to F1 LIVE yourself. (Replays: left as they are; a channel there can run on
+  // another timeline than the one the replay is anchored on.)
+  const CH = { INTL: 1025, F1LIVE: 1033 };
+  // landedAt: when a click of ours was seen to land (the main view on INTERNATIONAL within LAND ms):
+  // content.js re-syncs the commentary on that, never on a switch of yours.
+  const FEED = { cid: null, done: false, tries: 0, at: 0, landedAt: 0, err: null };
+  const LAND = 8000;
+  function steerFeed(player) {
+    const ch = Number(view?.dataset.channelId);
+    if (FEED.at && !FEED.landedAt && Date.now() - FEED.at < LAND && ch === CH.INTL) FEED.landedAt = Date.now();
+    if (want.feed !== 'intl' || !want.live || !want.cid || !leased() || !view) return;
+    if (FEED.cid !== want.cid) Object.assign(FEED, { cid: want.cid, done: false, tries: 0, at: 0, landedAt: 0, err: null });
+    if (FEED.done) return;
+    if (ch === CH.INTL) { Object.assign(FEED, { done: true, err: null }); return; } // (on it: ours, F1 TV's, or yours)
+    if (ch !== CH.F1LIVE) { if (Number.isInteger(ch) && ch > 0) FEED.done = true; return; } // another channel: yours
+    const now = Date.now(), vid = videoOf(view);
+    if (FEED.tries >= 3) { // (F1 TV's multi-view switcher, say, where its item's click selects nothing)
+      if (now - FEED.at > LAND) Object.assign(FEED, { done: true, err: "F1 TV didn't switch to INTERNATIONAL (its multi-view?)" });
+      return;
+    }
+    if (now - FEED.at < LAND) return;
+    if (player.playerState !== 'playing' || !vid || vid.readyState < 3 || vid.seeking || now - A.switchAt < AUDIO_SETTLE
+      || now - A.seekAt < AUDIO_QUIET || SDK.f1tv || SDK.busy || isDead(player)) return;
+    const item = document.querySelector(`[data-tao="tm_channel_switcher_item"][data-channel-id="${CH.INTL}"]`);
+    if (!item) { FEED.err = 'no INTERNATIONAL in the channel switcher'; return; }
+    FEED.tries++;
+    FEED.at = now;
+    try { item.click(); FEED.err = null; } catch (e) { FEED.err = errText(e); }
+  }
   const AUDIO_QUIET = 2000; // ms since a seek / a new handle
 
   function audioReport() {
@@ -941,6 +1058,8 @@
         r: { want: R.target, sdk: sdk ? sdk.rate : null, exact: !!sdk?.exact, el: vid ? vid.playbackRate : null, err: R.err,
           ps: player?.playerState ?? null, fails: R.fails },
         a: audioReport(),
+        // the picture's channel, and when fone last switched it (to INTERNATIONAL)
+        feed: { ch: view?.dataset.channelId ?? null, want: want.feed, landedAt: FEED.landedAt || null, done: FEED.done, err: FEED.err },
         // the player's SDK, for the diagnostics: our last calls (and F1 TV's applyDesiredState),
         // the player's id, whether the core stopped under it, what it said when it did
         sdk: { pid: SDK.pid, dead: isDead(player), busy: SDK.busy ? SDK.busy.name : null,
@@ -1011,5 +1130,6 @@
     if (!player) return;
     steerRate(player, videoOf(view)).catch(() => {});
     steerAudio(player).catch((e) => { A.err = errText(e); if (SDK.busy && (SDK.busy.name === 'audio' || SDK.busy.name === 'mute')) unlock(); });
+    try { steerFeed(player); } catch (e) { FEED.err = errText(e); }
   }, 250);
 })();

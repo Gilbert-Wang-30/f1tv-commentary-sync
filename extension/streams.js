@@ -82,10 +82,12 @@
   ];
 
   // Bilibili: the room's own player API, no login (anonymous viewers get 超清, qn 250; the audio
-  // is the same in every quality: AAC 48 kHz ~128 kbps). fMP4 HLS first: its timeline is the
-  // stream's own (segment numbers and timestamps carry on across connections, so a reconnect
-  // lands to the sample), where HTTP-FLV starts each connection at 0 and is placed by arrival.
-  // HEVC first in each, about half the video bytes.
+  // is the same in every quality: AAC 48 kHz ~128 kbps). HTTP-FLV first: it arrives as it's
+  // made, ~1.1 s before the same moment in the fMP4 HLS (measured 2026-10-23), and live plays
+  // that much nearer the edge. fMP4 HLS next: its timeline is the stream's own (a reconnect lands
+  // to the sample, where HTTP-FLV starts each connection at 0 and is placed by arrival).
+  // HEVC first in each, about half the video bytes (H.264 first for a browser that can't decode
+  // HEVC and wants the picture: spec.avc, recorder.js preferAvc).
   async function bilibili(spec) {
     const info = await json(`https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${spec.id}`);
     if (info.code !== 0 || !info.data) throw new Error(`Bilibili: ${info.message || info.msg || 'no such room'}`);
@@ -102,11 +104,12 @@
     const streams = play?.data?.playurl_info?.playurl?.stream || [];
     const urls = (proto, fmt) => {
       const f = streams.find((x) => x.protocol_name === proto)?.format?.find((x) => x.format_name === fmt);
-      const cs = [...(f?.codec || [])].sort((a, b) => (b.codec_name === 'hevc') - (a.codec_name === 'hevc'));
+      const first = spec.avc ? 'avc' : 'hevc';
+      const cs = [...(f?.codec || [])].sort((a, b) => (b.codec_name === first) - (a.codec_name === first));
       return cs.flatMap((c) => (c.url_info || []).map((u) => u.host + c.base_url + u.extra));
     };
     const fmp4 = urls('http_hls', 'fmp4'), flv = urls('http_stream', 'flv'), ts = urls('http_hls', 'ts');
-    const all = [...fmp4.map((u) => ['hls', u]), ...flv.map((u) => ['flv', u]), ...ts.map((u) => ['hls', u])];
+    const all = [...flv.map((u) => ['flv', u]), ...fmp4.map((u) => ['hls', u]), ...ts.map((u) => ['hls', u])];
     if (!all.length) throw new Error('Bilibili: the room gave no stream URL');
     return { live: true, kind: all[0][0], url: all[0][1], alt: all.slice(1).map(([kind, url]) => ({ kind, url })), name, title };
   }

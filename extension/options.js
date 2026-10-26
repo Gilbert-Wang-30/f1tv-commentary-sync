@@ -6,6 +6,7 @@ const DEFAULTS = {
   bufferMin: 15,
   servers: SERVERS,
   channel: '',
+  liveDirect: true,
   autoHold: true,
 };
 const $ = (id) => document.getElementById(id);
@@ -68,6 +69,7 @@ chrome.storage.sync.get(DEFAULTS).then((s) => {
   $('bufferMin').value = s.bufferMin;
   $('servers').value = s.servers.join('\n');
   $('autoHold').checked = s.autoHold;
+  $('liveDirect').checked = s.liveDirect !== false;
   if (s.channel) $('channel').add(new Option(s.channel, s.channel));
   $('channel').value = s.channel;
   showSource();
@@ -79,7 +81,7 @@ for (const r of document.querySelectorAll('input[name=source]')) r.addEventListe
 $('save').addEventListener('click', async () => {
   await chrome.storage.sync.set({
     source: source(), stream: $('stream').value.trim(), bufferMin: bufferMin(),
-    servers: servers(), channel: $('channel').value, autoHold: $('autoHold').checked,
+    servers: servers(), channel: $('channel').value, autoHold: $('autoHold').checked, liveDirect: $('liveDirect').checked,
   });
   $('bufferMin').value = bufferMin();
   $('saved').textContent = 'Saved.';

@@ -42,6 +42,9 @@ measured delay and 弹幕.</p>
     <textarea id="servers" rows="3" placeholder="http://your-server:8788"></textarea></label>
   <label>Commentary channel <span class="hint">— recorder folder name; empty = whichever was recorded most recently</span>
     <select id="channel"><option value="">(most recent)</option></select></label>
+  <label><input type="checkbox" id="liveDirect"> Live: the commentary straight from the streamer's Bilibili room
+    <span class="hint">— this browser pulls the stream while the session is live, about 3 s fresher than the server's
+    recording (which grows a few seconds at a time). The server still gives replays, the stats, 弹幕 and the sponsor clips to mute.</span></label>
   <button id="test">Test connection</button>
   <div class="out" id="out"></div>
 </fieldset>

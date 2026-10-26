@@ -8,12 +8,25 @@
 (function (root) {
   'use strict';
 
-  // F1 TV's live latency, only used when its player gives us nothing better.
-  const DEFAULT_LIVE_LATENCY = 30;
-  // Live default: commentary this far behind its live edge when F1 TV is at its live edge
-  // (delay = latency - lag), roughly where the Bilibili web player sits.
+  // F1 TV's live latency: how far behind its own clock (the time its player puts on the picture)
+  // it plays where it starts a live stream. Measured 2026-10-25 on six loads: 30.9 to 33.8 s, a
+  // different place each time, and more by any pause or rewind. The engine measures it whenever
+  // the player gives its clock; this is the stand-in when it doesn't.
+  const DEFAULT_LIVE_LATENCY = 32;
+  // Live, the delay is the commentary's own clock (when it came in) minus F1 TV's on the picture
+  // it goes with: the commentary sits (F1 TV's latency - delay) behind its live edge, or, on a fone
+  // server's recording, behind the time now. The defaults put it this far behind when F1 TV is
+  // where it usually starts. HLS pulled into the browser arrives a segment at a time, so its edge
+  // needs 7 s; HTTP-FLV pulled into the browser arrives continuously and can sit where the
+  // Bilibili web player does. A server's recording grows in the recorder's keyframe groups (4-6 s
+  // at a time, measured 2026-10-23), then its 2 s segments and its timeline's 3 s refresh: its
+  // newest audio is up to ~8 s old, so 11 s behind the time now.
   const LIVE_EDGE_LAG = 7;
   const LIVE_EDGE_DELAY = DEFAULT_LIVE_LATENCY - LIVE_EDGE_LAG;
+  const LOCAL_EDGE_LAG = 4;
+  const LOCAL_EDGE_DELAY = DEFAULT_LIVE_LATENCY - LOCAL_EDGE_LAG;
+  const SERVER_LIVE_LAG = 11;
+  const SERVER_LIVE_DELAY = DEFAULT_LIVE_LATENCY - SERVER_LIVE_LAG;
 
   // How we turn p into E.
   //   multiviewer  replay (or live) on the same timeline as the replay; exact anchor
@@ -337,5 +350,5 @@
   }
 
   root.FoneCore = { chooseClock, videoNow, eventTime, mapWall, wallOf, chosenRate, nominalRate, isCoarse, isPrecise, newSteer, holdSteer, steer,
-    STEER, SPEEDS, TRIM_REACH, DEFAULT_LIVE_LATENCY, LIVE_EDGE_DELAY };
+    STEER, SPEEDS, TRIM_REACH, DEFAULT_LIVE_LATENCY, LIVE_EDGE_LAG, LIVE_EDGE_DELAY, LOCAL_EDGE_DELAY, SERVER_LIVE_LAG, SERVER_LIVE_DELAY };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

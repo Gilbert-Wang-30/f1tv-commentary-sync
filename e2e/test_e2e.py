@@ -42,6 +42,7 @@ PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background:#0
 TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background:#000">
 <tiledmedia-ui-view><div class="tm-ui-controlbar tm-hidden">
   <span class="tm-ui-playbacktimelabel" id="lbl">00:00:00</span><span class="tm-ui-playbacktimelabel tm-text-right">01:19:29</span>
+  <span class="tm-ui-playbacktimelabel tm-ui-playbacktimelabel-live" id="livebadge" onclick="window.__f1live = (window.__f1live || 0) + 1">LIVE</span>
 </div></tiledmedia-ui-view>
 <tiledmedia-view id="mainview" data-channel-id="1033" data-title="F1 LIVE" data-type="pres" data-static>
   <video id="v" handleID="7" src="/media/video.mp4" muted autoplay playsinline style="width:960px;height:540px;display:initial"></video>
@@ -50,6 +51,11 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   <video handleID="8" src="/media/video.mp4" muted autoplay playsinline style="width:320px;height:180px;display:initial"></video>
 </tiledmedia-view>
 <div style="position:fixed;left:400px;bottom:20px;z-index:5"><button id="pick-eng" onclick="tmPickAudio('English')">English</button></div>
+<!-- F1 TV's channel switcher (vod chunk: accordion items, data-tao tm_channel_switcher_item, onClick = select the channel) -->
+<div class="channel-switcher-tm-container closed">
+  <div class="accordion-item" data-tao="tm_channel_switcher_item" data-channel-id="1033" onclick="tmSwitchFeed(1033, 'F1 LIVE')"></div>
+  <div class="accordion-item" data-tao="tm_channel_switcher_item" data-channel-id="1025" onclick="window.__intlClicks = (window.__intlClicks || 0) + 1; tmSwitchFeed(1025, 'INTERNATIONAL')"></div>
+</div>
 <script>
   // Mirrors the real Tiledmedia Web SDK surface (checked against F1 TV's bundle):
   // TimingListenerConfig(callback) with .interval/.callback; addTimingListener -> ViewListenerID
@@ -64,7 +70,9 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     document.body.prepend(g);
   }
   window.__off = 0; window.__event = 'vod'; window.__origin = 0; window.__scrub = null;
-  if (new URLSearchParams(location.search).get('ev') === 'live') { window.__event = 'live'; window.__origin = Date.now() - 45000; }
+  if (new URLSearchParams(location.search).get('ev') === 'live') { window.__event = 'live'; window.__origin = Date.now() - 32000; }
+  // ?noclock=1: no wall clock yet (the player's first reports, before its bounds are settled)
+  window.__noClock = new URLSearchParams(location.search).get('noclock') === '1';
   window.__active = new Set();
   const loadedAt = Date.now();
   const mainVid = () => document.getElementById('v');
@@ -100,6 +108,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       throw new Error('selection in the AudioTrackSelection must be a ContentItem, Feed, AudioTrack or null');
     this.disable = disable; this.selection = selection; this.preferredLanguage = ''; this.audioTrackSelectionMode = mode; } }
   class DesiredStateConfig { static maintainPosition() { return new DesiredStateConfig(); } }
+  class TimingConfig { constructor() { this.target = 0; this.timingType = 0; this.targetPositionStrategy = 0; this.scrubType = 'none'; } }
   class VideoSelection { constructor(selection) {
     if (!(selection instanceof ContentItem || selection instanceof Feed || selection instanceof VideoQuality))
       throw new Error('selection in the VideoSelection must be a ContentItem, Feed or VideoQuality');
@@ -110,7 +119,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       video.setAttribute('handleID', String(id)); video.playbackRate = 1; }
     changePlaybackRate(m) { this.playbackRate = m; this.videoElement.playbackRate = this.playbackRate * this.syncMultiplier; }
     syncViews(m) { this.syncMultiplier = m; this.videoElement.playbackRate = this.playbackRate * this.syncMultiplier; } }
-  window.__rateCalls = []; window.__audioLog = []; window.__syncSeq = [1]; window.__muteCalls = []; window.__noHandle = false;
+  window.__seekCalls = []; window.__rateCalls = []; window.__audioLog = []; window.__syncSeq = [1]; window.__muteCalls = []; window.__noHandle = false;
   const INTL = [['English Int.', 'eng'], ['Deutsch', 'deu'], ['Francais', 'fra'], ['Nederlands', 'nld'], ['Portugues', 'por'], ['日本語', 'jpn'], ['Track FX', 'fx']];
   // (1016 NOR and 1020 LEC: driver onboards with no audio of their own here)
   const OWN = { 1033: [['English', 'eng']], 1025: INTL, 1003: [], 1009: [['VER', 'tea'], ['English', 'eng'], ['Deutsch', 'deu']], 1016: [], 1020: [] };
@@ -178,6 +187,16 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     // playerState still reads 'playing' (seen 2026-10-11); F1 TV's app rebuilds the player.
     _refuse(what) { if (this._stopped) throw new Error(`code: -1, message: error when calling Player.${what}: no user interaction possible in current state (internally-stopped)`); }
     addPlayerFatalErrorListeners(cb) { const id = this._fatal.size + 1; this._fatal.set(id, cb); return id; }
+    // Player.seek (vod chunk): only the SDK's own TimingConfig objects, unless
+    // self.Tiledmedia.disableStrictJSChecks; checked as it's called. RELATIVE_TIME (3) moves the
+    // content position by `target` ms (the element's clock doesn't move: tmSeek).
+    async seek(cfg) {
+      if (self.Tiledmedia?.disableStrictJSChecks !== true && !(cfg instanceof TimingConfig)) throw new Error('Player.seek() must be called with a TimingConfig object');
+      this._refuse('seek');
+      window.__seekCalls.push({ target: cfg.target, timingType: cfg.timingType, cls: cfg instanceof TimingConfig, strict: self.Tiledmedia?.disableStrictJSChecks ?? null });
+      await later(null, 30);
+      if (cfg.timingType === 3) window.__off += cfg.target / 1000;
+    }
     setAudioIsMuted(m) { this._refuse('setAudioIsMuted'); window.__muteCalls.push(!!m); this.audioMuted = !!m; return later(null, 20); }
     get desiredAudioTrackSelection() { return this._audioSel; }
     set desiredAudioTrackSelection(s) { this._audioSel = s; window.__audioSelWrites++; }
@@ -256,11 +275,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       if (this.dataset.type === 'obc') return { eventType: 'vod', currentPosition: 1000 * this.querySelector('video').currentTime, contentDuration: 4769000 };
       const c = contentPos() * 1000, live = window.__event !== 'vod';
       return { eventType: window.__event, currentPosition: c, contentDuration: 4769000, seekLowerBound: 0,
-               seekUpperBound: live ? (window.__stair ? Math.floor((c + 20000) / (window.__stair * 1000)) * window.__stair * 1000 : c + 20000) : 4769000, bufferLowerBound: 0, bufferUpperBound: c + 10000,
+               // live edge: 20 s ahead of the playhead; __stair: in steps; __edge(): one of its own (absolute, as F1 TV's)
+               seekUpperBound: live ? (window.__edge ? window.__edge() : window.__stair ? Math.floor((c + 20000) / (window.__stair * 1000)) * window.__stair * 1000 : c + 20000) : 4769000, bufferLowerBound: 0, bufferUpperBound: c + 10000,
                isAtLiveEdge: false, isCasting: false, timeshiftInMs: 0, isWallclockTimeSourceBased: live };
     }
     get currentWallclockTime() {
       const c = this.currentContentTime;
+      if (c && window.__noClock) return undefined;
       if (!c || window.__event === 'vod') return c && { ...c, eventType: 'unknown' };
       const o = window.__origin;
       // currentPosition runs ahead of the picture on the real thing; eventType isn't reliable
@@ -289,7 +310,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   customElements.define('tiledmedia-view', TMView);
   customElements.define('tiledmedia-ui-view', class extends HTMLElement { get internalView() { return document.getElementById('mainview'); } });
   for (const v of document.querySelectorAll('tiledmedia-view')) { v._player = P; P._views.add(v); } // F1 TV's views, on its player
-  window.Tiledmedia = { AudioTrackSelection, DesiredStateConfig, ContentItem, Feed, VideoSelection,
+  window.Tiledmedia = { AudioTrackSelection, DesiredStateConfig, ContentItem, Feed, VideoSelection, TimingConfig,
     TimingListenerConfig: class { constructor(e) { this.interval = 250; this.onlySendOnChangedCurrentPosition = true; this.callback = async () => {}; if (e) this.callback = e; } } };
   window.tmSeek = (x) => { window.__off = x - mainVid().currentTime; };   // content jumps, element clock doesn't
   setInterval(() => { const s = Math.floor(window.__scrub ?? contentPos()); const z = (n) => String(n).padStart(2, '0');
@@ -467,8 +488,11 @@ async def main():
             args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required"],
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
-        # (track sound for the audio-track tests below; the default is to mute F1 TV instead)
-        await sw.evaluate(f"chrome.storage.sync.set({{servers: ['{SERVER}'], f1Audio: 'fx'}})")
+        # (track sound for the audio-track tests below; the default is to mute F1 TV instead. Live
+        # from the server's recording: its channel's room is a real one, which the extension would
+        # otherwise pull itself, live (e2e/local tests that))
+        # (and F1 TV's channel left alone: e2e/local tests the switch to INTERNATIONAL)
+        await sw.evaluate(f"chrome.storage.sync.set({{servers: ['{SERVER}'], f1Audio: 'fx', liveDirect: false, f1Feed: 'off'}})")
 
         blob = open(f"{MEDIA}/video.mp4", "rb").read()
 
@@ -525,6 +549,23 @@ async def main():
         await video(page, "v.play()")
         await wait_status(page, lambda s: s.get("state") == "sync", 8, "resume")
         check(True, "commentary resumes with the video")
+
+        # The streamer window (V) on a replay: the recording's own picture (the server's video
+        # handoff, /api/video), at the commentary's position in its file.
+        await page.keyboard.press("v")
+        fr = None
+        for _ in range(40):
+            fr = next((f for f in page.frames if "streamer.html" in f.url), None)
+            if fr:
+                break
+            await asyncio.sleep(0.25)
+        pic_js = "() => JSON.parse(document.documentElement.dataset.state || 'null')"
+        await wait_js(fr, pic_js, lambda s: s and s["src"] == "server" and s["mOffset"] is not None and s["vtime"] > 1, 30, "the recording's picture")
+        await asyncio.sleep(3)
+        pic = await fr.evaluate(pic_js)
+        err = pic["vtime"] + pic["mOffset"] - pic["target"]
+        check(abs(err) < 0.35 and not pic["msg"], f"the streamer window on a replay: the recording's own picture at the commentary's moment ({err:+.2f}s)")
+        await page.keyboard.press("v")
 
         # hotkey nudge persists to the server as this video's calibration
         await page.keyboard.press("]")
@@ -894,18 +935,18 @@ async def main():
         await page.evaluate("() => tmSwitchFeed(1033, 'F1 LIVE')")
         await asyncio.sleep(4)
         check(await page.evaluate("() => __curAudio()") == "English", "...and after a feed switch, still left alone for this video")
-        # Live on Tiledmedia: edge-relative. The player's wall clock on live reads ~40 s late
-        # (packaging time), so E comes from "now - latency - distance behind the live edge"
-        # and the live default delay keeps the commentary a few seconds behind ITS edge.
+        # Live on Tiledmedia: edge-relative, by F1 TV's own clock. The player's wall clock is the
+        # time F1 TV's packager put on the picture, and its picture plays some 32 s behind it
+        # where it starts (more after a pause or a rewind): the commentary goes (that - delay)
+        # behind ITS edge. Here F1 TV starts 37 s behind its clock.
         await page.goto(f"https://f1tv.formula1.com/detail/{RACE_CID}/x?action=play&tm=1&ev=live")
         await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
-        await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 5000 - contentPos() * 1000; }")
+        await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 37000 - contentPos() * 1000; }")
         st = await wait_status(page, lambda s: s.get("clock") == "edge", 20, "edge clock on Tiledmedia live")
         await asyncio.sleep(1.5)
         st = await status(page)
-        # mock: live edge is 20 s ahead of the playhead
-        check(abs(st["E"] - (time.time() - 30 - 20)) < 1.5 and st["delaySource"] == "live" and abs(st["delay"] - 23) < 1e-6,
-              f"Tiledmedia live: edge-to-edge clock, live default delay {st['delay']} (E err {st['E'] - (time.time() - 50):+.2f}s), wall clock ignored")
+        check(abs(st["E"] - (time.time() - 37)) < 1.0 and abs((st.get("f1Lat") or 0) - 37) < 1.0 and st["delaySource"] == "live" and abs(st["delay"] - 21) < 1e-6,
+              f"Tiledmedia live: F1 TV {st.get('f1Lat')} s behind its own clock (E err {st['E'] - (time.time() - 37):+.2f}s), live default delay {st['delay']}")
         # Live lock: F1 TV's live edge advances in 6 s steps; the commentary must not chase it.
         await page.evaluate("() => { window.__stair = 6; }")
         st = await wait_status(page, lambda s: s.get("state") == "sync", 30, "live lock in sync")
@@ -917,6 +958,13 @@ async def main():
         adv = st["m"] - m0
         check(st["state"] == "sync" and seeks1 - seeks0 == 0 and abs(adv - (time.time() - t0)) < 1.0,
               f"live lock: stepped F1 TV live edge -> 0 commentary seeks in 12 s, advanced {adv:.1f}s ({st['text']})")
+        # On a server's recording the lock is placed by wall time: the commentary playing is the one
+        # recorded (F1 TV's latency - delay) before now, whatever the recording's last keyframe group.
+        tl = api(f"/api/timeline?channel={urllib.request.quote(CHANNEL)}&from={time.time() - 600}&to={time.time() + 600}")
+        pc = next((x for x in tl["pieces"] if x["m"] <= st["m"] < x["m"] + x["d"]), None)
+        off = None if pc is None else (pc["w"] + st["m"] - pc["m"]) - (st["at"] - (st["f1Lat"] - st["delay"]))
+        check(off is not None and abs(off) < 0.3,
+              f"live lock on the server's recording: by wall time, {st['f1Lat'] - st['delay']:.1f}s before now (off {off})")
         # Rewind F1 TV 30 s: the commentary goes back 30 s with it.
         before = st["m"]
         await page.evaluate("() => tmSeek(contentPos() - 30)")
@@ -932,8 +980,9 @@ async def main():
         await page.evaluate("() => { window.__event = 'finished-live'; }")
         await asyncio.sleep(3)
         st = await status(page)
-        check(st["clock"] == "edge" and abs(st["E"] - (time.time() - 50)) < 1.5,
-              f"Tiledmedia: when the live event finishes, timing stays edge-relative (err {st['E'] - (time.time() - 50):+.2f}s)")
+        fl = st.get("f1Lat") or 0
+        check(st["clock"] == "edge" and abs(fl - 67) < 2 and abs(st["E"] - (time.time() - fl)) < 1.0,
+              f"Tiledmedia: when the live event finishes, timing stays edge-relative (F1 TV {fl} s behind its clock after the 30 s rewind)")
 
         await sw.evaluate("chrome.storage.sync.set({speed: 1})")
 
