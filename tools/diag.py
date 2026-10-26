@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 
 
 def fmt_t(t):
+    if t > 1e11:  # page.js stamps its SDK log in ms
+        t /= 1000
     return datetime.fromtimestamp(t, timezone.utc).strftime("%H:%M:%S")
 
 
@@ -43,6 +45,10 @@ def line(e):
         return f"{t} SEEK  {e.get('from')} -> {e.get('to')} (target {e.get('target')}, x{e.get('rate')}, ahead {e.get('ahead')}s, {e.get('src')})"
     if k == "state":
         return f"{t} state {e.get('from')} -> {e.get('to')}  {e.get('text') or ''}"
+    if k == "nudge":
+        return f"{t} NUDGE {e.get('delta'):+} s -> delay {e.get('delay')}"
+    if k == "relive":
+        return f"{t} RE-SYNC to live (delay {e.get('delay')})"
     if k == "speed":
         return f"{t} SPEED engine follows x{e.get('to')} ({e.get('src')})"
     if k == "hls":

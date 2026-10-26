@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "fone — F1 TV × live commentary sync",
-  "version": "0.3.0",
+  "version": "0.3.9",
   "description": "Plays a streamer's live commentary (Bilibili, Twitch, YouTube, …) in sync with F1 TV: recorded in the browser, or from a fone server for replays.",
   "permissions": ["offscreen", "storage", "alarms", "cookies", "declarativeNetRequestWithHostAccess"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
-    { "matches": ["https://f1tv.formula1.com/*"], "js": ["local.js", "core.js", "player.js", "dmcore.js", "danmaku.js", "content.js", "layout.js"], "run_at": "document_idle" },
+    { "matches": ["https://f1tv.formula1.com/*"], "js": ["local.js", "core.js", "player.js", "dmcore.js", "danmaku.js", "content.js", "layout.js", "streamerbox.js"], "run_at": "document_idle" },
     { "matches": ["https://f1tv.formula1.com/*"], "js": ["page.js", "layout_page.js"], "run_at": "document_idle", "world": "MAIN" }
   ],
-  "web_accessible_resources": [{ "resources": ["dashboard.html"], "matches": ["https://f1tv.formula1.com/*"] }],
+  "web_accessible_resources": [{ "resources": ["dashboard.html", "streamer.html"], "matches": ["https://f1tv.formula1.com/*"] }],
   "action": { "default_title": "fone settings" },
   "options_page": "options.html",
   "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" }

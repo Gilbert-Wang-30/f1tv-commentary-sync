@@ -188,7 +188,11 @@ has the endpoints and formats.
 **ads**: sponsor-reel detection per recording against the reference clips in
 `server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). Growing files are analysed segment by
 segment as the extractor lists them (a clip is known 2–3 s into its audio); finished files
-once. The extension mutes while the target `m` is inside a `mutes` span.
+once. The extension mutes while the target `m` is inside a `mutes` span (live from the stream
+itself, while the wall time of the target is inside one's `w` span, padded by 1 s). Live, each
+clip of a break is recognised on its own, a few seconds into it, so the mute holds past a span's
+end until the file's `adsAnalyzedTo` is 3 s past it (when a following clip would have been
+recognised; at most 12 s), and the commentary then fades back in over 1.2 s.
 
 **screenclock**: the streamer's delay measured off their stream, from FLV recordings only
 (any other file is marked `unsupported`: `fone-streamlink`'s MPEG-TS gets no measurement). The
@@ -218,7 +222,8 @@ didn't hear (no levels, colours or stickers there). Served by send time.
 
 | where | files | role |
 |---|---|---|
-| content scripts on `https://f1tv.formula1.com/*`, isolated world | `core.js`, `player.js`, `dmcore.js`, `danmaku.js`, `content.js`, `layout.js` | `player.js` finds the main `<video>` and its true position; `content.js` draws the panel, binds the keys and reports the player to the engine; `layout.js` the split view with the stats iframe; `danmaku.js` the 弹幕 overlay |
+| content scripts on `https://f1tv.formula1.com/*`, isolated world | `core.js`, `player.js`, `dmcore.js`, `danmaku.js`, `content.js`, `layout.js`, `streamerbox.js` | `player.js` finds the main `<video>` and its true position; `content.js` draws the panel, binds the keys and reports the player to the engine; `layout.js` the split view with the stats iframe; `danmaku.js` the 弹幕 overlay; `streamerbox.js` the streamer window (a box with `streamer.html` in an iframe, moved by its bar, sized by its corner, `chrome.storage.local` `streamerBox`/`streamerOn`) |
+| streamer window | `streamer.html`: `vendor/hls.light.min.js`, `streamer.js` (in the box's iframe, or a popup window of its own) | the streamer's picture at the commentary's moment, muted. Follows the engine's clock (`fone-clock`): the stream recorded here, from the recorder's video (`fone-video`) decoded with WebCodecs (H.264, HEVC where the browser decodes it) and drawn on a canvas at `m`, the last 3 min kept for rewinds; a server's recording, its video handoff with hls.js at the file's position (`media − mOffset`), its requests made by the engine (`fone-fetch`: an iframe in F1 TV's https page can't reach an http server) |
 | content scripts, **main** world | `page.js`, `layout_page.js` | the only place the Tiledmedia player's objects are reachable: position, speed, audio tracks, onboard views; fullscreen redirection for the split view |
 | service worker | `background.js` (+ `dashproxy.js`, `f1token.js`, `streams.js`) | relays messages between tabs and the engine, opens the offscreen document, fetches for pages that can't (mixed content, CSP), hands the F1 TV token to the engine, sets the streaming platforms' header rules, self-update |
 | offscreen document | `offscreen.html`: `vendor/hls.light.min.js`, `core.js`, `demux.js`, `localcore.js`, `streams.js`, `recorder.js`, `localplayer.js`, `livepos.js`, `offscreen.js` | **the audio engine**: picks the source (a server, or the stream recorded here), clock and delay, plays `m` (a server's recordings with hls.js, its own recording through MSE) and keeps it on target (at 1× by tiny rate changes, otherwise by rare seeks); relays live car positions |
@@ -245,10 +250,15 @@ In the engine (`offscreen.js`) the recording stands in for the server: the timel
 `localcore.timeline()` (one piece over what's kept), the content comes from the listed server's
 `/api/f1tv` if one answers, else from F1 TV's content API directly, and the delay is the
 stream's own, kept in the offscreen document's
-`localStorage` (`delay|<stream key>`; `delaySource: 'stream'`), live default
-`LIVE_EDGE_DELAY`. The live lock takes the recorder's live edge, and follows it forward for the
+`localStorage` (`delay|<stream key>`; `delaySource: 'stream'`). The live default is
+`LOCAL_EDGE_DELAY` (28: 4 s behind the edge where F1 TV usually starts, 32 s behind its clock)
+for the HTTP-FLV platforms, whose audio arrives continuously, and `LIVE_EDGE_DELAY` (25: 7 s) for
+HLS. The live lock takes the recorder's live edge, and follows it forward for the
 lock's first 90 s while the edge estimate firms up (HLS: the first playlist can't say how long
-its newest segment has been out). When the stream stops arriving (the streamer offline, or
+its newest segment has been out). While a reconnected connection waits to be placed (`SETTLE`),
+the lead counts its audio as in hand, so that wait doesn't hold F1 TV; the time before the new
+connection's first audio still counts (more than about 2 s of it at the 4 s default, or a
+connection gone quiet until the recorder's 12 s `STALL`, and auto-hold holds F1 TV briefly). When the stream stops arriving (the streamer offline, or
 nothing for 30 s) the panel says so and auto-hold lets F1 TV play instead of holding it. A
 server listed in the settings is still used if it answers: for the content, the stats (held
 back by the long fixed guess of F1 TV's latency: there is no measured delay for a stream recorded
@@ -256,16 +266,129 @@ here), the live car positions and the diagnostics, which carry the engine's stat
 include the streamer's name).
 `e2e/local/run.sh` tests all of it against mock platforms.
 
+**With a server, live (`liveDirect`, on by default).** The server's recording of a live stream
+grows a recorder keyframe group at a time (4–6 s every ~5 s, measured on 胡闹P房's room), so its
+commentary must stay 7 s behind its edge, and late groups made auto-hold pause F1 TV. When the
+clock becomes `edge` and the channel has a Bilibili room (the room whose danmaku the server
+captures, from `/api/danmaku/status`), the engine switches to the stream recorded here as
+described above (`goDirect`: `S.local` set, `S.source` still `'server'`, status `direct: true`),
+with that stream's own delay (per stream in this browser; nudges are saved there too). The
+server still gives the content, the stats, the danmaku and the diagnostics, and the sponsor clips
+it found are muted by wall time (`/api/timeline`'s `mutes`, looked at every 3 s as the server's
+timeline is live; the server knows a clip only 2–3 s into it, so its first seconds are heard).
+The engine goes back to the server's recording (`goServer`, with the server's delay again) when
+the clock leaves `edge`, when the stream hasn't come in for 22 s while its platform still says
+it's live (`DIRECT_GIVEUP`, from 2 s after its last audio; off air doesn't count, the server's
+recording is off air too; until the engine attaches again: another video or tab, a settings
+change), and, with `back`, when F1 TV is rewound past what this browser has recorded (or, the
+stream off air since the page opened, rewound into what the server recorded): the stream goes on
+being recorded, and once F1 TV
+is back within it by `DIRECT_BACK` s and the stream is coming in, the engine switches to it again
+(Go live then aims at the stream's edge; the way back needs no server, should its timeline fetch
+fail meanwhile). Once this browser's recorder says the stream is off air, the server's recording
+doesn't count as live either, even while its file is still in its 90 s growing idle, until the
+server has audio from after that answer that is still coming in (within 15 s); while the
+recorder keeps saying off air, that audio counts only while it keeps coming in (a false start
+doesn't hold F1 TV). The server's recording growing meanwhile wakes the recorder's off-air check. Going into the server's recording with `back` carries the moment playing over by its
+wall time whatever F1 TV's distance from its edge (`carryLock(true)`); coming back carries it
+when the server's lock is still that carried one (not after a Re-sync), or takes a carry still
+pending; any other switch carries it only while F1 TV is rewound by two edge steps or more. A
+carried moment is placed by `momentAt`, also where the new timeline has no audio, so the
+commentary stays in step with the picture; otherwise the new source locks from its own edge, at
+its own delay.
+
+A live lock on a server's recording is `m0 + (p − p0)` within one file; the server's `m` runs on
+across files without the time between them (a streamer's reconnect: a gap; an overlap, clipped),
+so the lock also keeps its wall time and the file that falls in (`newLock`; one made at the edge
+takes the edge's wall time, so a newest file still shorter than the lag doesn't anchor it in an
+older one). The linear `m` stands while it's in that file, or past its end while that file is the
+newest (waiting at the live edge); anywhere else the moment is placed by its wall time (`lockM`):
+a gap plays as one (state `gap`, silence, F1 TV not held), an overlap is skipped, and the
+commentary stays in step with the picture. Within its file an edge lock's wall time follows the
+server's mapping as it firms up; a lock whose moment came from a wall time (carried, or placed
+across files) keeps that wall time, its `m` following the mapping instead. When the file set
+changes (a backfill import joins, an old file leaves the 30 h window), positions and offsets can
+move, so the lock is placed again by its wall time (keeping its kind when it lands back in its
+own file). With no live edge (the streamer off air, F1 TV still live) the lock is made once as if
+the edge were now, not re-derived every tick, and replaced by an edge lock once the server has an
+edge again, unless it's playing an older file.
+
+How live F1 TV is comes from F1 TV's own clock. Its live player stamps the picture with the
+time F1's packager put on it (`utc0 + p`: `utc0` is the wall-clock bound minus the content bound,
+exact and the same across page loads; player.js passes it as `video.utc0`), and its picture plays
+some 31–34 s behind that clock where the player starts a live stream: a different place every
+load (measured 2026-10-25 over six loads), more by any pause or rewind. That is `f1Lat`; the
+commentary goes `f1Lat − delay` behind its own edge. So the live delay is the commentary's clock
+(when it came in) minus F1 TV's on the picture it goes with, the same whatever F1 TV's player
+did. Before 0.3.8 the lock took wherever F1 TV happened to be when it was made as F1 TV's live
+position (30 s, by assumption): a few seconds' error, different every load, while the panel
+showed the engine in step with that to the millisecond. The lock keeps the clock time at `p0`
+(`L.u0`), so when F1 TV's player rebuilds and re-bases its content position (a new MSE handle,
+the position and its edge jumping together, the picture where it was: its clock with it) the
+lock keeps to the picture; a lock made before the clock was known is made again once it is.
+Without the clock (another player), F1 TV is taken to start `DEFAULT_LIVE_LATENCY` (32 s) behind,
+and its rewind is measured by wall time: how far it is behind where it played most live this
+session (its content position runs with the clock while it plays; its reported edge steps by
+5.76 s, a little late each time, and drifts by seconds between double steps), with re-bases
+recognised from the jump.
+
+F1 TV's clock is learned again (player.js) whenever the timeline may have changed (another MSE
+handle or player, a gap in the reports, bounds not settled), from a sample whose wall-clock and
+content bounds agree, and handed on only while such a sample is recent (2.5 s): never a cached
+one for a timeline that may have moved. While a lock that keeps to the clock is without it, the
+commentary waits (`clockLost`, up to 3 s, no source switch carried over meanwhile) rather than
+follow a position that may be minutes off; past that, the re-base is followed the old way. A lock
+made before the clock was known is made again once it is, unless it was carried over from the
+other source's moment. The wall-time rewind (`minLagW`) is kept in step with the clock's
+(`flBest`), so it's right on the timeline playing should the clock go.
+
+On a server's recording the lock is placed by wall time: the moment recorded `f1Lat − delay`
+before now (`SERVER_LIVE_DELAY`, 21: 11 s at F1 TV's usual latency, as the recording's newest
+audio is up to ~8 s old), not behind its edge, which is only as fresh as the recorder's last
+keyframe group and so 0–8 s stale at a different point for every lock. A delay set on the server
+since 0.3.8 is kept as clock `edge2`; an older `edge` one is read 2 s less (`serverSync`).
+
+"The time now" is the server's clock where there is a server (`trueNow`: this PC's plus `S.skew`,
+measured over `/api/health`, the quickest of 3 round trips, every 10 min): F1 TV's clock on the
+picture is compared with it, so a PC clock a second off (the user's Windows one ran ~1.1 s slow
+by its diagnostics' receive times) would otherwise put the stream recorded here that far off. A
+server's recording, placed by its own wall times, needs no correction (the time now cancels). A
+moment carried between the two (`carryLock`), and the stream's walls compared with the server's
+(its sponsor clips, off air, the way back to the stream), go by the server's clock too.
+
+Go live takes F1 TV to the most recent moment it can play, by its clock: where its reported edge
+is at its freshest of the last 3 min (`upFreshest`, one sample per step, the second freshest; ~30 s
+behind the clock 2026-10-25; started over when the clock changes, another feed's edge may be
+staler). F1 TV plays on past its reported edge between steps (after a 2 s pause it was still 1.1 s
+ahead of it), and `Player.seek` stops at that edge, so what's out of reach now (`more`, from
+0.6 s) is asked for every 0.5 s for 14 s (a seek past where F1 TV is becomes possible for a few
+seconds after each step), up to 3 more seeks, none for more than was left; page.js makes each
+forward seek no further than the edge F1 TV reports when it's made (`did`), as the playhead runs
+on past that edge between steps and a seek beyond it, which the player stops there, would go back. F1 TV going a second
+or more back from the furthest it has been since (a rewind or seek of yours: ours only go
+forward; content.js, and the engine's own check, `pMax`), a pause of yours (not the player's own
+around a seek of ours: 2 s after one) or auto-hold holding ends that. The commentary goes as near
+its edge as `liveAllow` (3 s for HTTP-FLV pulled into the browser, 7 s for HLS) or, on a server's
+recording, as near the time now as its lock (`SERVER_LIVE_LAG`, 11 s): F1 TV goes no further than
+that, and back to it only when the commentary needs it (auto-hold holding, which content.js says
+with the request, or a lead under 1 s by its edge now): F1 TV merely nearer live than the
+commentary's aim stays where it is. (The stream recorded here: its aim is behind its live edge,
+as its lock's is, not behind what can be played yet, which trails it by a segment on HLS.) While
+F1 TV's clock is re-proving (`clockLost`) Go live waits.
+Without F1 TV's clock: `GOLIVE.F1` s behind the edge it will report just before its next step, or
+back to its most live this session (a pause, a rewind), whichever is further.
+
 ### Messages
 
 `chrome.runtime` messages, routed by `target`:
 
 | from → to | message | notes |
 |---|---|---|
-| content → background → engine | `{target: 'engine', type: 'video', cid, channel, video: {p, paused, seeking, waiting, rate, ready, live, seekEnd, src, at, dx}, settings: {servers, volume, muted, anticipate, source, stream, bufferMin}}` | the player's state, at most every 200 ms; the background forwards it as `target: 'offscreen'` with `tab` added. A new `tab|cid|channel|servers|source|stream` key (re)attaches the engine; each report of a live video (or one whose clock isn't decided yet) also keeps the recorder wanted |
-| content → engine | `{type: 'nudge', delta}` · `{type: 'relive'}` · `{type: 'detach'}` | the delay buttons/keys; "Re-sync to live"; the video went away |
+| content → background → engine | `{target: 'engine', type: 'video', cid, channel, video: {p, paused, seeking, waiting, rate, ready, live, seekEnd, src, at, dx}, settings: {servers, volume, muted, anticipate, source, stream, bufferMin, liveDirect}}` | the player's state, at most every 200 ms; the background forwards it as `target: 'offscreen'` with `tab` added. A new `tab|cid|channel|servers|source|stream` key (`liveDirect` off counts as a different stream) (re)attaches the engine; each report of a live video (or one whose clock isn't decided yet) also keeps the recorder wanted |
+| content → engine | `{type: 'nudge', delta}` · `{type: 'relive'}` · `{type: 'detach'}` | the delay buttons/keys; "Re-sync"; the video went away |
+| content → background → engine | `{target: 'engine', type: 'golive', holding, chase, pMax}` → `{handled, by, more, limit, took, wait}` | Go live (⏭, `L`, F1 TV's LIVE badge): the engine answers how far to move F1 TV now (`by` s, `limit` `'f1'` or `'commentary'`: whichever is reached first) and how much further once F1 TV's reported edge has stepped on (`more`), and the content script seeks by that much (`fone-cmd` `seek`, answered by `fone-seek`), asking again every 0.5 s while there's `more` (`chase`, with `pMax`, the furthest F1 TV has been since: `took` when it's gone back from there; `wait` while F1 TV's clock is re-proving). `holding`: auto-hold's, the only time (with a lead under 1 s) Go live steps F1 TV back. `handled: false` (not live, not locked yet), or a seek F1 TV didn't take: the badge's own click goes through |
 | background → engine | `{target: 'offscreen', type: 'detach', tab}` | the tab closed |
-| engine → background → tab | `{target: 'background', type: 'status', tab, status}` → the tab receives `{type: 'fone-status', status}` | ≤ 4 times a second. `status`: `{state, text, channel, channels, server, source, rec, clock, delay, delaySource, cid, title, session, anchor, playing, E, W, m, lead, drift, file, error, fixes, diag, livepos, dm}`; `state` is one of `loading`, `error`, `syncing`, `sync`, `waiting`, `before`, `gap`, `after`, `none`, `paused`, `buffering`; `dm = {w, at, rate, run}` is the danmaku clock; `source` is `'server'` or `'local'`, and then `rec` is the recorder's `{state, text, err, url, platform, label, name, title, kept, kbps, net, filled, end, edge, fmt, player}` |
+| engine → background → tab | `{target: 'background', type: 'status', tab, status}` → the tab receives `{type: 'fone-status', status}` | ≤ 4 times a second. `status`: `{state, text, channel, channels, server, source, direct, onAir, rec, clock, delay, delaySource, cid, title, session, anchor, playing, E, W, m, p, at, lead, leadAim, drift, file, ad, error, fixes, diag, livepos, dm}`; `state` is one of `loading`, `error`, `syncing`, `sync`, `waiting`, `before`, `gap`, `after`, `none`, `paused`, `buffering`; `dm = {w, at, rate, run}` is the danmaku clock; `source` is `'server'` or `'local'`; `direct` is true with a server, live from the stream recorded here; `onAir` is whether the streamer is on air as the commentary's source knows it (the stream recorded here: its platform says live and audio comes in, and a Bilibili room showing replays, 轮播, is off air; a server's recording: its timeline is live, i.e. its file is still growing, up to `FONE_GROWING_IDLE_SECONDS` after the streamer stopped; null when not known), which the 弹幕 panel's 直播中 follows; `ad` names the sponsor clip being muted; `p` and `at` are F1 TV's position and the engine's clock at that report; `f1Lat` (live, with F1 TV's clock) how far behind that clock its picture plays; `page` is the streamer's live page on their platform (`FoneStreams.pageOf`: the stream recorded here's, else the channel's Bilibili room's; null for a stream URL given straight), for the panel's ↗ Live page; `leadAim` is the lead Go live brings the commentary to (`liveAllow`, or the delay set's lag if nearer, less the slack), and auto-hold lets F1 TV go again at `min(4, leadAim − 0.5)`, at least 1.5; while the commentary plays from the stream recorded here (without a server, or `direct`), `rec` is the recorder's `{state, text, err, url, platform, label, name, title, kept, kbps, net, filled, end, edge, fmt, player}` (null otherwise, also while rewound into the server's recording with the stream still recorded for the way back) |
 | engine → dashboards (broadcast) | `{target: 'dashboard', type: 'clock', tab, E, playing, rate, at, sessionKey, cid, server, live}` | 5 times a second; dashboards run their own clock and ease onto each report |
 | engine → background | `{target: 'background', type: 'f1-token'}` → the token or `null` | answered only to `offscreen.html` (never to a content script or any page); the token goes to `livetiming.formula1.com` and nowhere else |
 | dashboard, danmaku → background | `{target: 'dash-fetch', url}` → `{ok, json}` or `{ok: false, error}`; `{target: 'dash-fetch', ping: true}` → `{pong: true}` | GETs the iframe can't make itself (https page, http server); only `/api/timing/…`, `/api/f1tv/<id>` and `/api/danmaku` |
@@ -279,12 +402,20 @@ include the streamer's name).
 | layout → dashboard | `{type: 'fone-layout', rect: {x, y, w, h}, vw, vh, fullscreen}` on load and every change (CSS px, viewport-relative) |
 | dashboard → layout | `{type: 'fone-layout-cmd', cmd: 'off' \| 'popout' \| 'fullscreen' \| 'rect'}`; `{cmd: 'player', box}`; `{cmd: 'onboards', slots: [{x, y, w, h, channelId}, …]}` (at most two onboard rectangles, re-sent every 2 s, `[]` = none) |
 
+`BroadcastChannel`s between the offscreen document and the streamer window (both extension pages; structured clone, so the video goes as bytes):
+
+| | |
+|---|---|
+| `fone-clock` | window → engine `{type: 'hello', fresh, avc, since}` every 2 s while open (`fresh`: it has no video yet; `avc`: it can't decode the stream's HEVC, so the recorder takes the platform's H.264 from a new connection: `preferAvc`); engine → window `{type: 'clock', at, state, text, channel, m, src, rate, playing}` with every tick, and `src: 'stream'` with `stream` (the recorded stream's URL) and `gen`, `src: 'server'` with `server`, `file` (the timeline file's id) and `media` (the position in that file); `m: null` when there's no commentary to show a picture for |
+| `fone-video` | recorder → window `{type: 'cfg', url, gen, codec, desc, avc}` (the decoder configuration record; `avc`: the platform has H.264 too), `{type: 'chunks', url, gen, list: [{m, key, data, seq}]}` and `{type: 'novideo', url, gen}` (an HLS or audio-only stream); `gen` counts the recorder's fresh buffers (each a recording of its own, `m` from 0), `seq` numbers the chunks (a window asks again for what it missed with `since`): the stream's FLV video on the audio's `m` axis (`localcore.tOffset`: the same connection's timestamps; a reconnect's once its audio is placed), only while a window has asked in the last 10 s, the last 20 s again for a `fresh` one |
+| `fone-fetch` | window → engine `{type: 'get', id, url, text}`, engine → window `{type: 'got', id, ok, status, body, error}`: GETs of the server's `/api/video/` only |
+
 DOM `CustomEvent`s between the isolated and the main world (JSON string `detail`):
 
 | | |
 |---|---|
 | `page.js` → `player.js` | `fone-tm`: the Tiledmedia sample (`eventType`, `currentPosition`, `contentDuration`, `seekLowerBound`, `seekUpperBound`, `bufferLowerBound`, `bufferUpperBound`, `isAtLiveEdge`, `isWallclockTimeSourceBased`), plus `r` (speed) and `a` (audio tracks) |
-| `content.js`, `layout.js` → `page.js` | `fone-cmd`: `{cmd: 'rate', value}` (replays only), `{cmd: 'audio', prefer: 'fx' \| 'none', cid}`, `{cmd: 'onboards', slots}`; each re-sent every 2 s and dropped by `page.js` after 10 s without it (extension reloaded or removed) |
+| `content.js`, `layout.js` → `page.js` | `fone-cmd`: `{cmd: 'rate', value}` (replays only), `{cmd: 'audio', prefer: 'fx' \| 'mute' \| 'eng' \| 'none', feed: 'intl' \| 'none', live, cid}` (`eng`: F1 TV's international English commentary; `feed: 'intl'`: live, F1 TV's INTERNATIONAL channel picked in its own channel switcher, `[data-tao="tm_channel_switcher_item"][data-channel-id="1025"]`, once per video), `{cmd: 'onboards', slots}`; each re-sent every 2 s and dropped by `page.js` after 10 s without it (extension reloaded or removed). `{cmd: 'seek', by}`, once: a relative seek of F1 TV's player (`TimingConfig` `RELATIVE_TIME`, `PRECISE`), answered with `fone-seek` `{ok, by, err}` |
 
 Recording a stream itself, the engine talks to the streaming platform (`streams.js`,
 `recorder.js`) and to F1 TV's content API instead. With a server, it talks to the server directly: `/api/health` to pick the first reachable
@@ -295,10 +426,10 @@ nudge), `/api/timeline`, the playlist and segments, `POST /api/diag`, and, live,
 ### Settings
 
 `chrome.storage.sync` (the options page and the panel): `source` (`'server'` or `'local'`; unset:
-a server if one is listed, else local), `stream` (the live URL to record) and `bufferMin`
-(minutes kept, 1-180) for `'local'`, `servers` (tried in order), `channel` (`''` = the most
-recently recorded), `volume`, `muted`, `autoHold`, `collapsed`, `speed`, `f1Audio`, `anticipate`,
-and `danmaku` (the 弹幕 settings object). `chrome.storage.local` (per machine): `layout`
+a server if one is listed, else local), `stream` (the live URL to record) for `'local'`,
+`bufferMin` (minutes kept, 1-180) for `'local'` and live from the stream with a server, `servers` (tried in order), `channel` (`''` = the most
+recently recorded) and `liveDirect` (live from the stream itself; default true) for `'server'`,
+`volume`, `muted`, `autoHold`, `collapsed`, `speed`, `f1Audio` (`mute`, `fx`, `eng`, `off`), `f1Feed` (`intl`, `off`), `anticipate`, and `danmaku` (the 弹幕 settings object). `chrome.storage.local` (per machine): `layout`
 (`'split'` | `'off'`), `onboards` (the two picked drivers), and the self-update's `updateSeen`,
 `lastReload`, `refreshF1tv`.
 

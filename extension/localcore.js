@@ -37,6 +37,7 @@
       conn: null, // the connection the last frame came from
       tl: null, // its timeline (the recorder's key; null: its timestamps are its own only)
       next: null, // the source timestamp expected next on it
+      tOff: null, // m - source timestamp on it (its video goes on the same axis: tOffset)
       lastAt: null, // when the newest audio arrived
       pend: null, // a connection waiting to be placed by arrival {conn, since, list: [{at, frames}]}
       arr: [], // [[at, at - m end]] per batch: how fresh the audio is, for the live edge
@@ -124,6 +125,7 @@
         const d = durOf(f);
         last = f;
         if (skip > d / 2) { skip -= d; B.dropped++; continue; }
+        if (f.t != null) B.tOff = B.end - f.t;
         append(B, f.data, d);
       }
       sample(B, b.at);
@@ -173,6 +175,7 @@
         B.pend = { conn, tl, since: at, list: [{ at, frames: frames.slice(i) }] };
         break;
       }
+      if (f.t != null) B.tOff = B.end - f.t;
       append(B, f.data, d);
       B.conn = conn;
       B.tl = tl;
@@ -231,5 +234,9 @@
     return { kept, kbps: kept > 0 ? Math.round((B.bytes * 8) / kept / 1000) : null, filled: Math.round(B.filled), dropped: B.dropped, fmt: B.fmt };
   }
 
-  root.FoneLocal = { newBuffer, push, liveEdge, playableEnd, chunkAt, timeline, stats, CHUNK, SETTLE, EDGE_WINDOW };
+  // m - source timestamp for connection `conn`'s stream, once its audio is placed (null while it
+  // waits to be placed by arrival, or for any other connection): its video goes on the same axis.
+  const tOffset = (B, conn) => (B && B.conn === conn && !(B.pend && B.pend.conn === conn) ? B.tOff : null);
+
+  root.FoneLocal = { newBuffer, push, liveEdge, playableEnd, chunkAt, timeline, stats, tOffset, CHUNK, SETTLE, EDGE_WINDOW };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
