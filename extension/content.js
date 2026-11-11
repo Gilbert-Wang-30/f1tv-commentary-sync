@@ -420,8 +420,10 @@
       const how = [sd.score != null ? `match ${sd.score}` : null, sd.err != null && Math.abs(sd.err) >= 0.01 ? `${sd.err > 0 ? '+' : ''}${sd.err.toFixed(2)} s to go` : null,
         sd.v ? `speed ${sd.v > 0 ? '+' : ''}${(sd.v * 100).toFixed(1)}%` : null, sd.bias ? `your nudge ${sd.bias > 0 ? '+' : ''}${sd.bias} s` : null].filter(Boolean);
       if (sd.why && sd.state !== 'locked' && sd.why !== 'matched') how.push(sd.why); // (what the last look came to)
-      const tapErr = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.audio?.tap?.err : null; // (fone's copy of F1 TV's sound failing)
-      if (tapErr) how.push(`copy failed: ${tapErr}`);
+      const tp = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.audio?.tap : null; // (fone's copy of F1 TV's sound)
+      if (tp?.err) how.push(`copy failed: ${tp.err}`);
+      else if (tp?.absent) how.push("fone's copy of F1 TV's sound isn't in this page (reload it)");
+      else if (tp && !tp.copying && sd.state !== 'locked') how.push("F1 TV's player doesn't play its sound where fone can copy it");
       rows.push(['by sound', `${what}${how.length ? ` · ${how.join(' · ')}` : ''}`]);
     }
     // live: how far behind live F1 TV plays, by its own clock (the commentary goes as much behind its edge, less the delay)

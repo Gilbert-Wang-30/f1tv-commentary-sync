@@ -12,18 +12,21 @@
   const SR = 8000, N = 4096, KEEP = 40; // Hz kept; the copier's buffer; s kept here between takes
   const MUTE_KEY = 'fone.f1Muted'; // (page.js's)
   const connect = AudioNode.prototype.connect, disconnect = AudioNode.prototype.disconnect;
-  const T = { gain: 1, taps: new Map(), chunks: [], heardAt: 0, peak: 0, err: null, anchored: 0 };
+  const T = { gain: 1, taps: new Map(), chunks: [], heardAt: 0, peak: 0, err: null, anchored: 0,
+    seen: {} }; // (seen: what connected to what, by kind, for the diagnostics: how F1 TV's player plays its sound)
   try { if (localStorage.getItem(MUTE_KEY) === '1') T.gain = 0; } catch { /* storage blocked */ }
 
-  function tapOf(ctx) {
+  // (route: F1 TV's sound to the speakers through fone's gain; else a copy only, of sound F1 TV
+  // sends elsewhere: into a MediaStream an <audio> element plays, which fone's gain can't silence)
+  function tapOf(ctx, route = true) {
     let t = T.taps.get(ctx);
-    if (t) return t;
-    const g = ctx.createGain();
-    g.gain.value = T.gain;
-    connect.call(g, ctx.destination);
+    if (t) { if (route && !t.g) addGain(t); return t; }
+    t = { ctx, g: null, sp: null, srcs: new Set() };
+    if (route) addGain(t);
     // the copier: a ScriptProcessor (an AudioWorklet would need a module this page's CSP may
     // refuse), into a silent gain so it runs
     const sp = ctx.createScriptProcessor(N, 2, 1), z = ctx.createGain();
+    t.sp = sp;
     z.gain.value = 0;
     connect.call(sp, z);
     connect.call(z, ctx.destination);
@@ -88,12 +91,23 @@
       T.peak = Math.max(peak, T.peak * 0.95);
       while (T.chunks.length && T.chunks.length * N / sr > KEEP) T.chunks.shift();
     };
-    t = { ctx, g, sp, srcs: new Set() };
     T.taps.set(ctx, t);
     return t;
   }
+  function addGain(t) {
+    const g = t.ctx.createGain();
+    g.gain.value = T.gain;
+    connect.call(g, t.ctx.destination);
+    t.g = g;
+  }
+  const kind = (x) => { try { return x?.constructor?.name || typeof x; } catch { return '?'; } };
+  function note(src, dest) {
+    const k = `${kind(src)}>${kind(dest)}`;
+    T.seen[k] = (T.seen[k] || 0) + 1;
+  }
 
   AudioNode.prototype.connect = function (dest, ...rest) {
+    try { if (Object.keys(T.seen).length < 40) note(this, dest); } catch { /* never in F1 TV's way */ }
     if (dest instanceof AudioDestinationNode) {
       const t = tapOf(dest.context);
       t.srcs.add(this);
@@ -101,12 +115,16 @@
       connect.call(this, t.g);
       return dest;
     }
+    // sent into a MediaStream (an <audio> element plays it): copied as well, left going there
+    if (typeof MediaStreamAudioDestinationNode === 'function' && dest instanceof MediaStreamAudioDestinationNode) {
+      try { const t = tapOf(dest.context, false); if (!t.srcs.has(this)) { t.srcs.add(this); connect.call(this, t.sp); } } catch { /* the copy only */ }
+    }
     return connect.call(this, dest, ...rest);
   };
   AudioNode.prototype.disconnect = function (...args) {
     if (args[0] instanceof AudioDestinationNode) {
       const t = T.taps.get(args[0].context);
-      if (t && t.srcs.delete(this)) {
+      if (t && t.g && t.srcs.delete(this)) {
         try { disconnect.call(this, t.g); disconnect.call(this, t.sp); } catch { /* already */ }
         return undefined;
       }
@@ -119,14 +137,19 @@
     setGain(v) {
       T.gain = v;
       for (const t of T.taps.values()) {
+        if (!t.g) continue;
         try { t.g.gain.setTargetAtTime(v, t.ctx.currentTime, 0.02); } catch { t.g.gain.value = v; }
       }
     },
     gain: () => T.gain,
-    // F1 TV's sound goes through here (something connected to the speakers)
-    routed: () => T.taps.size > 0,
-    // F1 TV's sound is going through here (and was heard in the last 2 s)
+    // F1 TV's sound goes through here (something connected to the speakers: fone's gain mutes it)
+    routed: () => [...T.taps.values()].some((t) => t.g),
+    // F1 TV's sound is being copied here (heard in the last 2 s)
     live: () => T.taps.size > 0 && Date.now() - T.heardAt < 2000,
+    // copied at all (to the speakers or elsewhere)
+    copying: () => T.taps.size > 0,
+    // what connected to what in this page's Web Audio (kinds, counts), for the diagnostics
+    seen: () => ({ ...T.seen }),
     level: () => T.peak,
     // why the copy failed (an exception in the copier), if it did
     err: () => T.err || null,

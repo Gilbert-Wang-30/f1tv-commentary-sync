@@ -546,6 +546,13 @@
   const M = { held: false, own: null, checked: null };
   try { M.held = localStorage.getItem(MUTE_KEY) === '1'; } catch { /* storage blocked: for this page only */ }
   const tap = () => (window.__foneTap?.routed?.() ? window.__foneTap : null);
+  function tapReport() {
+    const T = window.__foneTap;
+    if (!T) return { absent: true };
+    const els = [...document.querySelectorAll('audio, video')].map((e) => `${e.tagName.toLowerCase()}${e.srcObject ? ':stream' : ''}${e.paused ? '' : ':playing'}${e.muted ? ':muted' : ''}`);
+    return { routed: T.routed(), copying: T.copying?.() ?? T.routed(), live: T.live(), level: Math.round(T.level() * 1000) / 1000,
+      err: T.err?.() ?? null, anchored: T.anchored?.() ?? null, seen: T.seen?.() ?? null, els };
+  }
 
   // Your press of F1 TV's mute button: true when fone carries it out (the call isn't passed on).
   function pressed(muted) {
@@ -726,7 +733,9 @@
       muted: M.held && !M.own && !!tap(), // F1 TV silenced with its own mute button, held by fone's gain
       own: M.held && !!M.own && !!tap(), // F1 TV's own mute (not a press of yours), held by fone's gain for its player
       // F1 TV's sound through fone's gain (audiotap.js): heard in the last 2 s, how loud lately
-      tap: window.__foneTap?.routed?.() ? { live: window.__foneTap.live(), level: Math.round(window.__foneTap.level() * 1000) / 1000, err: window.__foneTap.err?.() ?? null, anchored: window.__foneTap.anchored?.() ?? null } : null,
+      // fone's copy of F1 TV's sound (audiotap.js): whether it's there, routed (fone's gain) or
+      // copying only, and what this page's Web Audio connected (how F1 TV plays its sound)
+      tap: tapReport(),
       due: A.due ? Date.now() - A.due : 0, // ms a switch has been wanted and not done
       err: A.err,
     };
