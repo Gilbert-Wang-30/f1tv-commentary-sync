@@ -84,11 +84,34 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   // quarter of a second off (a seek, __f1Off changed). (Fetched and decoded only once a test sets
   // __f1Off: a 20-min file at load would hold up the picture's start, which reads as F1 TV behind
   // live.)
-  if (new URLSearchParams(location.search).get('f1audio') === '1') {
+  // (?f1audio=stream: as F1 TV's player plays it since November 2026, a MediaStream on a <video>
+  // with no Web Audio graph in the page's sight: here, built in another realm, an iframe's)
+  const f1mode = new URLSearchParams(location.search).get('f1audio');
+  if (f1mode === '1' || f1mode === 'stream') {
     window.__f1Off = null;
     (async () => {
-      const ctx = new AudioContext(), out = ctx.createGain();
-      out.connect(ctx.destination); // (fone's tap takes it from here, as from F1 TV's worklet)
+      let ctx, out;
+      if (f1mode === 'stream') {
+        const ifr = document.createElement('iframe');
+        ifr.style.display = 'none';
+        document.documentElement.append(ifr);
+        ctx = new ifr.contentWindow.AudioContext();
+        out = ctx.createGain();
+        const dest = ctx.createMediaStreamDestination();
+        out.connect(dest);
+        const el = document.createElement('video');
+        el.id = 'f1snd';
+        el.style.display = 'none';
+        el.srcObject = dest.stream;
+        document.documentElement.append(el);
+        const play = () => el.play().catch(() => {});
+        play();
+        setInterval(() => { if (el.paused) play(); }, 1000);
+      } else {
+        ctx = new AudioContext();
+        out = ctx.createGain();
+        out.connect(ctx.destination); // (fone's tap takes it from here, as from F1 TV's worklet)
+      }
       window.__gain0 = window.__foneTap?.gain() ?? null; // (fone's gain as F1 TV's sound first comes: before page.js runs)
       // the player's mute silences it before the speakers (the SDK's gain node), so the tap too
       setInterval(() => { out.gain.value = window.__player?.audioMuted ? 0 : 1; }, 50);

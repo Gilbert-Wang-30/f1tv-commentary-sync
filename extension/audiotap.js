@@ -13,7 +13,8 @@
   const MUTE_KEY = 'fone.f1Muted'; // (page.js's)
   const connect = AudioNode.prototype.connect, disconnect = AudioNode.prototype.disconnect;
   const T = { gain: 1, taps: new Map(), chunks: [], heardAt: 0, peak: 0, err: null, anchored: 0,
-    seen: {} }; // (seen: what connected to what, by kind, for the diagnostics: how F1 TV's player plays its sound)
+    seen: {}, // (what connected to what, by kind, for the diagnostics: how F1 TV's player plays its sound)
+    mine: new Set() }; // (ids of the audio tracks of MediaStreams copied through the graph already)
   try { if (localStorage.getItem(MUTE_KEY) === '1') T.gain = 0; } catch { /* storage blocked */ }
 
   // (route: F1 TV's sound to the speakers through fone's gain; else a copy only, of sound F1 TV
@@ -117,7 +118,11 @@
     }
     // sent into a MediaStream (an <audio> element plays it): copied as well, left going there
     if (typeof MediaStreamAudioDestinationNode === 'function' && dest instanceof MediaStreamAudioDestinationNode) {
-      try { const t = tapOf(dest.context, false); if (!t.srcs.has(this)) { t.srcs.add(this); connect.call(this, t.sp); } } catch { /* the copy only */ }
+      try {
+        const t = tapOf(dest.context, false);
+        if (!t.srcs.has(this)) { t.srcs.add(this); connect.call(this, t.sp); }
+        for (const tr of dest.stream.getAudioTracks()) T.mine.add(tr.id);
+      } catch { /* the copy only */ }
     }
     return connect.call(this, dest, ...rest);
   };
@@ -131,6 +136,44 @@
     }
     return disconnect.apply(this, args);
   };
+
+  // F1 TV's player as of November 2026 plays its sound from a <video> whose srcObject is a
+  // MediaStream, with no Web Audio graph in this page to tap (the user's diagnostics, 2026-11-11:
+  // nothing connected, one video playing a stream). The audio tracks of a playing element's stream
+  // are copied in an AudioContext of fone's own, left playing where they are (fone's gain isn't on
+  // them: F1 TV's own mute button works as F1 TV's). Looked for every second.
+  let own = null;
+  const fed = new Map(); // track id -> its source in fone's context
+  function ownCtx() {
+    if (own) return own;
+    own = new AudioContext();
+    const resume = () => { if (own.state === 'suspended') own.resume().catch(() => {}); };
+    for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, resume, { capture: true, passive: true });
+    resume();
+    return own;
+  }
+  function scan() {
+    try {
+      if (typeof document === 'undefined' || !document.querySelectorAll) return;
+      const now = new Set();
+      for (const el of document.querySelectorAll('video, audio')) {
+        const ms = el.srcObject;
+        if (!(ms instanceof MediaStream) || el.paused) continue;
+        for (const tr of ms.getAudioTracks()) {
+          if (tr.readyState !== 'live' || T.mine.has(tr.id)) continue;
+          now.add(tr.id);
+          if (fed.has(tr.id)) continue;
+          const ctx = ownCtx(), t = tapOf(ctx, false), src = ctx.createMediaStreamSource(new MediaStream([tr]));
+          connect.call(src, t.sp);
+          fed.set(tr.id, src);
+          T.seen['stream track>copy'] = (T.seen['stream track>copy'] || 0) + 1;
+        }
+      }
+      for (const [id, src] of fed) if (!now.has(id)) { try { disconnect.call(src); } catch { /* gone */ } fed.delete(id); }
+      if (own?.state === 'suspended') own.resume().catch(() => {});
+    } catch (e) { T.err = String(e?.message || e).slice(0, 120); }
+  }
+  setInterval(scan, 1000);
 
   window.__foneTap = Object.freeze({
     // fone's volume for F1 TV's sound (0: muted with F1 TV's own button), eased so it doesn't click
@@ -146,8 +189,10 @@
     routed: () => [...T.taps.values()].some((t) => t.g),
     // F1 TV's sound is being copied here (heard in the last 2 s)
     live: () => T.taps.size > 0 && Date.now() - T.heardAt < 2000,
-    // copied at all (to the speakers or elsewhere)
+    // copied at all (to the speakers, elsewhere, or off a playing element's stream)
     copying: () => T.taps.size > 0,
+    // fone's own context for a stream's copy: its state ('suspended' until the page is interacted with)
+    own: () => own?.state ?? null,
     // what connected to what in this page's Web Audio (kinds, counts), for the diagnostics
     seen: () => ({ ...T.seen }),
     level: () => T.peak,

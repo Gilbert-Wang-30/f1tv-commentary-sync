@@ -390,7 +390,10 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   whatever connects to the speakers goes through fone's gain instead (sound sent into a
   MediaStream instead, for an `<audio>` element to play, is copied as well, fone's gain not on
   it; and what connected to what is counted by kind, `seen()`, which the audio report and the
-  diagnostics carry: on 2026-11-11 the user's F1 TV routed nothing through the speakers' path),
+  diagnostics carry: on 2026-11-11 the user's F1 TV routed nothing through the speakers' path:
+  its player now plays its sound from a `<video>` whose `srcObject` is a MediaStream, with no Web
+  Audio graph in the page's sight; so every second the audio tracks of any playing element's
+  stream are copied too, in an AudioContext of fone's own, left playing where they are),
   with a ScriptProcessor
   copy, box-resampled to 8 kHz mono, each chunk stamped with the wall time it's heard. Chrome
   takes `playbackTime` at the event's dispatch, late by render bursts and main-thread work and

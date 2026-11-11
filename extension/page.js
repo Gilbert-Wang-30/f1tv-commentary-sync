@@ -549,9 +549,10 @@
   function tapReport() {
     const T = window.__foneTap;
     if (!T) return { absent: true };
-    const els = [...document.querySelectorAll('audio, video')].map((e) => `${e.tagName.toLowerCase()}${e.srcObject ? ':stream' : ''}${e.paused ? '' : ':playing'}${e.muted ? ':muted' : ''}`);
+    const els = [...document.querySelectorAll('audio, video')].map((e) => `${e.tagName.toLowerCase()}${e.srcObject ? `:stream(a${e.srcObject.getAudioTracks?.().length ?? '?'})` : ''}${e.paused ? '' : ':playing'}${e.muted ? ':muted' : ''}`);
+    const own = T.own?.() ?? null;
     return { routed: T.routed(), copying: T.copying?.() ?? T.routed(), live: T.live(), level: Math.round(T.level() * 1000) / 1000,
-      err: T.err?.() ?? null, anchored: T.anchored?.() ?? null, seen: T.seen?.() ?? null, els };
+      err: T.err?.() ?? null, anchored: T.anchored?.() ?? null, seen: T.seen?.() ?? null, els, own };
   }
 
   // Your press of F1 TV's mute button: true when fone carries it out (the call isn't passed on).
