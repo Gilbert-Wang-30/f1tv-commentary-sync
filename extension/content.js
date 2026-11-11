@@ -13,6 +13,7 @@
     bufferMin: 15, // 'local': minutes of the stream kept, for rewinding F1 TV
     liveDirect: true, // 'server', live: the streamer's stream straight into this browser (fresher than the server's)
     soundSync: true, // the commentary placed by F1 TV's own sound in the stream, live and replays (offscreen.js, sync by sound)
+    soundDuck: true, // ...and while it has it, F1 TV's own sound off: the stream carries it in step (no doubled sound)
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -168,6 +169,7 @@
   const pageCmd = (m) => document.dispatchEvent(new CustomEvent('fone-cmd', { detail: JSON.stringify(m) }));
   let lastCmd = '';
   let lastCmdAt = 0;
+  let duckOn = false, duckSeen = 0; // (F1 TV's own sound ducked: locked by sound within the last 10 s)
 
   // Desired state, re-sent every 2 s: page.js stops steering when we go quiet.
   function syncPage(force) {
@@ -178,13 +180,16 @@
     // (F1 TV's sound handed on: sync by sound, live, and on replays from a fone server's recording)
     const tap = settings.soundSync !== false && (live || sourceOf(settings) === 'server');
     const prefer = FoneSettings.prefer(settings), subs = settings.f1Subs === true, feed = settings.f1Feed === 'off' ? 'none' : 'intl';
-    const key = `${speed}|${prefer}|${subs}|${feed}|${live}|${cid}|${tap}`;
+    // F1 TV's own sound off while fone has found it in the stream (locked by sound: the stream
+    // carries it in step with the commentary, so it would only be heard twice): duckOn below
+    const duck = tap && settings.soundDuck !== false && duckOn;
+    const key = `${speed}|${prefer}|${subs}|${feed}|${live}|${cid}|${tap}|${duck}`;
     const t = Date.now();
     if (!force && key === lastCmd && t - lastCmdAt < 2000) return;
     lastCmd = key;
     lastCmdAt = t;
     pageCmd({ cmd: 'rate', value: speed });
-    pageCmd({ cmd: 'audio', prefer, subs, feed, live, cid, tap });
+    pageCmd({ cmd: 'audio', prefer, subs, feed, live, cid, tap, duck });
   }
 
   // Speed only for replays (Tiledmedia eventType vod); page.js keeps live at 1× regardless.
@@ -424,6 +429,8 @@
       if (tp?.err) how.push(`copy failed: ${tp.err}`);
       else if (tp?.absent) how.push("fone's copy of F1 TV's sound isn't in this page (reload it)");
       else if (tp && !tp.copying && sd.state !== 'locked') how.push("F1 TV's player doesn't play its sound where fone can copy it");
+      if (tp?.ducked) how.push("F1 TV's own sound off: the stream's copy plays");
+      else if (tp?.duckFailed) how.push(`F1 TV's own sound left on (${tp.duckFailed})`);
       rows.push(['by sound', `${what}${how.length ? ` · ${how.join(' · ')}` : ''}`]);
     }
     // live: how far behind live F1 TV plays, by its own clock (the commentary goes as much behind its edge, less the delay)
@@ -713,6 +720,11 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type !== 'fone-status') return;
     status = msg.status;
+    // ducking F1 TV: on as soon as it's locked by sound, off once it hasn't been for 10 s
+    const locked = status.sound?.state === 'locked' && (status.state === 'sync' || status.state === 'syncing');
+    if (locked) duckSeen = Date.now();
+    const duckNow = duckSeen > 0 && Date.now() - duckSeen < 10000;
+    if (duckNow !== duckOn) { duckOn = duckNow; syncPage(true); }
     // fone switched F1 TV to INTERNATIONAL (page.js, a switch seen to land): once it plays, the
     // commentary locked again to its edge (the two feeds' live delays differ by a second or two),
     // keeping how far F1 TV was behind live before the switch (your rewind, a pause, a hold: the

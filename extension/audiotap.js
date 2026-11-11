@@ -149,6 +149,28 @@
   // stream to play.
   const media = new Set();
   const caps = new WeakMap(); // element -> its captureStream()
+  const captured = new Set(); // (the elements captured: what fone turns down when it ducks F1 TV)
+  // Ducking: while fone has found F1 TV's sound in the streamer's stream (it carries its own copy,
+  // in step with the commentary), F1 TV's own is turned down to 0 so it isn't heard twice (two
+  // copies a few ms apart sound like a flanger). The copy fone hears must not go with it: if the
+  // level copied falls away within 3 s, turning it down deafens the copy too: undone, and not
+  // tried again on this page.
+  const D = { on: false, at: 0, before: 0, vols: new Map(), failed: null };
+  function duckTick() {
+    if (D.on && !D.failed) {
+      for (const el of captured) {
+        if (el.volume !== 0) { if (!D.vols.has(el)) D.vols.set(el, el.volume); el.volume = 0; }
+      }
+      if (Date.now() - D.at > 3000 && Date.now() - D.at < 6000 && D.before > 0.01 && T.peak < D.before * 0.1) {
+        D.failed = "fone's copy goes quiet with F1 TV's volume";
+        unduck();
+      }
+    }
+  }
+  function unduck() {
+    for (const [el, v] of D.vols) { try { if (el.volume === 0) el.volume = v; } catch { /* gone */ } }
+    D.vols.clear();
+  }
   const mediaKind = (el) => `${el.tagName?.toLowerCase()}:${el.srcObject ? (el.srcObject.constructor?.name || 'object') : el.currentSrc ? 'src' : 'none'}${el.isConnected ? '' : ':detached'}`;
   function remember(el) {
     if (!(el instanceof HTMLMediaElement) || media.has(el)) return;
@@ -185,7 +207,7 @@
         // element's own output, captured (captureStream: a copy, the element left playing)
         let ms = el.srcObject instanceof MediaStream ? el.srcObject : caps.get(el);
         if (!ms && typeof el.captureStream === 'function') {
-          try { ms = el.captureStream(); caps.set(el, ms); T.seen[`capture>${mediaKind(el)}`] = (T.seen[`capture>${mediaKind(el)}`] || 0) + 1; } catch (e) { caps.set(el, null); T.err = `capture: ${String(e?.message || e).slice(0, 80)}`; }
+          try { ms = el.captureStream(); caps.set(el, ms); captured.add(el); T.seen[`capture>${mediaKind(el)}`] = (T.seen[`capture>${mediaKind(el)}`] || 0) + 1; } catch (e) { caps.set(el, null); T.err = `capture: ${String(e?.message || e).slice(0, 80)}`; }
         }
         if (!ms) continue;
         for (const tr of ms.getAudioTracks()) {
@@ -203,6 +225,7 @@
     } catch (e) { T.err = String(e?.message || e).slice(0, 120); }
   }
   setInterval(scan, 1000);
+  setInterval(() => { try { duckTick(); } catch { /* never in the way */ } }, 250);
 
   window.__foneTap = Object.freeze({
     // fone's volume for F1 TV's sound (0: muted with F1 TV's own button), eased so it doesn't click
@@ -222,6 +245,15 @@
     copying: () => T.taps.size > 0,
     // fone's own context for a stream's copy: its state ('suspended' until the page is interacted with)
     own: () => own?.state ?? null,
+    // F1 TV's own sound turned down while fone has it in the stream (see D above)
+    duck(on) {
+      on = !!on && !D.failed;
+      if (on === D.on) return;
+      D.on = on;
+      if (on) { D.at = Date.now(); D.before = T.peak; duckTick(); } else unduck();
+    },
+    ducked: () => D.on && !D.failed && captured.size > 0,
+    duckFailed: () => D.failed,
     // the media elements seen playing (out of the page too)
     media: () => [...media].map((el) => `${mediaKind(el)}${el.srcObject?.getAudioTracks ? `(a${el.srcObject.getAudioTracks().length})` : ''}${el.paused ? '' : ':playing'}${el.muted ? ':muted' : ''}`),
     // what connected to what in this page's Web Audio (kinds, counts), for the diagnostics
