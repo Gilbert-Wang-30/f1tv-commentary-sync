@@ -144,6 +144,27 @@
   // them: F1 TV's own mute button works as F1 TV's). Looked for every second.
   let own = null;
   const fed = new Map(); // track id -> its source in fone's context
+  // Media elements that play, in the page or not (a player can play its sound from an Audio()
+  // never put in the page: nothing in the page to find): seen as they start playing or get a
+  // stream to play.
+  const media = new Set();
+  const mediaKind = (el) => `${el.tagName?.toLowerCase()}:${el.srcObject ? (el.srcObject.constructor?.name || 'object') : el.currentSrc ? 'src' : 'none'}${el.isConnected ? '' : ':detached'}`;
+  function remember(el) {
+    if (!(el instanceof HTMLMediaElement) || media.has(el)) return;
+    media.add(el);
+    const k = `play>${mediaKind(el)}`;
+    T.seen[k] = (T.seen[k] || 0) + 1;
+    while (media.size > 16) media.delete(media.values().next().value);
+  }
+  try {
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...a) { try { remember(this); } catch { /* never in the way */ } return play.apply(this, a); };
+    const so = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
+    if (so?.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', { ...so,
+        set(v) { so.set.call(this, v); try { if (v) remember(this); } catch { /* never in the way */ } } });
+    }
+  } catch { /* not patchable: the page's own elements are still looked at */ }
   function ownCtx() {
     if (own) return own;
     own = new AudioContext();
@@ -156,7 +177,7 @@
     try {
       if (typeof document === 'undefined' || !document.querySelectorAll) return;
       const now = new Set();
-      for (const el of document.querySelectorAll('video, audio')) {
+      for (const el of new Set([...document.querySelectorAll('video, audio'), ...media])) {
         const ms = el.srcObject;
         if (!(ms instanceof MediaStream) || el.paused) continue;
         for (const tr of ms.getAudioTracks()) {
@@ -193,6 +214,8 @@
     copying: () => T.taps.size > 0,
     // fone's own context for a stream's copy: its state ('suspended' until the page is interacted with)
     own: () => own?.state ?? null,
+    // the media elements seen playing (out of the page too)
+    media: () => [...media].map((el) => `${mediaKind(el)}${el.srcObject?.getAudioTracks ? `(a${el.srcObject.getAudioTracks().length})` : ''}${el.paused ? '' : ':playing'}${el.muted ? ':muted' : ''}`),
     // what connected to what in this page's Web Audio (kinds, counts), for the diagnostics
     seen: () => ({ ...T.seen }),
     level: () => T.peak,

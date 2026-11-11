@@ -86,12 +86,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   // live.)
   // (?f1audio=stream: as F1 TV's player plays it since November 2026, a MediaStream on a <video>
   // with no Web Audio graph in the page's sight: here, built in another realm, an iframe's)
+  // (?f1audio=detached: the same stream played by an Audio() never put in the page)
   const f1mode = new URLSearchParams(location.search).get('f1audio');
-  if (f1mode === '1' || f1mode === 'stream') {
+  if (f1mode === '1' || f1mode === 'stream' || f1mode === 'detached') {
     window.__f1Off = null;
     (async () => {
       let ctx, out;
-      if (f1mode === 'stream') {
+      if (f1mode === 'stream' || f1mode === 'detached') {
         const ifr = document.createElement('iframe');
         ifr.style.display = 'none';
         document.documentElement.append(ifr);
@@ -99,11 +100,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
         out = ctx.createGain();
         const dest = ctx.createMediaStreamDestination();
         out.connect(dest);
-        const el = document.createElement('video');
-        el.id = 'f1snd';
-        el.style.display = 'none';
+        const el = f1mode === 'detached' ? new Audio() : document.createElement('video');
         el.srcObject = dest.stream;
-        document.documentElement.append(el);
+        if (f1mode !== 'detached') {
+          el.id = 'f1snd';
+          el.style.display = 'none';
+          document.documentElement.append(el);
+        }
         const play = () => el.play().catch(() => {});
         play();
         setInterval(() => { if (el.paused) play(); }, 1000);

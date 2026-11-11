@@ -393,7 +393,10 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   diagnostics carry: on 2026-11-11 the user's F1 TV routed nothing through the speakers' path:
   its player now plays its sound from a `<video>` whose `srcObject` is a MediaStream, with no Web
   Audio graph in the page's sight; so every second the audio tracks of any playing element's
-  stream are copied too, in an AudioContext of fone's own, left playing where they are),
+  stream are copied too, in an AudioContext of fone's own, left playing where they are; elements
+  never put in the page, an `Audio()`, are found as they start playing or get a stream, by
+  wrapping `HTMLMediaElement.prototype.play` and the `srcObject` setter; that video's own audio
+  track, a `MediaSourceHandle`'s, measured silent: a placeholder),
   with a ScriptProcessor
   copy, box-resampled to 8 kHz mono, each chunk stamped with the wall time it's heard. Chrome
   takes `playbackTime` at the event's dispatch, late by render bursts and main-thread work and
