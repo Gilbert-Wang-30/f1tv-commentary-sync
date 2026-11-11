@@ -1073,7 +1073,9 @@ function vAt(w) {
     if (b) { // (both ends playing on, nothing between them but time)
       if (b.paused || b.seeking || b.waiting || Math.abs((b.p - a.p) - (b.at - a.at)) > 0.08) return null;
     } else if (w - a.at > 1.5) return null;
-    return a.p + (w - a.at);
+    // (between two reports, at the pace the picture really went: F1 TV trims its player's speed by
+    // a few % for seconds at a time to keep its sound and picture together)
+    return b ? a.p + (w - a.at) * ((b.p - a.p) / (b.at - a.at)) : a.p + (w - a.at);
   }
   return null;
 }
@@ -1090,7 +1092,19 @@ function sndHeard(msg) {
     if (p0 == null) continue;
     const bin = atob(c.b64), pcm = new Int16Array(bin.length >> 1);
     for (let i = 0; i < pcm.length; i++) pcm[i] = (bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)) << 16 >> 16;
-    const x = Float32Array.from(pcm, (v) => v / 32768);
+    let x = Float32Array.from(pcm, (v) => v / 32768);
+    // F1 TV's sound as its player played it, sped up or slowed by those trims: put back on the
+    // picture's own time (resampled to the stretch of picture it went with), so a run's samples
+    // are the picture's time at SND.SR, whatever the trims did
+    const p1 = vAt(c.w + x.length / SND.SR);
+    if (p1 != null) {
+      const ratio = (p1 - p0) / (x.length / SND.SR);
+      if (ratio > 0.85 && ratio < 1.15 && Math.abs(ratio - 1) > 0.002) {
+        const m = Math.max(1, Math.round(x.length * ratio)), y = new Float32Array(m), k = (x.length - 1) / Math.max(1, m - 1);
+        for (let i = 0; i < m; i++) { const j = i * k, j0 = Math.floor(j), f = j - j0; y[i] = x[j0] * (1 - f) + (x[Math.min(x.length - 1, j0 + 1)] * f); }
+        x = y;
+      }
+    }
     const runs = sn.runs, r = runs[runs.length - 1];
     const d = r ? p0 - (r.p0 + r.x.length / SND.SR) : null; // (> 0: this piece starts after the run's end)
     if (r && Math.abs(d) < SND.BREAK) {

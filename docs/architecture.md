@@ -440,7 +440,10 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
 - **Where it was** (`offscreen.js` `sndHeard`, `vAt`): each chunk's wall time is put on F1 TV's
   position by the video reports kept for 90 s (`S.vhist`: both reports either side playing at 1×,
   nothing between them but time), chunks that follow on joined into runs (75 s kept), a run's
-  place the running average of where its pieces put it. A piece that jumps by 20 ms to 1 s (F1
+  place the running average of where its pieces put it. F1 TV trims its player's speed by a few %
+  for seconds at a time to keep its sound and picture together: each piece is put back on the
+  picture's own time (resampled to the stretch of picture it went with, `vAt` interpolating
+  between reports at the pace the picture really went), so a run's samples are picture time. A piece that jumps by 20 ms to 1 s (F1
   TV's sound skipping or repeating a little) is spliced in where it belongs (silence for what was
   skipped, what came again cut) rather than starting a new run: a look needs 15 s in one run.
 - **The match** (`sound.js` `locate`, every `SND.EVERY` s): the newest `SND.WIN` s of F1 TV's
