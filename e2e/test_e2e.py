@@ -73,6 +73,47 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   if (new URLSearchParams(location.search).get('ev') === 'live') { window.__event = 'live'; window.__origin = Date.now() - 32000; }
   // ?noclock=1: no wall clock yet (the player's first reports, before its bounds are settled)
   window.__noClock = new URLSearchParams(location.search).get('noclock') === '1';
+  // ?f1audio=1: F1 TV's sound, as its player plays it (Web Audio to the speakers): /media/f1.wav
+  // heard at the picture's position plus __f1Off (null: silent), as a player's A/V sync keeps it:
+  // what's rendered now is heard the output's latency later, and its speed is trimmed (by up to
+  // 1 %) to follow the picture, the clocks of the two drifting apart; restarted only when it's a
+  // quarter of a second off (a seek, __f1Off changed). (Fetched and decoded only once a test sets
+  // __f1Off: a 20-min file at load would hold up the picture's start, which reads as F1 TV behind
+  // live.)
+  if (new URLSearchParams(location.search).get('f1audio') === '1') {
+    window.__f1Off = null;
+    (async () => {
+      const ctx = new AudioContext(), out = ctx.createGain();
+      out.connect(ctx.destination); // (fone's tap takes it from here, as from F1 TV's worklet)
+      while (window.__f1Off == null) await new Promise((r) => setTimeout(r, 200));
+      const buf = await ctx.decodeAudioData(await (await fetch('/media/f1.wav')).arrayBuffer());
+      let src = null, base = null, rate = 1;
+      const stop = () => { if (src) { try { src.stop(); } catch (e) {} src = null; } };
+      const lat = () => { // (how much later than rendered the output is heard)
+        const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+        return ts && ts.contextTime > 0 ? Math.max(0, ctx.currentTime - ts.contextTime - (performance.now() - ts.performanceTime) / 1000) : (ctx.outputLatency || 0);
+      };
+      setInterval(() => {
+        const v = mainVid();
+        if (window.__f1Off == null || v.paused || v.readyState < 3) return stop();
+        if (ctx.state !== 'running') ctx.resume();
+        const want = v.currentTime + lat() + window.__off + window.__f1Off; // (what must be rendered now)
+        const have = src ? base.tau + (ctx.currentTime - base.at) * rate : null;
+        if (src && Math.abs(have - want) < 0.25) {
+          rate = Math.max(0.99, Math.min(1.01, 1 + (want - have) * 0.5));
+          base = { at: ctx.currentTime, tau: have };
+          src.playbackRate.setValueAtTime(rate, ctx.currentTime);
+          return;
+        }
+        stop();
+        src = ctx.createBufferSource(); src.buffer = buf; src.connect(out);
+        const at = ctx.currentTime + 0.05;
+        rate = 1;
+        src.start(at, Math.max(0, want + 0.05));
+        base = { at, tau: want + 0.05 };
+      }, 200);
+    })();
+  }
   window.__active = new Set();
   const loadedAt = Date.now();
   const mainVid = () => document.getElementById('v');
@@ -406,7 +447,7 @@ async def wait_status(page, pred, timeout=30, what="condition"):
         if st and pred(st):
             return st
         await asyncio.sleep(0.2)
-    keys = ("state", "text", "drift", "E", "m", "audioTime", "lead", "holding", "error")
+    keys = ("state", "text", "drift", "E", "m", "p", "audioTime", "lead", "holding", "error", "sound")
     print("last status:", json.dumps({k: st.get(k) for k in keys if k in st}, ensure_ascii=False), json.dumps(st, ensure_ascii=False)[:500])
     dump_diag()
     raise AssertionError(f"timed out waiting for {what}")

@@ -257,15 +257,17 @@
   //     audio.currentTime, paused: audio paused, seeking: audio seek in flight or
   //     starved, coarse: imprecise position source, precise: exact position source
   //     (isPrecise), resync: target moved on purpose, buffered: [[start, end], ...] of
-  //     the audio (optional)}
+  //     the audio (optional), slew: the target running that much faster or slower than
+  //     `rate` (sync by sound easing in a correction: the audio follows, resampled, and
+  //     the corrections at 1× go on around it; optional)}
   // Returns {st, rate, seek?}: the playback rate to use, and rarely where to seek to.
   function steer(prev, x) {
     const st = { ...prev };
-    const r = x.rate;
+    const r = x.rate, rs = r * (1 + (x.slew || 0)); // (rs: how fast the target moves)
     const precise = !!x.precise && !x.coarse;
     let relock = !st.lock || x.resync || (st.coarse && !x.coarse);
     if (!relock) {
-      const pred = st.lock.m + (x.t - st.lock.t) * r;
+      const pred = st.lock.m + (x.t - st.lock.t) * rs;
       const e = x.m - pred;
       const ae = Math.abs(e);
       if (ae > bound('SNAP', r)) relock = true;
@@ -287,13 +289,13 @@
     const a = Math.abs(d);
     // A seek is landing (or the buffer is refilling): let it, unless it is headed far
     // off (audio.currentTime already reads the seek's destination).
-    if (x.seeking && a <= STEER.SNAP) return { st, rate: r };
+    if (x.seeking && a <= STEER.SNAP) return { st, rate: rs };
 
     if (st.leadCheck && !x.paused && !x.coarse && x.t - st.seekAt >= STEER.LEAD_CHECK) {
       // how did the last seek land? move that kind of seek's lead by half the miss (the lead
       // is in wall seconds: the target runs r content seconds a second while a seek loads)
       const lead = st.lead[st.seekKind];
-      st.lead = { ...st.lead, [st.seekKind]: Math.min(STEER.LEAD_MAX, Math.max(0, lead - d / (2 * r))) };
+      st.lead = { ...st.lead, [st.seekKind]: Math.min(STEER.LEAD_MAX, Math.max(0, lead - d / (2 * rs))) };
       st.leadCheck = false;
     }
     // Right after a jump, a resume or a seek that landed badly, one more (buffered,
@@ -307,21 +309,21 @@
         // outside the buffer has to fetch first
         const kind = inRanges(x.buffered, L) ? 'near' : 'far';
         Object.assign(st, { seekAt: x.t, since: x.t, seekKind: kind, k: 0, trim: null, jumped: false, leadCheck: !x.coarse, tries: (st.tries || 0) + 1 });
-        return { st, rate: r, seek: L + st.lead[kind] * r };
+        return { st, rate: rs, seek: L + st.lead[kind] * rs };
       }
       st.k = 0; st.trim = null;
-      return { st, rate: r }; // a seek just landed: re-seek in a moment rather than nudge
+      return { st, rate: rs }; // a seek just landed: re-seek in a moment rather than nudge
     }
     st.jumped = false;
     if (x.paused) {
       st.k = 0; st.trim = null;
-      return { st, rate: r };
+      return { st, rate: rs };
     }
     // At any speed but 1× the audio must keep its pitch (WSOLA time-stretch), and every
     // WSOLA rate change is an audible click — so off 1× we only ever seek (above).
     if (r !== 1) {
       st.k = 0; st.trim = null;
-      return { st, rate: r };
+      return { st, rate: rs };
     }
     if (st.k === 0) {
       if (a > (x.coarse ? STEER.START_COARSE : fine('START', precise))) {
@@ -346,7 +348,7 @@
         : a < fine('STOP', precise) && (!precise || Math.abs(x.audio - x.m) < STEER.PRECISE.STOP);
       if (done || Math.sign(d) === Math.sign(st.k)) { st.k = 0; st.trim = null; }
     }
-    return { st, rate: r * (1 + st.k) };
+    return { st, rate: rs * (1 + st.k) };
   }
 
   root.FoneCore = { chooseClock, videoNow, eventTime, mapWall, wallOf, chosenRate, nominalRate, isCoarse, isPrecise, newSteer, holdSteer, steer,

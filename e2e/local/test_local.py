@@ -51,6 +51,7 @@ async def main():
                   "--ignore-certificate-errors", "--host-resolver-rules=" + ", ".join(f"MAP {h} 127.0.0.1" for h in HOSTS)],
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
+        ext = sw.url.split("/")[2]
         await sw.evaluate("chrome.storage.sync.set({source: 'local', stream: 'https://live.bilibili.com/5555', bufferMin: 1, servers: [], f1Feed: 'off'})")
 
         blob = open(f"{MEDIA}/video.mp4", "rb").read()
@@ -60,6 +61,8 @@ async def main():
             if "/2.0/R/" in url:  # F1 TV's content API, in case the offscreen document's fetches come here
                 return await route.fulfill(body=json.dumps({"resultObj": {"containers": [{"metadata": {
                     "title": "Test Grand Prix - Race", "contentSubtype": "LIVE"}}]}}), content_type="application/json")
+            if url.endswith("/media/f1.wav"):  # (F1 TV's sound, ?f1audio=1)
+                return await route.fulfill(body=open("/media/f1.wav", "rb").read(), content_type="audio/wav")
             if not url.endswith("/media/video.mp4"):
                 return await route.fulfill(body=E.TM_PAGE, content_type="text/html")
             rng = route.request.headers.get("range", "bytes=0-")
@@ -71,8 +74,8 @@ async def main():
         await ctx.route("https://f1tv.formula1.com/**", f1tv)
         page = await ctx.new_page()
 
-        async def live_page(fl=32, noclock=False):
-            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/test-race?action=play&tm=1&ev=live{'&noclock=1' if noclock else ''}")
+        async def live_page(fl=32, noclock=False, f1audio=False):
+            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/test-race?action=play&tm=1&ev=live{'&noclock=1' if noclock else ''}{'&f1audio=1' if f1audio else ''}")
             await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
             # the live edge 20 s ahead of the playhead (the mock's default), and F1 TV's picture `fl` s
             # behind its own clock (32: where the real one starts, about)
@@ -330,8 +333,9 @@ async def main():
         old = page
         page = await ctx.new_page()
         await old.close()
-        # (this time F1 TV's player starts 35 s behind its clock, and gives no clock at first)
-        await live_page(fl=35, noclock=True)
+        # (this time F1 TV's player starts 35 s behind its clock, and gives no clock at first; and it
+        # plays F1 TV's sound, which the stream carries: sync by sound, below)
+        await live_page(fl=35, noclock=True, f1audio=True)
         st = await E.wait_status(page, lambda s: s.get("clock") == "edge" and s.get("delay") is not None, 20, "back after a reload")
         E.check(abs(st["delay"] - 28.5) < 1e-6 and st["delaySource"] == "stream", f"the nudge was kept for the stream: {st['delay']} ({st['delaySource']})")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync", 30, "in sync after a reload")
@@ -345,6 +349,79 @@ async def main():
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and s.get("f1Lat") is not None
                                  and abs((s["rec"]["edge"] - s["m"]) - (s["f1Lat"] - s["delay"])) < 0.3, 15, "locked again by F1 TV's clock")
         E.check(abs(st["f1Lat"] - 35) < 0.5, f"its clock came: F1 TV {st['f1Lat']} s behind it, the commentary {st['rec']['edge'] - st['m']:.2f}s behind its edge")
+
+        # Sync by sound. The stream carries F1 TV's sound (f1.wav, 12 dB under a voice) at stream
+        # time s; F1 TV plays f1.wav at its picture's position + __f1Off. So the commentary is in step
+        # when the stream time playing is the picture's + __f1Off: set 2 s off what fone has now.
+        # fone hears it, finds it, and (the first time, at the start) goes there at once; F1 TV's
+        # sound muted by fone's own gain, F1 TV's player not muted.
+        first = mock("/_ctl/stats")["flv"][0]["first"]  # the stream time of m 0
+        st = await E.status(page)
+        off0 = st["m"] + first + 2.0 - st["p"]
+        await page.evaluate(f"() => {{ window.__f1Off = {off0}; }}")
+        def placed(s, off):  # how far the stream time playing is from where F1 TV's sound puts it
+            return (s["m"] + first) - (s["p"] + off)
+        # (Placed by the engine's own picture position, as everything here: it runs ~30 ms behind
+        # the mock's picture, and the commentary lands ~50 ms after the true place, a mix of the
+        # mock stream's AAC encoder delay and the two playback paths; under what's heard. Run to
+        # run it was +38 to +93 ms here. So the first lock is held to 0.15 s, and the moves after
+        # it to where it landed, b0.)
+        st = await E.wait_status(page, lambda s: (s.get("sound") or {}).get("state") == "locked" and abs(placed(s, off0)) < 0.15, 120, "locked by sound")
+        await asyncio.sleep(1)
+        st = await E.status(page)
+        b0 = placed(st, off0)
+        mute = await page.evaluate("() => [window.__muteCalls.includes(true), window.__foneTap.gain(), window.__foneTap.live()]")
+        E.check(mute == [False, 0, True] and "by sound" in (await page.evaluate(f"() => {E.PANEL}.getElementById('text').textContent")),
+                f"sync by sound: F1 TV's sound found in the stream, the commentary there ({placed(st, off0) * 1000:+.0f} ms, match {st['sound']['score']}), "
+                f"F1 TV muted by fone's gain, its player left playing it (mute calls, gain, heard: {mute})")
+        # The streamer's latency moves 0.6 s: eased there, no seek, the speed off 1x by 2 % at most
+        seeks0 = st["fixes"]["nSeeks"]
+        off1 = off0 + 0.6
+        await page.evaluate(f"() => {{ window.__f1Off = {off1}; }}")
+        vmax, t0 = 0.0, time.time()
+        while time.time() - t0 < 180:
+            st = await E.status(page)
+            vmax = max(vmax, abs((st.get("sound") or {}).get("v") or 0))
+            if abs(placed(st, off1) - b0) < 0.03 and abs(st["sound"]["v"]) < 0.002 and st["state"] == "sync":
+                break
+            await asyncio.sleep(1)
+        E.check(abs(placed(st, off1) - b0) < 0.03 and st["fixes"]["nSeeks"] == seeks0 and 0.003 < vmax <= 0.0201,
+                f"...its latency moved 0.6 s: eased there in {time.time() - t0:.0f}s ({(placed(st, off1) - b0) * 1000:+.0f} ms from the first lock), "
+                f"no seek ({st['fixes']['nSeeks'] - seeks0}), the speed at most {vmax * 100:+.1f}% off 1x")
+        # A nudge on top is a preference: kept, not pulled back
+        await page.keyboard.press("]")
+        await asyncio.sleep(25)
+        st = await E.status(page)
+        E.check(abs(placed(st, off1) - b0 - 0.5) < 0.04 and abs(st["sound"]["bias"] - 0.5) < 1e-6,
+                f"...a nudge (+0.5) on top kept: {placed(st, off1) - b0:+.2f}s from the sound's place (bias {st['sound']['bias']})")
+        await page.keyboard.press("[")
+        # The streamer's latency drops 5 s (they reloaded their player): further than a close look
+        # sees, so it looks widely again; a step that big is jumped to (minutes of easing otherwise)
+        await asyncio.sleep(3)
+        seeks0 = (await E.status(page))["fixes"]["nSeeks"]
+        off2 = off1 - 5.0
+        await page.evaluate(f"() => {{ window.__f1Off = {off2}; }}")
+        t0 = time.time()
+        st = await E.wait_status(page, lambda s: abs(placed(s, off2) - b0) < 0.04 and (s.get("sound") or {}).get("state") == "locked"
+                                 and s["state"] == "sync", 150, "found again after a 5 s step")
+        E.check(st["fixes"]["nSeeks"] > seeks0 and abs(st["sound"]["bias"]) < 1e-6,
+                f"...its latency dropped 5 s: found again in {time.time() - t0:.0f}s and jumped there ({(placed(st, off2) - b0) * 1000:+.0f} ms from the first lock, "
+                f"bias {st['sound']['bias']})")
+        await page.evaluate("() => { window.__f1Off = null; }")  # (F1 TV's sound off: the rest goes by the delay)
+        # F1 TV's sound back when fone stops muting it ('as is'), off again when it mutes
+        gains = []
+        for mode, want in (("off", 1), ("mute", 0)):
+            await sw.evaluate(f"chrome.storage.sync.set({{f1Audio: '{mode}'}})")
+            g = await E.wait_js(page, "window.__foneTap.gain()", lambda g: g == want, 10, f"F1 TV's gain {want} ({mode})")
+            gains.append(g)
+        E.check(gains == [1, 0] and not (await page.evaluate("() => window.__muteCalls.includes(true)")),
+                f"F1 TV's sound back through fone's gain when it stops muting, off again when it mutes: {gains}")
+        await asyncio.sleep(2)
+        # (the delay sound kept for the stream, back to what the tests after this set by hand)
+        opt = await ctx.new_page()
+        await opt.goto(f"chrome-extension://{ext}/options.html")
+        await opt.evaluate("() => localStorage.setItem('delay|bilibili:5555', JSON.stringify({delay: 28.5, at: Date.now(), v: 2}))")
+        await opt.close()
         E.check(st["rec"]["kept"] > 40, f"the recording outlived the tab: {st['rec']['kept']}s kept")
         hidden = await page.evaluate(f"() => [{E.PANEL}.getElementById('statsRow').hidden, {E.PANEL}.getElementById('dm').hidden]")
         E.check(hidden == [True, True], "no server: the stats and 弹幕 buttons are hidden")

@@ -378,6 +378,81 @@ F1 TV's clock is re-proving (`clockLost`) Go live waits.
 Without F1 TV's clock: `GOLIVE.F1` s behind the edge it will report just before its next step, or
 back to its most live this session (a pause, a rewind), whichever is further.
 
+### Sync by sound
+
+The streamer passes F1 TV's own sound through (its track sound, or the international feed)
+under their voice, so where that sound sits in their stream says which moment of the stream goes
+with which picture: the delay, measured, and followed as it moves (the streamer's player stalls,
+their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
+
+- **Hearing F1 TV** (`audiotap.js`, MAIN world, `document_start`): F1 TV's player plays through
+  Web Audio (an AudioWorklet its WASM core feeds). `AudioNode.prototype.connect` is patched so
+  whatever connects to the speakers goes through fone's gain instead, with a ScriptProcessor
+  copy, box-resampled to 8 kHz mono, each chunk stamped with the wall time it's heard. Chrome
+  takes `playbackTime` at the event's dispatch, late by render bursts and main-thread work and
+  now and then a render quantum early (measured against a step at a known context time: the
+  input's first sample two buffers before it at the earliest dispatches, two and a render quantum
+  at the median, up to 2500 frames more with 60 ms tasks on the page): so buffers are counted in
+  samples from an anchor, a low tenth of where the last 64 buffers put buffer 0 (exactly two
+  buffers at every load measured; the minimum dips a quantum early under load), anchored again
+  when two in a row come half a buffer late by the same amount (buffers were lost; a backlog
+  after a busy spell comes late by a buffer less each time and stays out of the low tenth). In
+  the e2e page its stamps land within a few ms of the sound actually played. The context's
+  `getOutputTimestamp` maps render time to the performance clock, and `Date.now() -
+  performance.now()` at that moment to the wall clock the video reports use (the two clocks
+  drift apart, and the performance clock stops while the computer sleeps). fone's "muted" is
+  that gain at 0 (page.js `steerMute`: no SDK call, F1 TV's player left playing); live with sync
+  by sound, the player's own mute (remembered from a last visit, set again on a content load) is
+  undone once per video so the copy isn't silence. F1 TV's own mute button, seen by wrapping the
+  player's `setAudioIsMuted` (a call made inside a trusted click or key event), still has its
+  say for the video, until a mode is picked in fone again: unmuting with it lets F1 TV be heard;
+  muting with it is fone's gain at 0 as before, the player unmuted again behind it. Without
+  the tap (F1 TV's sound not through Web Audio), F1 TV's own mute as before. page.js hands the copy over
+  every second (`fone-f1audio`, Int16 base64) while content.js asks (`tap`: live, `soundSync`
+  on), content.js passes it to the engine (`f1audio`).
+- **Where it was** (`offscreen.js` `sndHeard`, `vAt`): each chunk's wall time is put on F1 TV's
+  position by the video reports kept for 90 s (`S.vhist`: both reports either side playing at 1×,
+  nothing between them but time), chunks that follow on joined into runs (75 s kept), a run's
+  place the running average of where its pieces put it. A piece that jumps by 20 ms to 1 s (F1
+  TV's sound skipping or repeating a little) is spliced in where it belongs (silence for what was
+  skipped, what came again cut) rather than starting a new run: a look needs 15 s in one run.
+- **The match** (`sound.js` `locate`, every `SND.EVERY` s): the newest `SND.WIN` s of F1 TV's
+  sound is looked for in the stream's, decoded from what this browser records (the buffer's AAC
+  frames as an ADTS file through `OfflineAudioContext.decodeAudioData` at 8 kHz), around where
+  the sound was last (or the lock has it): ±25 s until it's found, every 5 min, after two looks
+  that missed, and after a sure match more than 1 s from where it was (till that's confirmed);
+  ±4 s otherwise. The stretch looked for is the newest; after a look that missed, every other
+  look an older one of the run (not a silent one), so the look reaches past where it was within
+  what's recorded (the streamer's latency grown past the commentary's lead).
+  Nothing new heard since the last look: no look (old sound would only confirm old news). GCC-PHAT (both
+  spectra whitened, 150–3600 Hz) gives one sharp peak where a quiet copy lines up; its height in
+  standard deviations is how sure (`score`: ~4-5 with no copy, 10-30 for one 10-20 dB under the
+  voice in the unit tests). A match counts at score ≥ 8, 1.6× the runner-up, not at the window's
+  edge, and is taken when two of the last four agree within 80 ms.
+- **Getting there unheard** (`sndSteer`): the lock's offset is brought to the match plus your
+  bias by a speed eased off 1× and back: `v` heads for `sign(err)·min(2 %, √(2·0.001·|err|))`,
+  changing by at most 0.1 % a second (so it stops right there: 0.6 s took 78 s in the e2e). The
+  lock moves `v·dt` a tick and `drive` hands the steering the slew apart from the rate
+  (`FoneCore.steer`'s `slew`): it predicts the target at `rate·(1 + v)`, keeps its 1× bounds and
+  goes on correcting at 1× around it (a nudge or a seek that landed a little off isn't left
+  waiting for the easing to end); the audio plays at `(1 + v)·(1 + k)` through the resampler
+  (nominal 1, no `preservesPitch` flip, no click; the pitch moves a third of a semitone at most).
+  A seek (a re-sync, a nudge, a jump: `drive` sees it) or a new lock takes `v` to 0 under cover
+  of it; a correction cut short otherwise (lost, reset) is let down at the same 0.1 % a second.
+  Only the steering's own corrections count as rate tweaks, not the easing's speed. Jumped
+  instead: the first match (since the start, or since it was lost) more than 1.5 s off (the
+  delay it started from was a guess), and a step of more than 3 s (easing that is minutes out
+  of sync). Each match sets the delay to the one that places it (`delaySource 'sound'`), kept for
+  the stream (what the next session starts from); a nudge then is a bias on top
+  (`soundBias|<stream>`), except what of it goes the way a correction of more than 50 ms still
+  easing in was going (you heard what it's fixing). No sure match for 2 min of playing: `lost`
+  (no target: no easing, nudges plain, the delay holds) and it looks widely again; nothing heard
+  for 30 s of playing: `deaf`. The status says what each look came to (`why`), and how often the
+  run of F1 TV's sound broke (`breaks`, `gap`). Re-bases of
+  F1 TV's position, a new recording here or a switch of source start it over.
+- **Not yet:** a server's recording (replays, and live when not straight from the stream): its
+  audio isn't decoded in the browser.
+
 ### Messages
 
 `chrome.runtime` messages, routed by `target`:

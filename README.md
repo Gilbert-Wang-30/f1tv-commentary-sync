@@ -53,6 +53,17 @@ extension and the install paths all go by that name.
 ## What it does
 
 **Commentary in sync**
+- **Live syncs itself by sound.** Streamers pass F1 TV's own sound through under their voice
+  (its track sound, or the international feed). fone hears F1 TV's sound in its own player and
+  finds it in the stream, so it knows which moment of the stream goes with which picture, to a
+  few hundredths of a second, with no delay to tune: it looks again every 15 s and follows the
+  streamer's latency as it moves (it moved 4.4 s over one race). It brings the commentary there
+  by easing its speed up or down by 2 % at most, so you don't hear it correct. It jumps only when
+  easing would leave it out of sync for minutes: the first time it finds the sound more than
+  1.5 s from where the saved delay put it, or a step of more than 3 s (the streamer reloading).
+  A nudge of yours is kept on top, as a preference. Live from the stream pulled into the
+  browser; it needs the streamer to pass F1 TV's sound through (the panel says "by sound" when
+  it has it; Details says what it hears, and "lost" after 2 minutes without it).
 - **Live works edge to edge, with or without a server.** fone locks the commentary's live edge
   to F1 TV's, by F1 TV's own clock (the time its player puts on the picture: how far behind live
   its picture really is, which differs by a few seconds every time the page loads), then follows
@@ -322,6 +333,12 @@ Open any F1 TV video. The fone panel sits top-right:
 | `D` | danmaku on / off |
 | `V` | the streamer's picture on / off |
 
+**Live, by sound:** with sync by sound locked (the panel says "· by sound"), there's no delay to
+set: fone keeps it, and keeps the last one it measured for the stream to start from next time.
+A nudge then is a preference on top ("I like it half a second earlier"), kept per stream; one
+while it's still easing a correction in counts toward that correction first. Without the
+streamer passing F1 TV's sound through, it's the delay as below.
+
 **First session (server):** the delay starts from the one measured off the streamer's screen. Without a
 measurement, it starts from your last tweak on the same kind of clock (replays from replays: a
 live tweak never carries over to a replay). After that, tune by ear once; it's remembered for that
@@ -353,6 +370,7 @@ The server reads environment variables (see `docker-compose.yml`):
 | `FONE_TIMING`, `FONE_ADS`, `FONE_SCREENCLOCK`, `FONE_VIDEO`, `FONE_BACKFILL`, `FONE_DANMAKU` | `1` | each optional service; `0` turns it off (`/api/health` lists the running ones) |
 | `FONE_TIMING_RECORD` | `1` | capture live sessions' timing from 15 min before the start (while F1's archive refuses, since 2026-10-18, the only source of a session's stats) |
 | `FONE_DANMAKU_CAPTURE`, `FONE_DANMAKU_ARCHIVE` | `1` | the two danmaku sources: our own listening, and danmakus.com for the rest |
+| `FONE_DANMAKU_KEEP_DAYS` | `30` | how long danmaku are kept |
 | `FONE_BACKFILL_DANMAKUS` | `1` | backfill may ask danmakus.com when a stream started |
 
 More tuning knobs live next to the code that reads them (`FONE_TIMING_*`, `FONE_SCREENCLOCK_*`,

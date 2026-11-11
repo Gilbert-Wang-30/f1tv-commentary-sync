@@ -12,6 +12,7 @@
     stream: '', // 'local': the streamer's live URL (streams.js)
     bufferMin: 15, // 'local': minutes of the stream kept, for rewinding F1 TV
     liveDirect: true, // 'server', live: the streamer's stream straight into this browser (fresher than the server's)
+    soundSync: true, // live: the commentary placed by F1 TV's own sound in the stream (offscreen.js, sync by sound)
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -95,7 +96,7 @@
     // a: F1 TV's audio track as page.js sees it (which, who chose it, the switch's error), h: the
     // MSE handle (a new one = the player rebuilt its pipeline), nv: tiledmedia-views in the page
     const a = tm.audio ? { v: tm.audio.v, cur: tm.audio.cur, kind: tm.audio.kind, auto: tm.audio.auto, manual: tm.audio.manual,
-      on: tm.audio.on, fx: tm.audio.fx, err: tm.audio.err } : null;
+      on: tm.audio.on, fx: tm.audio.fx, err: tm.audio.err, tap: tm.audio.tap ?? null } : null;
     return { ev: tm.eventType, r: tm.r, ob: tm.ob, obErr: tm.obErr, dm, a, h: tm.h, nv: tm.nViews, sdk: tm.sdk };
   }
 
@@ -141,7 +142,8 @@
       channel: settings.channel,
       video: state,
       settings: { servers: settings.servers, volume: settings.volume, muted: settings.muted, anticipate: !!settings.anticipate,
-        source: settings.source, stream: settings.stream, bufferMin: settings.bufferMin, liveDirect: settings.liveDirect !== false },
+        source: settings.source, stream: settings.stream, bufferMin: settings.bufferMin, liveDirect: settings.liveDirect !== false,
+        soundSync: settings.soundSync !== false },
     });
   }
 
@@ -172,14 +174,15 @@
     const speed = SPEEDS.includes(Number(settings.speed)) ? Number(settings.speed) : 1;
     // (live and playing: not while auto-hold holds it)
     const live = playKind() === 'live' && !holding;
-    const key = `${speed}|${settings.f1Audio}|${settings.f1Feed}|${live}|${cid}`;
+    const tap = live && settings.soundSync !== false; // (F1 TV's sound handed on: sync by sound)
+    const key = `${speed}|${settings.f1Audio}|${settings.f1Feed}|${live}|${cid}|${tap}`;
     const t = Date.now();
     if (!force && key === lastCmd && t - lastCmdAt < 2000) return;
     lastCmd = key;
     lastCmdAt = t;
     pageCmd({ cmd: 'rate', value: speed });
     pageCmd({ cmd: 'audio', prefer: ['fx', 'mute', 'eng'].includes(settings.f1Audio) ? settings.f1Audio : 'none',
-      feed: settings.f1Feed === 'intl' ? 'intl' : 'none', live, cid });
+      feed: settings.f1Feed === 'intl' ? 'intl' : 'none', live, cid, tap });
   }
 
   // Speed only for replays (Tiledmedia eventType vod); page.js keeps live at 1× regardless.
@@ -334,6 +337,7 @@
     $('name').textContent = s.channel || '解说';
     let text = s.text || '';
     if (s.state === 'sync' && s.drift != null) text += ` ±${Math.round(Math.abs(s.drift) * 1000)}ms`;
+    if (s.sound?.state === 'locked' && (s.state === 'sync' || s.state === 'syncing')) text += ' · by sound';
     if (settings.muted) text += ' · muted';
     else if (s.ad) text += ' · sponsor clip muted';
     $('text').textContent = text;
@@ -398,10 +402,22 @@
       ['F1 TV', s.title || cid],
       ['sync', `<span class="badge ${est}">${clockText}</span>`],
       ['delay from', { content: 'this video', channel: 'your last calibration', default: 'default guess', live: 'live default (edge to edge)',
-        measured: 'measured from the stream', stream: 'your last setting for this stream' }[s.delaySource] || '–'],
+        measured: 'measured from the stream', stream: 'your last setting for this stream', sound: 'F1 TV\'s sound in the stream' }[s.delaySource] || '–'],
       ['on screen', fmtTime(s.E)],
       ['commentary', fmtTime(s.W)],
     ];
+    // sync by sound: listening for F1 TV's sound in the stream, locked to it (and the correction under way), or why not
+    if (s.sound) {
+      const sd = s.sound;
+      const what = { listening: 'listening for F1 TV\'s sound in the stream', locked: 'locked to F1 TV\'s sound in the stream',
+        quiet: 'F1 TV is silent (muted in its own player?)', deaf: 'F1 TV\'s sound isn\'t reaching fone',
+        lost: 'lost F1 TV\'s sound in the stream (the delay holds; listening again)' }[sd.state] || sd.state;
+      const how = [sd.score != null ? `match ${sd.score}` : null, sd.err != null && Math.abs(sd.err) >= 0.01 ? `${sd.err > 0 ? '+' : ''}${sd.err.toFixed(2)} s to go` : null,
+        sd.v ? `speed ${sd.v > 0 ? '+' : ''}${(sd.v * 100).toFixed(1)}%` : null, sd.bias ? `your nudge ${sd.bias > 0 ? '+' : ''}${sd.bias} s` : null].filter(Boolean);
+      const tapErr = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.audio?.tap?.err : null; // (fone's copy of F1 TV's sound failing)
+      if (tapErr) how.push(`copy failed: ${tapErr}`);
+      rows.push(['by sound', `${what}${how.length ? ` · ${how.join(' · ')}` : ''}`]);
+    }
     // live: how far behind live F1 TV plays, by its own clock (the commentary goes as much behind its edge, less the delay)
     if (s.f1Lat != null) rows.push(['behind live', `F1 TV ${s.f1Lat.toFixed(1)} s behind its own clock · the commentary ${(s.f1Lat - s.delay).toFixed(1)} s behind its edge`]);
     const rec = s.rec;
@@ -637,6 +653,14 @@
     if (done.ok !== false && did) goLiveSeek = from != null ? { to: from + did, by: did, until: Date.now() + 3000 } : { to: null, until: Date.now() + 1500 };
     return { ...done, did };
   }
+
+  // F1 TV's sound as heard (page.js, every second while asked: sync by sound), to the engine
+  document.addEventListener('fone-f1audio', (e) => {
+    if (!alive || settings.soundSync === false) return;
+    let d = null;
+    try { d = JSON.parse(e.detail); } catch { return; }
+    if (d?.chunks?.length) send({ type: 'f1audio', sr: d.sr, chunks: d.chunks });
+  });
 
   // A relative seek of F1 TV's player (page.js), answered with its outcome ('fone-seek'): ok null
   // when no answer came (a slow seek: taken as done).

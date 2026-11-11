@@ -38,13 +38,26 @@ def line(e):
         dm = ((v.get("dx") or {}).get("dm")) or {}
         dms = (f" | 弹幕 {'on' if dm.get('on') else 'off'} {dm.get('shown')}/{dm.get('n')} lanes {dm.get('lanes')} at {dm.get('rect')}"
                f" video {dm.get('video')} img {dm.get('img')}{' err ' + str(dm.get('err')) if dm.get('err') else ''}") if dm else ""
+        sd = e.get("sound") or {}
+        sds = (f" | by sound {sd.get('state')} match {sd.get('score')} to go {sd.get('err')} speed {sd.get('v')} bias {sd.get('bias')}"
+               f" looks {sd.get('looks')} ({sd.get('why')}) breaks {sd.get('breaks')} splices {sd.get('splices')} runs {sd.get('runs')}"
+               f" tap {sd.get('tap')}") if sd else ""
         return (f"{t} snap  {e.get('state'):9} drift {drift if drift is None else round(drift, 3)}"
                 f" | audio x{a.get('rate')} pp {a.get('pp')} rs {a.get('rs')} ahead {a.get('ahead')}s paused {a.get('paused')}"
-                f" | video p {v.get('p')} paused {v.get('paused')} waiting {v.get('waiting')} {v.get('src')} | {speed_of(e)}{dms}")
+                f" | video p {v.get('p')} paused {v.get('paused')} waiting {v.get('waiting')} {v.get('src')} | {speed_of(e)}{dms}{sds}")
     if k == "seek":
         return f"{t} SEEK  {e.get('from')} -> {e.get('to')} (target {e.get('target')}, x{e.get('rate')}, ahead {e.get('ahead')}s, {e.get('src')})"
     if k == "state":
         return f"{t} state {e.get('from')} -> {e.get('to')}  {e.get('text') or ''}"
+    if k == "sound":
+        if e.get("jump") is not None:
+            return f"{t} SOUND jumped {e.get('jump'):+} s to where F1 TV's sound is in the stream"
+        if e.get("lost"):
+            return f"{t} SOUND lost (no sure match for 2 min of playing)"
+        if e.get("err"):
+            return f"{t} SOUND look failed: {e.get('err')}"
+        return (f"{t} sound look{' (wide)' if e.get('wide') else ''}: {'sure' if e.get('sure') else 'unsure'} match {e.get('score')}"
+                f" (runner-up {e.get('next')}) at offset {e.get('off')} (lock {e.get('c')})")
     if k == "nudge":
         return f"{t} NUDGE {e.get('delta'):+} s -> delay {e.get('delay')}"
     if k == "relive":

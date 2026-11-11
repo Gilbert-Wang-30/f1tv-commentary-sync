@@ -113,7 +113,7 @@ docker network create $NET >/dev/null
 docker run -d $CAP --name $NAME-server --network $NET \
   -v "$WORK/rec":/rec:ro -v "$WORK/data":/data \
   -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 \
-  -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 "$IMAGE" >/dev/null
+  -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 -e FONE_DANMAKU_KEEP_DAYS=3650 "$IMAGE" >/dev/null
 
 echo "== starting a live (growing) commentary recording"
 docker run -d --cpus 1 --cpu-shares 256 --name $NAME-writer -v "$WORK/rec":/rec "$IMAGE" sh -c '

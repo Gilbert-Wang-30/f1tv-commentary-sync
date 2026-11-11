@@ -179,13 +179,13 @@ test('isPrecise: only the element clock itself (MSE handle or plain <video>), ne
 // `rate` is the nominal speed steer is given; `video` (optional) the true position, for maxErr
 // (counted from t >= errFrom); `precise` the x.precise flag (false: the plain 1x bounds).
 function loop({ secs, measure, coarse = () => false, precise = false, audio0 = 0, paused = false, seekLatency = 0.1, resyncAt = [],
-  st = C.newSteer(), rate = () => 1, video = null, errFrom = -Infinity }) {
+  st = C.newSteer(), rate = () => 1, slew = () => 0, video = null, errFrom = -Infinity }) {
   const A = { t: audio0, paused, seekUntil: -1 };
   const log = { seeks: [], rates: [], maxErr: 0, rate: 1 };
   for (let i = 0; i <= secs * 10; i++) {
     const t = 1000 + i / 10;
     const seeking = t < A.seekUntil;
-    const out = C.steer(st, { t, m: measure(t), rate: rate(t), audio: A.t, paused: A.paused, seeking, coarse: coarse(t), precise,
+    const out = C.steer(st, { t, m: measure(t), rate: rate(t), slew: slew(t), audio: A.t, paused: A.paused, seeking, coarse: coarse(t), precise,
       resync: resyncAt.some((x) => Math.abs(x - t) < 0.05) });
     st = out.st;
     if (out.seek != null) { log.seeks.push({ t, to: out.seek }); A.t = out.seek; A.seekUntil = t + seekLatency; }
@@ -492,6 +492,17 @@ test('chosenRate: a brief SDK dip under the speed page.js holds is ridden out; a
   assert.equal(C.chosenRate(x(1, 0.2), 1), 1); // not yet at the new speed someone picked: follow the SDK
   assert.equal(C.chosenRate(x(2, 0.2, 2), 1.5), 2); // the SDK reached it
   assert.equal(C.chosenRate({ ...x(1.2, 0.3), exact: false, el: 1.2 }, 1.5), 1.5); // guessed: the trim band decides
+});
+
+test('steer with a slew (sync by sound easing): the audio follows the moving target, and a gap under the seek bound is still closed at 1x', () => {
+  // the target eased 1% faster for a minute (0.6 s); the audio starts 0.1 s behind it
+  const slew = (t) => (t < 1060 ? 0.01 : 0);
+  const target = (t) => truth(t) + 0.01 * Math.min(60, t - 1000);
+  const r = loop({ secs: 90, audio0: truth(1000) - 0.1, measure: target, slew, video: target, errFrom: 1020, precise: true });
+  assert.equal(r.seeks.length, 0, JSON.stringify(r.seeks));
+  assert.ok(r.maxErr < 0.02, `max error ${r.maxErr.toFixed(3)}s`);
+  assert.ok(r.rates.some((x) => x.rate > 1.025), 'the 1x correction runs on top of the slew'); // 1.01 · 1.02
+  assert.ok(Math.abs(r.audio - target(1090)) < 0.02);
 });
 
 console.log(`${n} passed`);
