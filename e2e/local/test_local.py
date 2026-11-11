@@ -67,7 +67,14 @@ async def main():
                 return await route.fulfill(body=json.dumps({"resultObj": {"containers": [{"metadata": {
                     "title": "Test Grand Prix - Race", "contentSubtype": "LIVE"}}]}}), content_type="application/json")
             if url.endswith("/media/f1.wav"):  # (F1 TV's sound, ?f1audio=1)
-                return await route.fulfill(body=open("/media/f1.wav", "rb").read(), content_type="audio/wav")
+                wav = open("/media/f1.wav", "rb").read()  # (byte ranges: an <audio> playing it seeks)
+                rng = route.request.headers.get("range")
+                if not rng:
+                    return await route.fulfill(body=wav, content_type="audio/wav", headers={"accept-ranges": "bytes"})
+                a, _, b = rng.split("=", 1)[1].partition("-")
+                a, b = int(a), int(b) if b else len(wav) - 1
+                return await route.fulfill(status=206, body=wav[a:b + 1], headers={"content-type": "audio/wav", "accept-ranges": "bytes",
+                                                                                    "content-range": f"bytes {a}-{b}/{len(wav)}"})
             if not url.endswith("/media/video.mp4"):
                 return await route.fulfill(body=E.TM_PAGE, content_type="text/html")
             rng = route.request.headers.get("range", "bytes=0-")

@@ -148,6 +148,7 @@
   // never put in the page: nothing in the page to find): seen as they start playing or get a
   // stream to play.
   const media = new Set();
+  const caps = new WeakMap(); // element -> its captureStream()
   const mediaKind = (el) => `${el.tagName?.toLowerCase()}:${el.srcObject ? (el.srcObject.constructor?.name || 'object') : el.currentSrc ? 'src' : 'none'}${el.isConnected ? '' : ':detached'}`;
   function remember(el) {
     if (!(el instanceof HTMLMediaElement) || media.has(el)) return;
@@ -178,8 +179,15 @@
       if (typeof document === 'undefined' || !document.querySelectorAll) return;
       const now = new Set();
       for (const el of new Set([...document.querySelectorAll('video, audio'), ...media])) {
-        const ms = el.srcObject;
-        if (!(ms instanceof MediaStream) || el.paused) continue;
+        if (el.paused) continue;
+        // a MediaStream played: its audio tracks; anything else (MSE, a file: F1 TV's player plays
+        // its sound from a <video> never put in the page, fed by a MediaSource in a worker): the
+        // element's own output, captured (captureStream: a copy, the element left playing)
+        let ms = el.srcObject instanceof MediaStream ? el.srcObject : caps.get(el);
+        if (!ms && typeof el.captureStream === 'function') {
+          try { ms = el.captureStream(); caps.set(el, ms); T.seen[`capture>${mediaKind(el)}`] = (T.seen[`capture>${mediaKind(el)}`] || 0) + 1; } catch (e) { caps.set(el, null); T.err = `capture: ${String(e?.message || e).slice(0, 80)}`; }
+        }
+        if (!ms) continue;
         for (const tr of ms.getAudioTracks()) {
           if (tr.readyState !== 'live' || T.mine.has(tr.id)) continue;
           now.add(tr.id);

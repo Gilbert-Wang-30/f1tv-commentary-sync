@@ -86,8 +86,26 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   // live.)
   // (?f1audio=stream: as F1 TV's player plays it since November 2026, a MediaStream on a <video>
   // with no Web Audio graph in the page's sight: here, built in another realm, an iframe's)
-  // (?f1audio=detached: the same stream played by an Audio() never put in the page)
+  // (?f1audio=detached: the same stream played by an Audio() never put in the page;
+  // ?f1audio=element: F1 TV's sound as its player plays it on the real page in November 2026, a
+  // media element never put in the page playing the sound itself, not a stream)
   const f1mode = new URLSearchParams(location.search).get('f1audio');
+  if (f1mode === 'element') {
+    window.__f1Off = null;
+    (async () => {
+      const el = new Audio();
+      while (window.__f1Off == null) await new Promise((r) => setTimeout(r, 200));
+      el.src = '/media/f1.wav';
+      await new Promise((r) => el.addEventListener('canplay', r, { once: true }));
+      setInterval(() => {
+        const v = mainVid();
+        if (window.__f1Off == null || v.paused || v.readyState < 3) { if (!el.paused) el.pause(); return; }
+        const want = v.currentTime + window.__off + window.__f1Off;
+        if (el.paused || Math.abs(el.currentTime - want) > 0.25) { el.currentTime = Math.max(0, want); el.playbackRate = 1; if (el.paused) el.play().catch(() => {}); return; }
+        el.playbackRate = Math.max(0.99, Math.min(1.01, 1 + (want - el.currentTime) * 0.5));
+      }, 200);
+    })();
+  }
   if (f1mode === '1' || f1mode === 'stream' || f1mode === 'detached') {
     window.__f1Off = null;
     (async () => {

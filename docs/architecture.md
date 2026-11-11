@@ -396,7 +396,10 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   stream are copied too, in an AudioContext of fone's own, left playing where they are; elements
   never put in the page, an `Audio()`, are found as they start playing or get a stream, by
   wrapping `HTMLMediaElement.prototype.play` and the `srcObject` setter; that video's own audio
-  track, a `MediaSourceHandle`'s, measured silent: a placeholder),
+  track, a `MediaSourceHandle`'s, measured silent: a placeholder; 0.3.14's diagnostics then showed
+  F1 TV's sound played by a second `<video>`, never in the page, fed by a MediaSource in a worker:
+  a playing element that isn't playing a MediaStream is captured, `captureStream()`, a copy that
+  leaves it playing),
   with a ScriptProcessor
   copy, box-resampled to 8 kHz mono, each chunk stamped with the wall time it's heard. Chrome
   takes `playbackTime` at the event's dispatch, late by render bursts and main-thread work and
