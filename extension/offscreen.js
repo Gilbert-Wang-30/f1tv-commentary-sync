@@ -1366,6 +1366,152 @@ function sndSteer(t, v) {
   return sn.v;
 }
 
+// ---- team radio, filled in ----------------------------------------------------------
+// F1 TV's Track FX plays the team-radio sting but not the message since about 2026-11-03. The
+// session's messages (OpenF1's copy of F1 live timing's TeamRadio: mp3s named after the moment
+// they were recorded) are fetched as F1 TV gets near them; the sting is listened for in F1 TV's
+// own sound (the copy sync by sound keeps, on the picture's time: teamradio.js); a message whose
+// time fits plays STING_TO_SPEECH s after it, its speech there (the quiet opening each file has
+// skipped), following the picture: pauses, seeks, speed. Which message: the one whose time, with
+// what the matches so far say the clock is off by (TR.C: a replay's start is an estimate), is
+// nearest. Only with Track FX (English Int. has the radio itself).
+const TR = { FETCH: 120, WINDOW: 25, WINDOW_CAL: 5, VOL: 1, KEEP: 40 };
+async function trLoad(t) {
+  const c = S.content, R = S.tr;
+  if (!c?.sessionKey || R.loading || t - (R.loadedAt || 0) < (S.clock === 'edge' ? 60 : 3600)) return;
+  R.loading = true;
+  try {
+    const get = (u) => fetch(u, { signal: AbortSignal.timeout(15000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+    if (R.gmt == null) R.gmt = (await get(`https://api.openf1.org/v1/sessions?session_key=${c.sessionKey}`))?.[0]?.gmt_offset ?? '0';
+    const list = await get(`https://api.openf1.org/v1/team_radio?session_key=${c.sessionKey}`);
+    if (S.tr !== R) return;
+    for (const m of list || []) {
+      if (!m?.recording_url || R.clips.some((x) => x.url === m.recording_url)) continue;
+      const T = FoneRadio.fileTime(m.recording_url, R.gmt);
+      if (T != null) R.clips.push({ url: m.recording_url, T, num: m.driver_number, name: m.recording_url.split('/').pop(), state: 'new' });
+    }
+    R.clips.sort((a, b) => a.T - b.T);
+    R.loadedAt = t;
+    R.err = null;
+  } catch (e) {
+    R.err = `messages: ${String(e?.message || e).slice(0, 60)}`;
+    R.loadedAt = t - 3540; // (again in a minute)
+  } finally { R.loading = false; }
+}
+// A message fetched and looked at: where its speech starts (null: none, the opening alone).
+function trFetch(x) {
+  if (x.state === 'new') x.loading = trFetch1(x);
+  return x.loading;
+}
+async function trFetch1(x) {
+  x.state = 'fetching';
+  try {
+    const r = await fetch(x.url, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const ab = await new OfflineAudioContext(1, 1, SND.SR).decodeAudioData(await blob.arrayBuffer());
+    const y = ab.getChannelData(0);
+    x.onset = FoneRadio.speechOnset(y, ab.sampleRate);
+    x.dur = ab.duration;
+    x.src = URL.createObjectURL(blob);
+    x.state = x.onset == null ? 'empty' : 'ready';
+  } catch (e) {
+    x.state = 'failed';
+    x.err = String(e?.message || e).slice(0, 60);
+  }
+}
+// The time on F1 TV's picture at position p (F1 TV's own clock live; a replay's anchor else).
+function trE(p) {
+  if (S.clock === 'edge') return S.video?.utc0 != null ? S.video.utc0 + p : null;
+  return S.content ? C.eventTime(S.clock, S.content, p, null, now(), { manualBase: S.manualBase }) : null;
+}
+// Stings in what's been heard since the last look (the newest run), each matched to a message.
+function trListen(t) {
+  const R = S.tr, sn = S.snd, r = sn?.runs?.[sn.runs.length - 1];
+  if (!r) return;
+  const end = r.p0 + r.x.length / SND.SR, from = Math.max(r.p0, R.heardTo ?? -Infinity, end - 20);
+  if (end - from < 0.6) return;
+  const i0 = Math.max(0, Math.round((from - 0.15 - r.p0) * SND.SR));
+  const found = FoneRadio.stings(r.x.subarray(i0), (from - r.p0) - i0 / SND.SR);
+  R.heardTo = end - 0.35; // (the pattern's whole length after its start, and a frame)
+  for (const g of found) {
+    const ps = r.p0 + i0 / SND.SR + g.t;
+    if (R.stings.some((q) => Math.abs(q.p - ps) < 1)) continue;
+    R.stings.push({ p: ps, at: t, score: Math.round(g.score * 100) / 100 });
+    while (R.stings.length > 20) R.stings.shift();
+    trMatch(ps, g.score, t);
+  }
+}
+function trMatch(ps, score, t) {
+  const R = S.tr, E = trE(ps);
+  if (E == null) return;
+  const speech = E + FoneRadio.STING_TO_SPEECH; // (when its speech is due, on the picture's clock)
+  const cal = R.cal.length >= 2, win = cal ? TR.WINDOW_CAL : TR.WINDOW;
+  let best = null;
+  for (const x of R.clips) {
+    if (x.state === 'empty' || x.state === 'failed' || x.state === 'playing') continue; // (played: again, rewound)
+    const d = speech - (x.T + (x.onset ?? 3)) - (cal ? R.C : 0);
+    if (Math.abs(d) <= win && (!best || Math.abs(d) < Math.abs(best.d))) best = { x, d };
+  }
+  diag('tr', { sting: Math.round(ps * 100) / 100, score: Math.round(score * 100) / 100, E: Math.round(E * 10) / 10, clip: best?.x.name ?? null, d: best ? Math.round(best.d * 100) / 100 : null });
+  if (!best) { R.last = { at: t, what: 'a sting, no message near it' }; return; }
+  const x = best.x;
+  if (x.onset != null) {
+    R.cal.push(speech - (x.T + x.onset));
+    if (R.cal.length > 7) R.cal.shift();
+    R.C = [...R.cal].sort((a, b) => a - b)[R.cal.length >> 1];
+  }
+  trPlay(x, ps + FoneRadio.STING_TO_SPEECH);
+}
+// Play a message with its speech at picture position pOn (from just before it: the opening skipped).
+async function trPlay(x, pOn) {
+  const R = S.tr;
+  await trFetch(x);
+  if (S.tr !== R || (x.state !== 'ready' && x.state !== 'played')) return;
+  if (R.playing) trStop();
+  const el = new Audio(x.src);
+  el.preservesPitch = true;
+  const t0 = Math.max(0, x.onset - 0.3); // (mp3 time to start from: just before the speech)
+  R.playing = { x, el, pStart: pOn - (x.onset - t0), t0 };
+  x.state = 'playing';
+  R.last = { at: now(), what: `${x.name.split('_')[0]}` };
+}
+function trStop() {
+  const R = S.tr, pl = R?.playing;
+  if (!pl) return;
+  try { pl.el.pause(); pl.el.removeAttribute('src'); pl.el.load(); } catch { /* gone */ }
+  pl.x.state = 'played';
+  R.playing = null;
+}
+// Each tick: the messages near the picture fetched, the sting listened for, the one playing kept
+// on the picture.
+function trTick(t, v, vn) {
+  const want = S.trWant;
+  if (!want?.on || !want.fx || !S.content?.sessionKey || !S.snd) { if (S.tr?.playing) trStop(); return; }
+  if (!S.tr || S.tr.cid !== S.cid) { if (S.tr?.playing) trStop(); S.tr = { cid: S.cid, clips: [], cal: [], C: 0, stings: [], playing: null }; }
+  const R = S.tr;
+  trLoad(t);
+  const E = trE(vn.p);
+  if (E != null) for (const x of R.clips) if (x.state === 'new' && Math.abs(x.T - E) < TR.FETCH) trFetch(x);
+  if (!v.paused && !v.seeking && !v.waiting) trListen(t);
+  const pl = R.playing;
+  if (pl) {
+    const tau = pl.t0 + (vn.p - pl.pStart); // (where in the mp3 the picture is)
+    if (tau > pl.x.dur || tau < pl.t0 - 30) trStop();
+    else if (tau >= pl.t0) {
+      const el = pl.el, rate = v.rate || 1;
+      el.volume = S.muted ? 0 : Math.min(1, (S.volume ?? 1) * TR.VOL);
+      if (el.playbackRate !== rate) el.playbackRate = rate;
+      if (v.paused || v.seeking || v.waiting) { if (!el.paused) el.pause(); }
+      else {
+        if (Math.abs(el.currentTime - tau) > 0.25) el.currentTime = tau;
+        if (el.paused) el.play().catch((e) => { R.err = `play: ${e.message}`; });
+      }
+    }
+  }
+  return R;
+}
+
 // ---- diagnostics -------------------------------------------------------------------
 // What playback looked like, for debugging on machines nobody is watching over (a Mac after
 // it slept, glitches at 2×): a snapshot every 5 s plus the notable moments (seeks, speed and
@@ -1701,6 +1847,12 @@ function tick() {
       v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
       splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)) };
   }
+  // team radio, filled in: how it stands, for Details
+  try {
+    const R = trTick(t, v, vn);
+    if (R) base.radio = { n: R.clips.length, ready: R.clips.filter((x) => x.state === 'ready').length, C: Math.round(R.C * 10) / 10,
+      cal: R.cal.length, stings: R.stings.length, playing: R.playing?.x.name ?? null, last: R.last ?? null, err: R.err ?? null };
+  } catch (e) { base.radio = { err: String(e?.message || e).slice(0, 80) }; }
   base.file = S.local ? null : fileTitle(map.file);
   const pf = S.local ? null : S.timeline.files?.[map.file];
   S.pic = S.local ? { src: 'stream', stream: S.stream, gen: FoneRecorder.status().gen, m: map.m, rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting }
@@ -1882,6 +2034,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (S.content && domainMismatch(S.video)) { S.clockFinal = false; decideClock(S.gen).catch(() => {}); }
     S.volume = msg.settings.volume;
     S.muted = msg.settings.muted;
+    S.trWant = { on: msg.settings.teamRadio !== false, fx: msg.settings.f1Sound !== 'eng' };
     if (!!msg.settings.anticipate !== !!S.anticipate) {
       S.anticipate = !!msg.settings.anticipate;
       if (S.delaySource === 'measured' && S.sync) { S.delay = measuredDelay(S.sync); S.resync = true; }

@@ -54,6 +54,9 @@ def line(e):
         return f"{t} SEEK  {e.get('from')} -> {e.get('to')} (target {e.get('target')}, x{e.get('rate')}, ahead {e.get('ahead')}s, {e.get('src')})"
     if k == "state":
         return f"{t} state {e.get('from')} -> {e.get('to')}  {e.get('text') or ''}"
+    if k == "tr":
+        return (f"{t} RADIO sting at p {e.get('sting')} (score {e.get('score')}, E {e.get('E')}) -> "
+                f"{e.get('clip') or 'no message near it'}{'' if e.get('d') is None else f' ({e.get(chr(100)):+} s)'}")
     if k == "sound":
         if e.get("jump") is not None:
             return f"{t} SOUND jumped {e.get('jump'):+} s to where F1 TV's sound is in the stream"

@@ -503,6 +503,22 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   re-placed by wall time across the server's files, which an offset on the lock doesn't follow.
   A clock change (a live item becoming a replay) starts sync by sound over.
 
+### Team radio, filled in
+
+F1 TV's Track FX plays the team-radio sting but not the message since about 2026-11-03.
+`teamradio.js` (pure, `teamradio.test.js`) detects the sting (three pure tones, G5 D6 B5 at
+783.8, 1174.7 and 987.6 Hz, onsets 0, 0.092, 0.189 s: measured on the streamer's recordings of
+the 2026-11-01 and 11-08 races) per 5 ms step by each tone's power against its neighbours 40-250
+Hz away (voices have harmonics on all three), and reads a message's recording time from its file
+name and its speech onset from its level. The engine (`offscreen.js`, team radio) fetches the
+session's messages from OpenF1 (`/v1/team_radio`, `/v1/sessions` for the circuit's UTC offset),
+prefetches those within 2 min of the picture's time, listens for stings in F1 TV's copied sound
+(sync by sound's runs, on the picture's time), and on a sting plays the message whose time (plus
+the clock offset the matches so far agree on: a replay's start is an estimate) is nearest, its
+speech `STING_TO_SPEECH` (1.1 s) after the sting, kept on the picture (pauses, seeks, speed).
+Only with Track FX (setting `teamRadio`, on). Live needs F1 TV's own clock and OpenF1's list,
+which only has a live session's messages after the fact on the free tier: live is to come.
+
 ### Messages
 
 `chrome.runtime` messages, routed by `target`:

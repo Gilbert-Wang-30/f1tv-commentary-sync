@@ -14,6 +14,7 @@
     liveDirect: true, // 'server', live: the streamer's stream straight into this browser (fresher than the server's)
     soundSync: true, // the commentary placed by F1 TV's own sound in the stream, live and replays (offscreen.js, sync by sound)
     soundDuck: true, // ...and while it has it, F1 TV's own sound off: the stream carries it in step (no doubled sound)
+    teamRadio: true, // Track FX: the team-radio messages F1 TV leaves out played after their sting (offscreen.js)
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -145,7 +146,7 @@
       video: state,
       settings: { servers: settings.servers, volume: settings.volume, muted: settings.muted, anticipate: !!settings.anticipate,
         source: settings.source, stream: settings.stream, bufferMin: settings.bufferMin, liveDirect: settings.liveDirect !== false,
-        soundSync: settings.soundSync !== false },
+        soundSync: settings.soundSync !== false, f1Sound: settings.f1Sound, teamRadio: settings.teamRadio !== false },
     });
   }
 
@@ -432,6 +433,11 @@
       if (tp?.ducked) how.push("F1 TV's own sound off: the stream's copy plays");
       else if (tp?.duckFailed) how.push(`F1 TV's own sound left on (${tp.duckFailed})`);
       rows.push(['by sound', `${what}${how.length ? ` · ${how.join(' · ')}` : ''}`]);
+    }
+    // team radio, filled in (Track FX): the session's messages, the stings heard, the one playing
+    if (s.radio) {
+      const r = s.radio;
+      rows.push(['team radio', r.err && r.n == null ? r.err : `${r.n} messages (${r.ready} ready)${r.stings ? ` · ${r.stings} stings heard` : ''}${r.cal ? ` · clock ${r.C > 0 ? '+' : ''}${r.C} s` : ''}${r.playing ? ` · playing ${r.playing.split('_')[0]}` : ''}${r.err ? ` · ${r.err}` : ''}`]);
     }
     // live: how far behind live F1 TV plays, by its own clock (the commentary goes as much behind its edge, less the delay)
     if (s.f1Lat != null) rows.push(['behind live', `F1 TV ${s.f1Lat.toFixed(1)} s behind its own clock · the commentary ${(s.f1Lat - s.delay).toFixed(1)} s behind its edge`]);
