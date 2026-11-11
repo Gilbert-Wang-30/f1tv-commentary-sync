@@ -482,7 +482,7 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   of sync). Each match sets the delay to the one that places it (`delaySource 'sound'`), kept for
   the stream (what the next session starts from); a nudge then is a bias on top
   (`soundBias|<stream>`), except what of it goes the way a correction of more than 50 ms still
-  easing in was going (you heard what it's fixing). No sure match for 2 min of playing: `lost`
+  easing in was going (you heard what it's fixing). No sure match for 10 min of playing: `lost`
   (no target: no easing, nudges plain, the delay holds) and it looks widely again; nothing heard
   for 30 s of playing: `deaf`. The status says what each look came to (`why`), and how often the
   run of F1 TV's sound broke (`breaks`, `gap`). Re-bases of

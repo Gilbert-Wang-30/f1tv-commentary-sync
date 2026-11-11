@@ -65,7 +65,7 @@ extension and the install paths all go by that name.
   browser; on a replay, from the server's recording (at 1×: at 1.5×/2× it keeps the place it
   found, which is saved for the video). It needs the streamer to
   pass F1 TV's sound through (the panel says "by sound" when it has it; Details says what it
-  hears, and "lost" after 2 minutes without it).
+  hears, and "lost" after 10 minutes without it). The panel's **Sync** row switches between by sound and by hand, and the F1 TV row says when F1 TV's own sound is off because the stream's copy plays.
 - **Live works edge to edge, with or without a server.** fone locks the commentary's live edge
   to F1 TV's, by F1 TV's own clock (the time its player puts on the picture: how far behind live
   its picture really is, which differs by a few seconds every time the page loads), then follows

@@ -1046,8 +1046,8 @@ function goLive(held = false, chase = false, pMax = null) {
 // a step of more than SND.JUMP_LATER s (minutes of easing, out of sync all along). No sure match
 // for SND.LOST s: lost, the delay holds and it listens again. A nudge of yours on top of where the
 // sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
-const SND = { EVERY: 15, WIN: 15, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
-  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 120, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
+const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
+  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
 const sndBiasKey = () => `soundBias|${S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
 // (the stream recorded here: its nudge bias read back)
 function sndStart() {
