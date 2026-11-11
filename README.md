@@ -53,7 +53,7 @@ extension and the install paths all go by that name.
 ## What it does
 
 **Commentary in sync**
-- **Live syncs itself by sound.** Streamers pass F1 TV's own sound through under their voice
+- **Syncs itself by sound, live and on replays.** Streamers pass F1 TV's own sound through under their voice
   (its track sound, or the international feed). fone hears F1 TV's sound in its own player and
   finds it in the stream, so it knows which moment of the stream goes with which picture, to a
   few hundredths of a second, with no delay to tune: it looks again every 15 s and follows the
@@ -61,9 +61,11 @@ extension and the install paths all go by that name.
   by easing its speed up or down by 2 % at most, so you don't hear it correct. It jumps only when
   easing would leave it out of sync for minutes: the first time it finds the sound more than
   1.5 s from where the saved delay put it, or a step of more than 3 s (the streamer reloading).
-  A nudge of yours is kept on top, as a preference. Live from the stream pulled into the
-  browser; it needs the streamer to pass F1 TV's sound through (the panel says "by sound" when
-  it has it; Details says what it hears, and "lost" after 2 minutes without it).
+  A nudge of yours is kept on top, as a preference. Live, from the stream pulled into the
+  browser; on a replay, from the server's recording (at 1×: at 1.5×/2× it keeps the place it
+  found, which is saved for the video). It needs the streamer to
+  pass F1 TV's sound through (the panel says "by sound" when it has it; Details says what it
+  hears, and "lost" after 2 minutes without it).
 - **Live works edge to edge, with or without a server.** fone locks the commentary's live edge
   to F1 TV's, by F1 TV's own clock (the time its player puts on the picture: how far behind live
   its picture really is, which differs by a few seconds every time the page loads), then follows
@@ -101,10 +103,14 @@ extension and the install paths all go by that name.
 - **Seek, pause, 1.5×, 2×.** Speeds keep the commentary's pitch. F1 TV's player constantly nudges
   its real speed to stay in step with its own clock, by up to ±25%; fone tells those nudges apart
   from a real speed change, so the commentary doesn't click or jump.
-- **F1 TV's own commentary out of the way.** By default fone mutes F1 TV's player: the recording
-  already carries the streamer's F1 TV sound, and two copies of the same audio at any offset are an
-  echo. Or it switches F1 TV to its commentary-free *Track FX* track on every video, if you prefer
-  F1 TV's clean track sound.
+- **F1 TV's own sound, two settings instead of F1 TV's menus.** fone picks F1 TV's sound on every
+  video (F1 TV starts each one on its own default): its commentary-free *Track FX*, the circuit's
+  sound under the commentary (the default), or *English Int.*, the international English
+  commentary. And F1 TV's subtitles, on or off (kept, not switched in F1 TV's player yet). F1 TV's
+  own mute button silences F1 TV: fone keeps that through every video, channel switch and page
+  load until you unmute it there, and still hears F1 TV's sound for sync by sound. Live, it also
+  switches F1 TV to INTERNATIONAL, the world feed the streamer watches (the settings page turns
+  that off, or leaves F1 TV's sound to you).
 - **Sponsor reels muted.** The streamer's pre-recorded sponsor clips are found in every recording
   (live within ~4 s) and muted. Live, a break's clips are recognised one by one, a couple of
   seconds into each: the mute holds past each clip's end until the server knows whether another
@@ -213,12 +219,15 @@ shows data for `E`, and the danmaku appear at their send time on the `W` clock.
    **Live** once the commentary is playing. Set the delay by ear once (`[` `]` for ½ s, `-` `=`
    for 0.1 s, `,` `.` for 0.02 s). It's remembered for that stream.
 
-F1 TV's own sound is muted by default: the streamer's stream carries their F1 TV sound, and two
-copies of it at any offset are an echo. The extension records only while an F1 TV live video (or
-one it can't yet tell from a replay) is open in a tab, and ten minutes after; on a replay it
-stops. The recording starts when the live video is opened and keeps only the last *Keep the
-last … minutes* (15 by default), in memory, never on disk: to rewind to the start of a session,
-open the live video before the session starts and raise that setting to the session's length.
+F1 TV's own sound plays under the commentary (its Track FX: no commentary of its own). The
+streamer's stream carries their F1 TV sound too; synced by sound, the two line up to a few
+hundredths of a second. Hear an echo all the same (a nudge away from where the sound puts it, a
+stream without F1 TV's sound to sync by): F1 TV's own mute button silences F1 TV, and fone keeps
+it so. The extension records only while an F1 TV live video (or one it can't yet tell from a
+replay) is open in a tab, and ten minutes after; on a replay it stops. The recording starts when
+the live video is opened and keeps only the last *Keep the last … minutes* (15 by default), in
+memory, never on disk: to rewind to the start of a session, open the live video before the
+session starts and raise that setting to the session's length.
 
 The buffer takes about 1–2 MB of memory a minute: it holds the streamer's own audio, typically
 128–256 kbps. On the network that audio is all it takes on Twitch, YouTube and Douyin. Bilibili
@@ -310,13 +319,20 @@ Open any F1 TV video. The fone panel sits top-right:
 | **📺 Streamer** and **⧉** | the streamer's picture in step with the commentary: a window over F1 TV (move it by its bar, size it by its corner), or in a window of its own |
 | **↗ Live page** | the streamer's live page on their platform, in a new tab |
 | **弹 弹幕** and **⚙** | danmaku on/off and their settings |
-| **F1 TV: muted / track sound / English Int. / as is** | what to do with F1 TV's own sound. *Muted* (default): F1 TV silent, the commentary carries the streamer's F1 TV sound, so no echo and no track switching. *Track sound*: F1 TV switched to its commentary-free Track FX track on every video (a track switch, which F1 TV's player sometimes crashes on). *English Int.*: its international English commentary (the world feed's), not F1 TV's own *English F1 Live*. *As is*: left alone. |
-| **Picture: International / as is** | live, F1 TV switched to its INTERNATIONAL channel (the world feed the streamer watches: its graphics, its replays) instead of F1 LIVE, once per video, by F1 TV's own channel switcher (default *International*; go back to F1 LIVE and it's left there). Replays are left as they are |
+| **F1 TV: Track FX / English Int.** | F1 TV's own sound under the commentary, picked on every video (F1 TV starts each one on its own default). *Track FX* (default): its commentary-free track, the circuit's sound (team radio isn't filled in yet). *English Int.*: its international English commentary (the world feed's), not F1 TV's own *English F1 Live*. A track you pick in F1 TV's own menu is kept for that video. To silence F1 TV, use its own mute button: fone holds that through every video, channel switch and page load until you unmute it there, with the button or by dragging F1 TV's volume up (fone turns F1 TV's sound down itself rather than muting F1 TV's player, so sync by sound goes on hearing it; the panel says "muted with F1 TV's button"). Live, a mute F1 TV makes itself is held the same way until F1 TV sets up its player afresh (the next video), the panel saying "muted in F1 TV" |
+| **Subtitles: on / off** | F1 TV's own subtitles (default off; kept and handed to F1 TV's page, not switched in the player yet) |
 | *Anticipate reactions* | with a measured delay: play the commentary 0.9 s early, so reactions land on the action instead of after it (off by default: with it on, the streamer's pass-through F1 TV sound runs 0.9 s ahead of the picture) |
 | *Pause video when ahead of live commentary* | live auto-hold. Without a server, when the stream stops arriving (the streamer offline, or nothing for 30 s) the panel says so and F1 TV is let go rather than held |
 | **⏭ Go live** | F1 TV and the commentary to the freshest moment both have (also `L`, or F1 TV's LIVE badge) |
 | **⟲ Re-sync** | lock the commentary to the live edge again at the delay set |
 | Details | the sync's internals: clock, anchor, delay source, drift; without a server, what the recording holds and how fast it comes in |
+
+The settings page (fone's toolbar icon) has F1 TV's sound and subtitles too, and under
+*Advanced*: **Let fone pick F1 TV's sound track** (on by default; off, F1 TV's sound is left as
+you set it in F1 TV's own menu) and **Live: switch F1 TV to INTERNATIONAL** (on by default: the
+world feed the streamer watches, with its graphics and replays, instead of F1 LIVE, once per
+video, by F1 TV's own channel switcher; go back to F1 LIVE yourself and it's left there; replays
+are left as they are).
 
 | Key | |
 |---|---|
@@ -333,8 +349,9 @@ Open any F1 TV video. The fone panel sits top-right:
 | `D` | danmaku on / off |
 | `V` | the streamer's picture on / off |
 
-**Live, by sound:** with sync by sound locked (the panel says "· by sound"), there's no delay to
-set: fone keeps it, and keeps the last one it measured for the stream to start from next time.
+**By sound:** with sync by sound locked (the panel says "· by sound"), there's no delay to
+set: fone keeps it, and keeps the last one it measured for the stream (live) or the video (a
+replay, on the server) to start from next time.
 A nudge then is a preference on top ("I like it half a second earlier"), kept per stream; one
 while it's still easing a correction in counts toward that correction first. Without the
 streamer passing F1 TV's sound through, it's the delay as below.
@@ -451,9 +468,9 @@ docker run --rm -v $PWD/server:/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
   fone:dev sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
 
 # extension unit tests: sync maths, dashboard layout, danmaku, self-update, live positions,
-# the in-browser recorder (demuxers, buffer, playlists)
+# the in-browser recorder (demuxers, buffer, playlists), sync by sound, F1 TV's settings
 # (from the repository root: livepos.test.js reads server/tests/fixtures)
-for t in core dashcore dmcore background livepos demux localcore recorder; do
+for t in core dashcore dmcore background livepos demux localcore recorder sound settings; do
   docker run --rm -v $PWD:/r -w /r/extension node:22-alpine node $t.test.js
 done
 
@@ -593,8 +610,13 @@ docs/                  architecture, F1 data sources, README images
 - The commentary follows the main feed's timing. Switch F1 TV's main picture to an onboard and it
   runs ~7 s behind the main feed (MultiViewer's channel offsets), so nudge the delay to match.
 - F1 TV's player can die on an audio-track switch (its own menu included); it then rebuilds
-  itself from a position saved up to five minutes earlier. The *muted* F1 TV audio mode avoids
-  track switches altogether; the diagnostics record the player's fatal errors when it happens.
+  itself from a position saved up to five minutes earlier. Turning off *Let fone pick F1 TV's
+  sound track* in the settings avoids fone's track switches altogether; the diagnostics record the
+  player's fatal errors when it happens.
+- While fone holds F1 TV muted, F1 TV's button can show it unmuted for a moment (up to a quarter
+  of a second): whenever F1 TV sets its player up afresh (a page load, the next video, a rebuild
+  after a crash) it reads the player, which fone leaves unmuted for sync by sound, until fone
+  tells F1 TV's controls again. The panel says when fone holds F1 TV muted.
 
 ## Status, licence and trademarks
 

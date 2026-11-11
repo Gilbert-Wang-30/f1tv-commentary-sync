@@ -10,10 +10,12 @@
 //
 // content.js steers us with 'fone-cmd' CustomEvents (JSON string detail):
 //   {cmd: 'rate', value: 2}                    speed for replays; live always plays at 1x
-//   {cmd: 'audio', prefer: 'fx'|'mute'|'eng'|'none', feed: 'intl'|'none', live, cid}   F1 TV's audio: its
-//                                                       no-commentary track, muted, or its international English
-//                                                       commentary; and its picture: INTERNATIONAL (live)
-//                                              (a track switch), muted (no switch), untouched
+//   {cmd: 'audio', prefer: 'fx'|'eng'|'none', subs, feed: 'intl'|'none', live, cid, tap}   F1 TV's sound:
+//                                              its no-commentary track (Track FX) or its international English
+//                                              commentary (a track switch), or left alone; its subtitles on or
+//                                              off (recorded and reported); its picture, live: INTERNATIONAL;
+//                                              tap: its sound handed on (sync by sound). F1 TV's own mute
+//                                              button is yours: see "F1 TV's mute button"
 // It re-sends both every 2 s; after LEASE ms without them we stop steering and undo
 // our speed change (extension reloaded or removed).
 // layout.js forwards the stats dashboard's driver onboards (see "onboard cameras"):
@@ -130,15 +132,17 @@
         };
       }
     } catch { /* a non-writable method: no view of F1 TV's calls */ }
-    try { // F1 TV's mute button (a call made inside your click or key press: not F1 TV's own on a load)
+    try { // F1 TV's mute button (a call made inside your click or key press, or an unmute inside your drag of its
+      // volume slider: not F1 TV's own on a load)
       const orig = player.setAudioIsMuted;
       if (typeof orig === 'function' && !Object.prototype.hasOwnProperty.call(player, 'setAudioIsMuted')) {
         player.setAudioIsMuted = function (muted, ...rest) {
           const ev = window.event;
-          if (!SDK.inCall && ev?.isTrusted && /^(click|pointerup|pointerdown|mouseup|mousedown|keydown|keyup|touchend)$/.test(ev.type)) {
-            A.ui = { muted: !!muted, vk: A.videoKey, at: Date.now() };
-            A.v++;
-          }
+          // (carried out by fone's gain instead: not passed on, see "F1 TV's mute button". An unmute
+          // inside any event of yours lets a held mute go: F1 TV's volume slider unmutes as it's
+          // dragged, from the document's mousemove, and a drag let go off the slider ends with no
+          // mouseup of its own)
+          if (!SDK.inCall && ev?.isTrusted && (TRUSTED.test(ev.type) || (!muted && M.held)) && pressed(!!muted)) return Promise.resolve();
           return orig.call(this, muted, ...rest);
         };
       }
@@ -244,7 +248,7 @@
 
   // ---- commands from content.js ---------------------------------------------------
 
-  const want = { rate: null, fx: false, audio: 'none', feed: 'none', live: false, cid: null, at: 0 };
+  const want = { rate: null, fx: false, audio: 'none', subs: false, feed: 'none', live: false, cid: null, at: 0 };
   document.addEventListener('fone-cmd', (e) => {
     let m;
     try { m = JSON.parse(e.detail); } catch { return; }
@@ -262,10 +266,12 @@
       if (next !== want.rate || m.force) Object.assign(R, { pending: null, fails: 0, lastTry: Math.min(R.lastTry, Date.now() - 500), err: null });
       want.rate = next;
     } else if (m.cmd === 'audio') {
-      const mode = ['fx', 'mute', 'eng'].includes(m.prefer) ? m.prefer : 'none';
-      if (mode !== want.audio) { A.override.clear(); A.tries = 0; A.ui = null; A.v++; } // an explicit request: start over (F1 TV's button too)
+      const mode = ['fx', 'eng'].includes(m.prefer) ? m.prefer : 'none';
+      if (mode !== want.audio) { A.override.clear(); A.tries = 0; A.v++; } // an explicit request: start over
       want.audio = mode;
-      want.fx = mode === 'fx' || mode === 'eng'; // (a track of ours to keep: Track FX, or English Int.)
+      want.fx = mode !== 'none'; // (a track of ours to keep: Track FX, or English Int.)
+      // F1 TV's subtitles, on or off: kept and reported (fone-tm subs) for now, not steered yet
+      if (want.subs !== (m.subs === true)) { want.subs = m.subs === true; A.v++; }
       want.feed = m.feed === 'intl' ? 'intl' : 'none';
       want.live = !!m.live;
       want.tap = !!m.tap; // (sync by sound: F1 TV's sound handed on, audiotap.js)
@@ -432,8 +438,6 @@
     change: null, // the last change of the playing track: {at, fromUid, inputAt, ours, judged}
     tries: 0, err: null, inputAt: 0,
     due: 0, // since when a track switch is wanted and not done (the onboards wait for it)
-    muted: null, // the player we muted (mode 'mute'), to unmute it when the mode goes
-    mutedKey: null, // ...and for which video (F1 TV unmutes on a content load)
     override: new Set(), // content ids where you picked another track yourself
     v: 0, sentV: -1, sentAt: 0,
   };
@@ -516,47 +520,76 @@
     return ok[0] || null;
   }
 
-  // Mode 'mute': F1 TV's own sound off (setAudioIsMuted, the call its mute button makes: a
-  // plain command, no pipeline change) once per video, since F1 TV unmutes on a content load;
-  // back on when the mode goes, the lease ends, or the player changes under us.
-  // When F1 TV's sound goes through fone's own gain (audiotap.js carries F1 TV's player), it's
-  // muted there instead: no SDK call (F1 TV's player has died around them), and F1 TV's player
-  // left playing its sound for fone to hear. Live with sync by sound, its player's own mute (F1 TV
-  // may remember one from your last visit, and sets it again on a content load) is undone once per
-  // video, the gain keeping it silent; one of ours from before is undone in any case. F1 TV's own
-  // button still has its say for the video (until you pick a mode in fone again): unmuting with it
-  // while fone mutes lets F1 TV be heard (as the old way did); muting with it is fone's gain at 0
-  // as before, the player unmuted again behind it so sync by sound goes on hearing it.
+  // ---- F1 TV's mute button ---------------------------------------------------------------
+  // fone no longer mutes F1 TV: its sound plays under the commentary, and F1 TV's own mute button is
+  // how you silence it (a setAudioIsMuted call made inside your click or key press, or an unmute
+  // inside your drag of its volume slider: watchPlayer's wrapper; F1 TV's own calls, on a load, are
+  // in neither). With F1 TV's sound through fone's gain (audiotap.js routed), fone carries a press
+  // out there: the gain to 0 at once, and the mute not passed on, so F1 TV's player goes on playing
+  // its sound for sync by sound to hear. F1 TV's button shows it muted all the same: its toggle flips
+  // itself, and while the mute is held F1 TV's UI is told muted again wherever it goes back to the
+  // player's (unmuted) state: each new player (a page or content load, a rebuild after a crash: its
+  // view's viewAddedCallback asks the player afresh) and the player's mute listener (an unmute behind
+  // the gain); else it would show F1 TV unmuted, and its next press would mute rather than unmute.
+  // Held through content loads, channel switches and player rebuilds, and through page loads (fone's
+  // own reload after an update among them) in this page's localStorage, which audiotap.js reads to
+  // start at gain 0, until you unmute there. Live with sync by sound, the player is asked once per
+  // video whether it's muted: a mute of F1 TV's own (a first playback can start muted), with nothing
+  // of yours held, is held the same way for that player only (silent as it was; not kept for the
+  // next pages, let go with its player), and a mute behind the gain is undone so sync by sound hears
+  // it: a mute is never undone where you could hear it. Without the tap F1 TV's button works as it
+  // always has, and fone stays out of it.
+  const MUTE_KEY = 'fone.f1Muted'; // (audiotap.js reads it too)
+  const TRUSTED = /^(click|pointerup|pointerdown|mouseup|mousedown|keydown|keyup|touchend)$/;
+  // held: F1 TV silenced by fone's gain; own: the player whose own mute that is (not a press of
+  // yours: never stored); checked: the player and video asked
+  const M = { held: false, own: null, checked: null };
+  try { M.held = localStorage.getItem(MUTE_KEY) === '1'; } catch { /* storage blocked: for this page only */ }
   const tap = () => (window.__foneTap?.routed?.() ? window.__foneTap : null);
-  async function steerMute(player, vk) {
-    const ui = A.ui?.vk === vk ? A.ui : null; // (F1 TV's button, this video)
-    const on = want.audio === 'mute' && leased() && !(ui && !ui.muted);
+
+  // Your press of F1 TV's mute button: true when fone carries it out (the call isn't passed on).
+  function pressed(muted) {
     const tp = tap();
-    if (A.muted && A.muted !== player) { A.muted = null; A.mutedKey = null; } // gone with its player
-    if (tp) {
-      if (tp.gain() !== (on ? 0 : 1)) tp.setGain(on ? 0 : 1);
-      const ours = A.muted === player;
-      const uiMute = !!ui?.muted && !(A.heardAt >= ui.at); // (F1 TV's button muted it since our last unmute)
-      if ((ours || (on && want.tap && (uiMute || (!ui && (A.heard !== player || A.heardKey !== vk))))) && !isDead(player) && lock('mute')) {
-        try {
-          await sdkCall('unmute', ours ? '' : 'for the tap', player, () => player.setAudioIsMuted(false), 5000);
-          A.heard = player;
-          A.heardKey = vk;
-          A.heardAt = Date.now();
-          if (A.muted === player) { A.muted = null; A.mutedKey = null; }
-          A.err = null;
-        } catch (e) { A.err = errText(e); } finally { unlock(); A.v++; }
-      }
-      return;
-    }
-    // (not through fone's gain: the player's own mute)
-    if (on && A.muted === player && A.mutedKey === vk) return;
-    if (!on && !A.muted) return;
-    if (isDead(player) || !lock('mute')) return;
+    M.held = muted && !!tp;
+    M.own = null;
+    M.checked = null;
+    try { if (M.held) localStorage.setItem(MUTE_KEY, '1'); else localStorage.removeItem(MUTE_KEY); } catch { /* this page only */ }
+    if (tp) tp.setGain(M.held ? 0 : 1);
+    A.v++;
+    return M.held;
+  }
+
+  // F1 TV's UI told the mute fone holds: its own state (tiledmedia-ui-view's ui), which its button
+  // shows and its next press toggles. No SDK call; within a poll (250 ms) of F1 TV setting it back.
+  function showMuted() {
     try {
-      await sdkCall(on ? 'mute' : 'unmute', '', player, () => player.setAudioIsMuted(on), 5000);
-      A.muted = on ? player : null;
-      A.mutedKey = on ? vk : null;
+      const ui = document.querySelector('tiledmedia-ui-view')?.ui;
+      if (ui?.getIsMuted?.() === false && typeof ui.muteStateChanged === 'function') ui.muteStateChanged(true, 0);
+    } catch { /* F1 TV's UI changed: its button may show F1 TV unmuted (a press then mutes, the next unmutes) */ }
+  }
+
+  async function steerMute(player, vk) {
+    const tp = tap();
+    if (!tp) return;
+    if (M.own && M.own !== player) { Object.assign(M, { held: false, own: null, checked: null }); A.v++; } // (gone with its player)
+    const g = M.held ? 0 : 1;
+    if (tp.gain() !== g) tp.setGain(g);
+    if (M.held) showMuted();
+    const k = `${SDK.pid}|${vk}`;
+    if (!want.tap || !leased() || M.checked === k || typeof player.getAudioIsMuted !== 'function') return;
+    const st = player.playerState; // (not while F1 TV loads: it may mute on the way)
+    if (st === 'loading' || st === 'idle' || SDK.f1tv || isDead(player) || !lock('mute')) return;
+    M.checked = k;
+    try {
+      const muted = await sdkCall('muted?', '', player, () => player.getAudioIsMuted(), 5000);
+      if (muted === true && !M.held && tap()) {
+        // F1 TV's own mute, nothing of yours held: the gain to 0 (silent as it was), the player
+        // unmuted behind it on the next look, a poll later (the gain down by then)
+        Object.assign(M, { held: true, own: player, checked: null });
+        tap().setGain(0);
+      } else if (muted === true && M.held && tap()?.gain() === 0) { // (still held, the gain still at 0)
+        await sdkCall('unmute', M.own ? "behind F1 TV's own mute" : 'behind your mute', player, () => player.setAudioIsMuted(false), 5000);
+      }
       A.err = null;
     } catch (e) {
       A.err = errText(e);
@@ -582,7 +615,7 @@
       Object.assign(A, { curKey: ck, curUid: cur?._uid ?? null, curAt: now });
       A.v++;
     }
-    if (want.audio === 'mute' || A.muted || (tap() && tap().gain() !== 1)) { A.due = 0; await steerMute(player, vk); if (want.audio === 'mute') { A.cur = cur ? A.cur : null; return; } }
+    await steerMute(player, vk);
     A.cur = null;
     if (!cur) return;
     const list = tracksFor(cur);
@@ -689,8 +722,9 @@
       manual: !!(want.cid && A.override.has(want.cid)),
       fx: A.best ? A.best.name || A.best.lang : null,
       on: want.fx,
-      mode: want.audio,
-      muted: !!A.muted || window.__foneTap?.routed?.() && window.__foneTap.gain() === 0, // F1 TV's sound off by us
+      mode: want.audio, // the sound fone picks: fx, eng, none (left to F1 TV)
+      muted: M.held && !M.own && !!tap(), // F1 TV silenced with its own mute button, held by fone's gain
+      own: M.held && !!M.own && !!tap(), // F1 TV's own mute (not a press of yours), held by fone's gain for its player
       // F1 TV's sound through fone's gain (audiotap.js): heard in the last 2 s, how loud lately
       tap: window.__foneTap?.routed?.() ? { live: window.__foneTap.live(), level: Math.round(window.__foneTap.level() * 1000) / 1000, err: window.__foneTap.err?.() ?? null, anchored: window.__foneTap.anchored?.() ?? null } : null,
       due: A.due ? Date.now() - A.due : 0, // ms a switch has been wanted and not done
@@ -1102,6 +1136,8 @@
         r: { want: R.target, sdk: sdk ? sdk.rate : null, exact: !!sdk?.exact, el: vid ? vid.playbackRate : null, err: R.err,
           ps: player?.playerState ?? null, fails: R.fails },
         a: audioReport(),
+        // F1 TV's subtitles as asked (content.js's f1Subs)
+        subs: { want: want.subs },
         // the picture's channel, and when fone last switched it (to INTERNATIONAL)
         feed: { ch: view?.dataset.channelId ?? null, want: want.feed, landedAt: FEED.landedAt || null, done: FEED.done, err: FEED.err },
         // the player's SDK, for the diagnostics: our last calls (and F1 TV's applyDesiredState),
@@ -1187,7 +1223,6 @@
       SDK.pid = pl?.playerID ?? null;
       Object.assign(R, { pending: null, fails: 0, lastTry: 0, err: null, handle: null });
       A.err = null;
-      if (A.muted && A.muted !== pl) { A.muted = null; A.mutedKey = null; }
       if (pl) watchPlayer(pl);
     }
     // The listener only fires when the position changes (so not while paused); the

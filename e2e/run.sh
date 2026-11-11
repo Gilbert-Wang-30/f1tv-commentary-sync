@@ -55,9 +55,14 @@ wall_start = p0 + 40 - 300
 dur = 1800
 name = datetime.fromtimestamp(wall_start, ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M") + "-【胡闹P房】16点 巴林 排位赛.flv"
 path = f"rec/胡闹P房/{name}"
+# F1 TV's sound (f1.wav: the mock F1 TV page plays it, ?f1audio=1), passed through under the
+# commentary's tone 12 dB down at the recording's own times (sync by sound on a replay finds it)
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"anoisesrc=d={dur}:c=pink:r=8000:a=0.5:seed=7,tremolo=f=0.7:d=0.8",
+                "-ac", "1", "media/f1.wav"], check=True)
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=330:sample_rate=48000:duration={dur}",
-                "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=5:d={dur}", "-c:a", "aac", "-b:a", "64k",
-                "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-shortest", "-f", "flv", path], check=True)
+                "-i", "media/f1.wav", "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=5:d={dur}",
+                "-filter_complex", "[1:a]volume=0.25[f];[0:a][f]amix=inputs=2:normalize=0,aresample=48000[a]", "-map", "[a]", "-map", "2:v",
+                "-c:a", "aac", "-b:a", "64k", "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-shortest", "-f", "flv", path], check=True)
 os.utime(path, (wall_start + dur, wall_start + dur))
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x36:r=2:d=1800",
                 "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "1800", "-c:v", "libx264", "-preset", "ultrafast",

@@ -7,7 +7,11 @@ the demuxers, the buffer, the MSE player and the live lock all run as they do fo
     live lock at the default delay; the edge matches what the CDN sent; rewinding F1 TV 30 s
     takes the commentary back 30 s; past the buffer says so; a dropped connection (its
     timestamps start again at 0) is placed by arrival (no shift); a nudge is kept for the stream
-    in a new tab; the streamer going off air releases F1 TV.
+    in a new tab; sync by sound with F1 TV's sound playing under the commentary, and F1 TV's own
+    mute button carried out by fone's gain (still heard, held through a content load and a page
+    load, its button kept showing muted, let go by its unmute or a drag of its volume; a mute of
+    F1 TV's own held the same way for its player, undone only behind the gain); 0.3.10's F1 TV
+    sound 'eng' and 'off' migrated; the streamer going off air releases F1 TV.
   A room off air: said so.
   A direct HLS URL (MPEG-TS segments): recorded, in sync.
   The stats and 弹幕 stay hidden (no server).
@@ -52,7 +56,8 @@ async def main():
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
         ext = sw.url.split("/")[2]
-        await sw.evaluate("chrome.storage.sync.set({source: 'local', stream: 'https://live.bilibili.com/5555', bufferMin: 1, servers: [], f1Feed: 'off'})")
+        # (F1 TV's sound as 0.3.10 had it, 'eng': migrated to f1Sound 'eng', checked below)
+        await sw.evaluate("chrome.storage.sync.set({source: 'local', stream: 'https://live.bilibili.com/5555', bufferMin: 1, servers: [], f1Feed: 'off', f1Audio: 'eng'})")
 
         blob = open(f"{MEDIA}/video.mp4", "rb").read()
 
@@ -94,6 +99,12 @@ async def main():
                 f"the CDN got Bilibili's Referer/Origin (the session rule): {len(stats['flv'])} connection, {stats['refused']} refused")
         E.check(st["delaySource"] == "live" and abs(st["delay"] - 28) < 1e-6 and abs(st.get("f1Lat", 0) - 32) < 0.5,
                 f"live default delay {st['delay']} (HTTP-FLV), F1 TV {st.get('f1Lat')} s behind its own clock")
+        # 0.3.10's F1 TV sound 'eng' is English Int. still: written once as f1Sound, picked, lit in the panel
+        await E.wait_js(page, "() => __curAudio()", lambda n: n == "English Int.", 20, "English Int. (migrated)")
+        f1s = await sw.evaluate("chrome.storage.sync.get(null).then((s) => [s.f1Sound, s.f1Pick, s.f1Audio])")
+        box = await page.evaluate(E.F1BOX)
+        E.check(f1s == ["eng", True, "eng"] and box["rows"][0] == [["Track FX", False], ["English Int.", True]],
+                f"settings: 0.3.10's F1 TV sound 'eng' migrated to English Int., picked and lit (f1Sound, f1Pick, f1Audio: {f1s})")
         # ↗ Live page: the room's own page on Bilibili, in a new tab
         shown = await page.evaluate(f"() => !{E.PANEL}.getElementById('picPage').hidden")
         await ctx.route("https://live.bilibili.com/**", lambda r: r.fulfill(body="<title>room</title>", content_type="text/html"))
@@ -134,8 +145,9 @@ async def main():
         E.check(abs(moved) < 0.5, f"F1 TV's player re-based its position 584 s back: the commentary went on where it was ({moved:+.2f}s)")
 
         # F1 TV's picture to INTERNATIONAL (the world feed the streamer watches), live, once, by its
-        # own channel switcher: the commentary re-synced after it, in sync; back to F1 LIVE yourself,
-        # left there; F1 TV's sound 'English Int.' its international English commentary, not F1 LIVE's
+        # own channel switcher (the options page's f1Feed): the commentary re-synced after it, in sync;
+        # back to F1 LIVE yourself, left there; F1 TV's sound 'English Int.' its international English
+        # commentary, not F1 LIVE's
         await sw.evaluate("chrome.storage.sync.set({f1Feed: 'intl'})")
         await E.wait_js(page, "() => document.getElementById('mainview').dataset.channelId", lambda c: c == "1025", 20, "INTERNATIONAL")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync", 20, "in sync on INTERNATIONAL")
@@ -148,10 +160,10 @@ async def main():
         await asyncio.sleep(8)
         ch = await page.evaluate("() => document.getElementById('mainview').dataset.channelId")
         E.check(ch == "1033" and await page.evaluate("() => window.__intlClicks") == 1, f"…and back on F1 LIVE by you: left there ({ch})")
-        await sw.evaluate("chrome.storage.sync.set({f1Audio: 'eng'})")
-        await E.wait_js(page, "() => __curAudio()", lambda n: n == "English Int.", 20, "English Int.")
+        await E.wait_js(page, "() => window.__audioLog.slice(-2)", lambda l: l == ["English", "English Int."], 20, "English Int. on F1 LIVE")
         E.check(True, "F1 TV's sound 'English Int.': its international English commentary, not F1 LIVE's own 'English'")
-        await sw.evaluate("chrome.storage.sync.set({f1Audio: 'mute', f1Feed: 'off'})")
+        await sw.evaluate("chrome.storage.sync.set({f1Sound: 'fx', f1Feed: 'off'})")
+        await E.wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 20, "Track FX")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync", 20, "in sync again")
 
         # The streamer window (V): the stream's picture, from the recorder, in step with the
@@ -330,6 +342,8 @@ async def main():
         await page.keyboard.press("]")
         st = await E.wait_status(page, lambda s: abs(s.get("delay", 0) - 28.5) < 1e-6, 5, "nudged")
         # in a new tab: a new attach, so the delay is read back from what was saved
+        # (and F1 TV's sound as 0.3.10 had it 'off', left alone: migrated in the new tab, below)
+        await sw.evaluate("chrome.storage.sync.remove(['f1Sound', 'f1Pick']).then(() => chrome.storage.sync.set({f1Audio: 'off'}))")
         old = page
         page = await ctx.new_page()
         await old.close()
@@ -349,12 +363,24 @@ async def main():
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and s.get("f1Lat") is not None
                                  and abs((s["rec"]["edge"] - s["m"]) - (s["f1Lat"] - s["delay"])) < 0.3, 15, "locked again by F1 TV's clock")
         E.check(abs(st["f1Lat"] - 35) < 0.5, f"its clock came: F1 TV {st['f1Lat']} s behind it, the commentary {st['rec']['edge'] - st['m']:.2f}s behind its edge")
+        # 0.3.10's 'off' stays hands off: fone doesn't pick F1 TV's track (F1 LIVE's own English left
+        # playing), the panel lights neither sound and says so; a sound picked there picks again
+        f1s = await sw.evaluate("chrome.storage.sync.get(null).then((s) => [s.f1Sound, s.f1Pick, s.f1Audio])")
+        box = await page.evaluate(E.F1BOX)
+        log = await page.evaluate("() => window.__audioLog")
+        E.check(f1s == ["fx", False, "off"] and log == ["English"] and box["rows"][0] == [["Track FX", False], ["English Int.", False]]
+                and "left to F1 TV" in box["info"],
+                f"settings: 0.3.10's F1 TV sound 'off' migrated to fone not picking (f1Sound, f1Pick, f1Audio: {f1s}), F1 TV's track left alone ({log}), '{box['info']}'")
+        await page.click("#fone-overlay button[data-fs='fx']")
+        await E.wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 20, "Track FX picked in the panel")
+        f1s = await sw.evaluate("chrome.storage.sync.get(['f1Sound', 'f1Pick']).then((s) => [s.f1Sound, s.f1Pick])")
+        E.check(f1s == ["fx", True], f"...and 'Track FX' in the panel: fone picks it again ({f1s})")
 
         # Sync by sound. The stream carries F1 TV's sound (f1.wav, 12 dB under a voice) at stream
         # time s; F1 TV plays f1.wav at its picture's position + __f1Off. So the commentary is in step
         # when the stream time playing is the picture's + __f1Off: set 2 s off what fone has now.
         # fone hears it, finds it, and (the first time, at the start) goes there at once; F1 TV's
-        # sound muted by fone's own gain, F1 TV's player not muted.
+        # sound plays under the commentary (fone's gain at 1), F1 TV's player not muted.
         first = mock("/_ctl/stats")["flv"][0]["first"]  # the stream time of m 0
         st = await E.status(page)
         off0 = st["m"] + first + 2.0 - st["p"]
@@ -371,9 +397,9 @@ async def main():
         st = await E.status(page)
         b0 = placed(st, off0)
         mute = await page.evaluate("() => [window.__muteCalls.includes(true), window.__foneTap.gain(), window.__foneTap.live()]")
-        E.check(mute == [False, 0, True] and "by sound" in (await page.evaluate(f"() => {E.PANEL}.getElementById('text').textContent")),
+        E.check(mute == [False, 1, True] and "by sound" in (await page.evaluate(f"() => {E.PANEL}.getElementById('text').textContent")),
                 f"sync by sound: F1 TV's sound found in the stream, the commentary there ({placed(st, off0) * 1000:+.0f} ms, match {st['sound']['score']}), "
-                f"F1 TV muted by fone's gain, its player left playing it (mute calls, gain, heard: {mute})")
+                f"F1 TV's sound playing under it, its player not muted (mute calls, gain, heard: {mute})")
         # The streamer's latency moves 0.6 s: eased there, no seek, the speed off 1x by 2 % at most
         seeks0 = st["fixes"]["nSeeks"]
         off1 = off0 + 0.6
@@ -407,15 +433,83 @@ async def main():
         E.check(st["fixes"]["nSeeks"] > seeks0 and abs(st["sound"]["bias"]) < 1e-6,
                 f"...its latency dropped 5 s: found again in {time.time() - t0:.0f}s and jumped there ({(placed(st, off2) - b0) * 1000:+.0f} ms from the first lock, "
                 f"bias {st['sound']['bias']})")
+
+        # F1 TV's own mute button is how F1 TV is silenced. Your press (a real click) is carried out by
+        # fone's gain, the mute not passed on: F1 TV's player goes on playing its sound, so sync by
+        # sound goes on hearing it (a sure look after the press), and F1 TV's button shows it muted.
+        # Held through a content load until its unmute is pressed.
+        TAP = (f"() => [window.__foneTap.gain(), window.__player.audioMuted, window.__muteCalls, window.__uiMuted, "
+               f"localStorage.getItem('fone.f1Muted'), {E.PANEL}.getElementById('f1Info').textContent]")
+        at0 = st["sound"]["last"]["at"]
+        await page.click("#f1mute")
+        await E.wait_js(page, "window.__foneTap.gain()", lambda g: g == 0, 3, "F1 TV silenced by fone's gain")
+        st = await E.wait_status(page, lambda s: ((s.get("sound") or {}).get("last") or {}).get("at", 0) > at0 + 1, 25, "a look after the press")
+        m1 = await page.evaluate(TAP)
+        E.check(m1[:5] == [0, False, [], True, "1"] and "muted with F1 TV's button" in m1[5] and st["sound"]["last"]["sure"] and st["sound"]["state"] == "locked",
+                f"F1 TV's mute button: F1 TV silenced by fone's gain, its player not muted, so still heard (a sure look after it, match "
+                f"{st['sound']['last']['score']}); its button showing muted, held for the next pages, said in the panel ({m1})")
+        await page.evaluate("() => tmSwitchFeed(1033, 'F1 LIVE')")  # a content load
+        await asyncio.sleep(4)
+        m2 = await page.evaluate(TAP)
+        await page.click("#f1mute")
+        # (the gain is set in the click; the panel only hears of it with page.js's next report and its next render)
+        m3 = await E.wait_js(page, TAP, lambda m: m[0] == 1 and "muted" not in m[5], 3, "F1 TV heard again, the panel no longer saying muted")
+        E.check(m2[:5] == [0, False, [], True, "1"] and m3[:5] == [1, False, [False], False, None] and "muted" not in m3[5],
+                f"...held through a content load ({m2[:5]}); F1 TV's unmute: its sound back, nothing held ({m3[:5]})")
+        # A mute of F1 TV's own (a first playback can start muted; not a press of yours), the player
+        # asked once per video: held by fone's gain the same way (silent as it was), the player
+        # unmuted behind it so sync by sound hears, F1 TV's button told muted again after that; for
+        # that player only, never stored: let go when F1 TV makes a new one (a rebuild here; on the
+        # real F1 TV every content load too)
+        await page.evaluate("() => { window.__player.setAudioIsMuted(true); return tmSwitchFeed(1033, 'F1 LIVE'); }")
+        await E.wait_js(page, TAP, lambda m: m[1] is False and len(m[2]) == 3 and "muted in F1 TV" in m[5], 10, "F1 TV's own mute held by fone's gain")
+        await asyncio.sleep(1)  # (F1 TV's button: set back by the player's mute listener, told muted again within a poll)
+        m4 = await page.evaluate(TAP)
+        await page.evaluate("() => tmRebuildPlayer()")
+        m4b = await E.wait_js(page, TAP, lambda m: m[0] == 1 and "muted" not in m[5], 10, "F1 TV's own mute let go with its player")
+        E.check(m4[:5] == [0, False, [False, True, False], True, None] and "F1 TV's button" not in m4[5]
+                and m4b[:5] == [1, False, [False, True, False], False, None],
+                f"a mute of F1 TV's own: held by fone's gain, undone behind it, F1 TV's button showing muted, nothing stored ({m4[:5]}, "
+                f"'{m4[5]}'); let go with its player ({m4b[:5]})")
+        # Your mute held, and a mute of F1 TV's own on top of it (on a content load): undone behind
+        # the gain, after asking the player, the gain still at 0, F1 TV's button told muted again
+        await page.click("#f1mute")
+        await E.wait_js(page, "window.__foneTap.gain()", lambda g: g == 0, 3, "F1 TV silenced by fone's gain again")
+        await page.evaluate("() => { window.__player.setAudioIsMuted(true); return tmSwitchFeed(1033, 'F1 LIVE'); }")
+        await E.wait_js(page, TAP, lambda m: m[1] is False and len(m[2]) == 5, 10, "F1 TV's own mute undone behind your mute")
+        await asyncio.sleep(1)
+        m5 = await page.evaluate(TAP)
+        E.check(m5[:5] == [0, False, [False, True, False, True, False], True, "1"] and "muted with F1 TV's button" in m5[5],
+                f"...and under your mute: undone behind it, the gain still at 0, F1 TV's button showing muted ({m5[:5]})")
+        # Held through a page load (fone's own reload after an update, or yours, mid-race): F1 TV's
+        # sound at fone's gain 0 from the page's start (audiotap.js, before page.js runs), its player
+        # not muted, said in the panel; F1 TV's UI asks the new player (not muted) and is told muted
+        # again, so its first press unmutes
+        await live_page(fl=35, f1audio=True)
+        await E.wait_status(page, lambda s: s.get("state") == "sync", 30, "in sync after a page load")
+        m6 = await E.wait_js(page, TAP, lambda m: m[3] is True and "muted with F1 TV's button" in m[5], 20, "held after a page load")
+        g0 = await page.evaluate("() => window.__gain0")
+        await page.click("#f1mute")
+        m7 = await E.wait_js(page, TAP, lambda m: m[0] == 1 and "muted" not in m[5], 5, "F1 TV heard again after a page load")
+        E.check(g0 == 0 and m6[:5] == [0, False, [], True, "1"] and m7[:5] == [1, False, [False], False, None],
+                f"...held through a page load: F1 TV's sound at gain {g0} from the page's start, its player not muted, its button "
+                f"showing muted ({m6[:5]}); its first press unmutes ({m7[:5]})")
+        # ...and let go by dragging F1 TV's volume slider up, let go off the slider: it unmutes from
+        # the document's mousemove as it drags, with no mouseup of its own at the end
+        await page.click("#f1mute")
+        await E.wait_js(page, "window.__foneTap.gain()", lambda g: g == 0, 3, "held again")
+        vol = await page.locator("#f1vol").bounding_box()
+        y = vol["y"] + vol["height"] / 2
+        await page.mouse.move(vol["x"] + 4, y)
+        await page.mouse.down()
+        await asyncio.sleep(0.4)  # (F1 TV's slider drags after a 200 ms hold)
+        await page.mouse.move(vol["x"] + vol["width"] - 4, y, steps=5)
+        await page.mouse.move(vol["x"] + vol["width"] + 60, y, steps=3)
+        await page.mouse.up()
+        m8 = await E.wait_js(page, TAP, lambda m: m[0] == 1 and "muted" not in m[5], 5, "F1 TV heard again after a drag of its volume")
+        E.check(m8[2][:2] == [False, False] and True not in m8[2] and m8[3] is False and m8[4] is None,
+                f"...a drag of F1 TV's volume up, let go off its slider, lets the mute go too ({m8[:5]})")
         await page.evaluate("() => { window.__f1Off = null; }")  # (F1 TV's sound off: the rest goes by the delay)
-        # F1 TV's sound back when fone stops muting it ('as is'), off again when it mutes
-        gains = []
-        for mode, want in (("off", 1), ("mute", 0)):
-            await sw.evaluate(f"chrome.storage.sync.set({{f1Audio: '{mode}'}})")
-            g = await E.wait_js(page, "window.__foneTap.gain()", lambda g: g == want, 10, f"F1 TV's gain {want} ({mode})")
-            gains.append(g)
-        E.check(gains == [1, 0] and not (await page.evaluate("() => window.__muteCalls.includes(true)")),
-                f"F1 TV's sound back through fone's gain when it stops muting, off again when it mutes: {gains}")
         await asyncio.sleep(2)
         # (the delay sound kept for the stream, back to what the tests after this set by hand)
         opt = await ctx.new_page()

@@ -9,6 +9,8 @@ const DEFAULTS = {
   liveDirect: true,
   autoHold: true,
   soundSync: true,
+  // F1 TV's sound, subtitles, track picking, INTERNATIONAL live (settings.js; unset: null, for its migration)
+  f1Sound: null, f1Subs: null, f1Pick: null, f1Feed: null, f1Audio: null, autoFx: null,
 };
 const $ = (id) => document.getElementById(id);
 
@@ -72,6 +74,11 @@ chrome.storage.sync.get(DEFAULTS).then((s) => {
   $('autoHold').checked = s.autoHold;
   $('liveDirect').checked = s.liveDirect !== false;
   $('soundSync').checked = s.soundSync !== false;
+  const f1 = FoneSettings.f1(s);
+  $(f1.f1Sound === 'eng' ? 'f1SoundEng' : 'f1SoundFx').checked = true;
+  $('f1Subs').checked = f1.f1Subs;
+  $('f1Pick').checked = f1.f1Pick;
+  $('f1Intl').checked = f1.f1Feed === 'intl';
   if (s.channel) $('channel').add(new Option(s.channel, s.channel));
   $('channel').value = s.channel;
   showSource();
@@ -84,6 +91,7 @@ $('save').addEventListener('click', async () => {
   await chrome.storage.sync.set({
     source: source(), stream: $('stream').value.trim(), bufferMin: bufferMin(),
     servers: servers(), channel: $('channel').value, autoHold: $('autoHold').checked, liveDirect: $('liveDirect').checked, soundSync: $('soundSync').checked,
+    f1Sound: $('f1SoundEng').checked ? 'eng' : 'fx', f1Subs: $('f1Subs').checked, f1Pick: $('f1Pick').checked, f1Feed: $('f1Intl').checked ? 'intl' : 'off',
   });
   $('bufferMin').value = bufferMin();
   $('saved').textContent = 'Saved.';

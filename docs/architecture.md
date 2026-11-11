@@ -222,15 +222,15 @@ didn't hear (no levels, colours or stickers there). Served by send time.
 
 | where | files | role |
 |---|---|---|
-| content scripts on `https://f1tv.formula1.com/*`, isolated world | `core.js`, `player.js`, `dmcore.js`, `danmaku.js`, `content.js`, `layout.js`, `streamerbox.js` | `player.js` finds the main `<video>` and its true position; `content.js` draws the panel, binds the keys and reports the player to the engine; `layout.js` the split view with the stats iframe; `danmaku.js` the 弹幕 overlay; `streamerbox.js` the streamer window (a box with `streamer.html` in an iframe, moved by its bar, sized by its corner, `chrome.storage.local` `streamerBox`/`streamerOn`) |
+| content scripts on `https://f1tv.formula1.com/*`, isolated world | `settings.js`, `core.js`, `player.js`, `dmcore.js`, `danmaku.js`, `content.js`, `layout.js`, `streamerbox.js` | `player.js` finds the main `<video>` and its true position; `content.js` draws the panel, binds the keys and reports the player to the engine; `settings.js` F1 TV's settings and their migration from older builds (shared with the options page); `layout.js` the split view with the stats iframe; `danmaku.js` the 弹幕 overlay; `streamerbox.js` the streamer window (a box with `streamer.html` in an iframe, moved by its bar, sized by its corner, `chrome.storage.local` `streamerBox`/`streamerOn`) |
 | streamer window | `streamer.html`: `vendor/hls.light.min.js`, `streamer.js` (in the box's iframe, or a popup window of its own) | the streamer's picture at the commentary's moment, muted. Follows the engine's clock (`fone-clock`): the stream recorded here, from the recorder's video (`fone-video`) decoded with WebCodecs (H.264, HEVC where the browser decodes it) and drawn on a canvas at `m`, the last 3 min kept for rewinds; a server's recording, its video handoff with hls.js at the file's position (`media − mOffset`), its requests made by the engine (`fone-fetch`: an iframe in F1 TV's https page can't reach an http server) |
-| content scripts, **main** world | `page.js`, `layout_page.js` | the only place the Tiledmedia player's objects are reachable: position, speed, audio tracks, onboard views; fullscreen redirection for the split view |
+| content scripts, **main** world | `page.js`, `layout_page.js`; `audiotap.js` at `document_start` | the only place the Tiledmedia player's objects are reachable: position, speed, audio tracks, F1 TV's mute button, onboard views; fullscreen redirection for the split view; F1 TV's sound through fone's gain, copied for sync by sound |
 | service worker | `background.js` (+ `dashproxy.js`, `f1token.js`, `streams.js`) | relays messages between tabs and the engine, opens the offscreen document, fetches for pages that can't (mixed content, CSP), hands the F1 TV token to the engine, sets the streaming platforms' header rules, self-update |
 | offscreen document | `offscreen.html`: `vendor/hls.light.min.js`, `core.js`, `demux.js`, `localcore.js`, `streams.js`, `recorder.js`, `localplayer.js`, `livepos.js`, `offscreen.js` | **the audio engine**: picks the source (a server, or the stream recorded here), clock and delay, plays `m` (a server's recordings with hls.js, its own recording through MSE) and keeps it on target (at 1× by tiny rate changes, otherwise by rare seeks); relays live car positions |
-| extension pages | `dashboard.html` (`dashcore.js`, `dashboard.js`, `dashboard.css`), `options.html`/`options.js` | the stats (as an iframe behind the shrunken player, or a window of its own); the settings |
+| extension pages | `dashboard.html` (`dashcore.js`, `dashboard.js`, `dashboard.css`), `options.html` (`settings.js`, `options.js`) | the stats (as an iframe behind the shrunken player, or a window of its own); the settings |
 
-`core.js`, `dashcore.js`, `dmcore.js`, `demux.js` and `localcore.js` are pure functions shared
-with the Node unit tests.
+`core.js`, `dashcore.js`, `dmcore.js`, `demux.js`, `localcore.js`, `settings.js` and `sound.js` are
+pure functions shared with the Node unit tests.
 
 ### Without a server: the stream recorded in the browser
 
@@ -400,16 +400,30 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   the e2e page its stamps land within a few ms of the sound actually played. The context's
   `getOutputTimestamp` maps render time to the performance clock, and `Date.now() -
   performance.now()` at that moment to the wall clock the video reports use (the two clocks
-  drift apart, and the performance clock stops while the computer sleeps). fone's "muted" is
-  that gain at 0 (page.js `steerMute`: no SDK call, F1 TV's player left playing); live with sync
-  by sound, the player's own mute (remembered from a last visit, set again on a content load) is
-  undone once per video so the copy isn't silence. F1 TV's own mute button, seen by wrapping the
-  player's `setAudioIsMuted` (a call made inside a trusted click or key event), still has its
-  say for the video, until a mode is picked in fone again: unmuting with it lets F1 TV be heard;
-  muting with it is fone's gain at 0 as before, the player unmuted again behind it. Without
-  the tap (F1 TV's sound not through Web Audio), F1 TV's own mute as before. page.js hands the copy over
-  every second (`fone-f1audio`, Int16 base64) while content.js asks (`tap`: live, `soundSync`
-  on), content.js passes it to the engine (`f1audio`).
+  drift apart, and the performance clock stops while the computer sleeps). fone never mutes F1
+  TV itself: its sound plays under the commentary. F1 TV's own mute button is how it's silenced
+  (page.js, "F1 TV's mute button"): a press is seen by wrapping the player's `setAudioIsMuted` (a
+  call made inside a trusted click or key event, or an unmute inside any trusted event, as F1
+  TV's volume slider makes from the document's `mousemove` while it's dragged; F1 TV's own calls,
+  on a load, aren't), and with the tap carrying F1 TV's sound it's carried out by fone's gain at
+  0, the call not passed on, so the player keeps playing and the copy isn't silence. F1 TV's
+  button flips its own look on a click and asks to unmute next time, but its UI (`ui` on
+  `tiledmedia-ui-view`) goes back to the player's mute whenever its view is added to a player
+  (`Player.addView` → the view's `viewAddedCallback` → `initialize` → `getAudioIsMuted` →
+  `muteStateChanged`: a page or content load, a rebuild) and with the player's mute listener;
+  while the mute is held, page.js tells it muted again (`ui.muteStateChanged(true)`, on its 250 ms
+  poll, no SDK call), else its next press would mute rather than unmute. The mute is held
+  through content loads, channel switches and player rebuilds, and in the page's localStorage
+  (`fone.f1Muted`, which `audiotap.js` reads to start at gain 0) through page loads, until F1 TV's
+  unmute is pressed. Live with sync by sound, the player is asked once per video
+  (`getAudioIsMuted`): a mute of F1 TV's own (a first playback can start muted), no press held,
+  is held the same way for that player only (the gain to 0, not stored, let go when the player
+  changes: as audible as F1 TV makes a new one), and a mute behind the gain (a press's, or that
+  one a poll later, the gain down by then) is undone so the copy isn't silence; a mute is never
+  undone where it would be heard. Without the tap (F1 TV's sound not through Web Audio) F1 TV's
+  button works as it always has, fone out of it. page.js hands the copy over every second
+  (`fone-f1audio`, Int16 base64) while content.js asks (`tap`: live, `soundSync` on), content.js
+  passes it to the engine (`f1audio`).
 - **Where it was** (`offscreen.js` `sndHeard`, `vAt`): each chunk's wall time is put on F1 TV's
   position by the video reports kept for 90 s (`S.vhist`: both reports either side playing at 1×,
   nothing between them but time), chunks that follow on joined into runs (75 s kept), a run's
@@ -450,8 +464,21 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   for 30 s of playing: `deaf`. The status says what each look came to (`why`), and how often the
   run of F1 TV's sound broke (`breaks`, `gap`). Re-bases of
   F1 TV's position, a new recording here or a switch of source start it over.
-- **Not yet:** a server's recording (replays, and live when not straight from the stream): its
-  audio isn't decoded in the browser.
+- **A server's recording, on a replay**: its sound is read from the HLS segments hls.js plays
+  (`serverSound`: fetched, the last 24 kept, the AAC frames out of the MPEG-TS by
+  `FoneDemux.tsAudio`, each segment's frames at that segment's start on hls.js's media time, a
+  hole before it filled with silent frames, an overlap skipped), decoded the same way. On a
+  replay's clock a match is kept as the delay that maps the look's own picture (`pa`) onto the
+  moment found (`C.wallOf` of it minus the picture's event time), so it holds across seeks and the
+  server's file boundaries, which the wall-clock mapping already handles; the look's window is
+  centred by the delay's mapping at that picture (`mAtDelay`). Easing moves the delay, a jump
+  changes it at once, and it's saved for the video on the server (`saveServerDelay`, as a nudge
+  is, every 2 min at most). A replay is measured at 1× only (the reports' positions, `vAt`, and
+  F1 TV's sound are only taken at 1×; time at other speeds counts toward neither `deaf` nor
+  `lost`). page.js hands F1 TV's sound over live, and on a replay only with a fone server.
+  Live from a server's recording (not straight from the stream) isn't measured yet: its lock is
+  re-placed by wall time across the server's files, which an offset on the lock doesn't follow.
+  A clock change (a live item becoming a replay) starts sync by sound over.
 
 ### Messages
 
@@ -489,8 +516,8 @@ DOM `CustomEvent`s between the isolated and the main world (JSON string `detail`
 
 | | |
 |---|---|
-| `page.js` → `player.js` | `fone-tm`: the Tiledmedia sample (`eventType`, `currentPosition`, `contentDuration`, `seekLowerBound`, `seekUpperBound`, `bufferLowerBound`, `bufferUpperBound`, `isAtLiveEdge`, `isWallclockTimeSourceBased`), plus `r` (speed) and `a` (audio tracks) |
-| `content.js`, `layout.js` → `page.js` | `fone-cmd`: `{cmd: 'rate', value}` (replays only), `{cmd: 'audio', prefer: 'fx' \| 'mute' \| 'eng' \| 'none', feed: 'intl' \| 'none', live, cid}` (`eng`: F1 TV's international English commentary; `feed: 'intl'`: live, F1 TV's INTERNATIONAL channel picked in its own channel switcher, `[data-tao="tm_channel_switcher_item"][data-channel-id="1025"]`, once per video), `{cmd: 'onboards', slots}`; each re-sent every 2 s and dropped by `page.js` after 10 s without it (extension reloaded or removed). `{cmd: 'seek', by}`, once: a relative seek of F1 TV's player (`TimingConfig` `RELATIVE_TIME`, `PRECISE`), answered with `fone-seek` `{ok, by, err}` |
+| `page.js` → `player.js` | `fone-tm`: the Tiledmedia sample (`eventType`, `currentPosition`, `contentDuration`, `seekLowerBound`, `seekUpperBound`, `bufferLowerBound`, `bufferUpperBound`, `isAtLiveEdge`, `isWallclockTimeSourceBased`), plus `r` (speed), `a` (audio tracks; `mode`, the sound fone picks; `muted`, F1 TV silenced with its own button, held by fone's gain; `own`, a mute of F1 TV's own held so) and `subs` (`{want}`: F1 TV's subtitles as asked) |
+| `content.js`, `layout.js` → `page.js` | `fone-cmd`: `{cmd: 'rate', value}` (replays only), `{cmd: 'audio', prefer: 'fx' \| 'eng' \| 'none', subs, feed: 'intl' \| 'none', live, cid, tap}` (`fx`: F1 TV's commentary-free Track FX, `eng`: its international English commentary, picked on every video; `none`: left alone; `subs`: F1 TV's subtitles on or off, kept and reported, not steered yet; `tap`: F1 TV's sound handed on for sync by sound; `feed: 'intl'`: live, F1 TV's INTERNATIONAL channel picked in its own channel switcher, `[data-tao="tm_channel_switcher_item"][data-channel-id="1025"]`, once per video), `{cmd: 'onboards', slots}`; each re-sent every 2 s and dropped by `page.js` after 10 s without it (extension reloaded or removed). `{cmd: 'seek', by}`, once: a relative seek of F1 TV's player (`TimingConfig` `RELATIVE_TIME`, `PRECISE`), answered with `fone-seek` `{ok, by, err}` |
 
 Recording a stream itself, the engine talks to the streaming platform (`streams.js`,
 `recorder.js`) and to F1 TV's content API instead. With a server, it talks to the server directly: `/api/health` to pick the first reachable
@@ -504,7 +531,14 @@ nudge), `/api/timeline`, the playlist and segments, `POST /api/diag`, and, live,
 a server if one is listed, else local), `stream` (the live URL to record) for `'local'`,
 `bufferMin` (minutes kept, 1-180) for `'local'` and live from the stream with a server, `servers` (tried in order), `channel` (`''` = the most
 recently recorded) and `liveDirect` (live from the stream itself; default true) for `'server'`,
-`volume`, `muted`, `autoHold`, `collapsed`, `speed`, `f1Audio` (`mute`, `fx`, `eng`, `off`), `f1Feed` (`intl`, `off`), `anticipate`, and `danmaku` (the 弹幕 settings object). `chrome.storage.local` (per machine): `layout`
+`volume`, `muted`, `autoHold`, `collapsed`, `speed`, F1 TV's own (`settings.js`): `f1Sound` (`fx`, the
+default, or `eng`), `f1Subs` (default false), `f1Pick` (fone picks F1 TV's track at all; default
+true) and `f1Feed` (`intl`, the default, or `off`), then `anticipate`, and `danmaku` (the 弹幕
+settings object). The panel has the first two; the options page all four. 0.3.10's `f1Audio`
+(`mute`, `fx`, `eng`, `off`; before it `autoFx`) is migrated once where `f1Sound` isn't set:
+`eng` stays English Int., `fx` and `mute` become Track FX, `off` becomes `f1Pick` false; the old
+keys are left in storage for an older build (another computer sharing the sync storage, a
+rollback). `chrome.storage.local` (per machine): `layout`
 (`'split'` | `'off'`), `onboards` (the two picked drivers), and the self-update's `updateSeen`,
 `lastReload`, `refreshF1tv`.
 

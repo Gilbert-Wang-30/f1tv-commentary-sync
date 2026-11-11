@@ -1,15 +1,19 @@
 // F1 TV's sound, heard by fone (sync by sound). F1 TV's player plays through Web Audio (an
 // AudioWorklet its WASM core feeds); this runs in the page's own world before F1 TV's scripts
 // (manifest: document_start, MAIN), so whatever connects to the speakers goes through fone's gain
-// instead (fone's 'muted' is that gain at 0: F1 TV's player itself left unmuted, so its sound can
-// still be heard here) with a copy kept, 8 kHz mono, stamped with the wall time it's heard at.
-// page.js takes the copy every second (window.__foneTap.take) and hands it to the engine.
+// instead with a copy kept, 8 kHz mono, stamped with the wall time it's heard at. page.js takes the
+// copy every second (window.__foneTap.take) and hands it to the engine. F1 TV's own mute button is
+// carried out by that gain at 0 (page.js, "F1 TV's mute button"): F1 TV's player itself left
+// unmuted, so its sound can still be heard here. Held through page loads: the gain starts at 0
+// where page.js left that in this page's localStorage.
 (() => {
   'use strict';
   if (window.__foneTap) return;
   const SR = 8000, N = 4096, KEEP = 40; // Hz kept; the copier's buffer; s kept here between takes
+  const MUTE_KEY = 'fone.f1Muted'; // (page.js's)
   const connect = AudioNode.prototype.connect, disconnect = AudioNode.prototype.disconnect;
   const T = { gain: 1, taps: new Map(), chunks: [], heardAt: 0, peak: 0, err: null, anchored: 0 };
+  try { if (localStorage.getItem(MUTE_KEY) === '1') T.gain = 0; } catch { /* storage blocked */ }
 
   function tapOf(ctx) {
     let t = T.taps.get(ctx);
@@ -111,7 +115,7 @@
   };
 
   window.__foneTap = Object.freeze({
-    // fone's volume for F1 TV's sound (0: muted), eased so it doesn't click
+    // fone's volume for F1 TV's sound (0: muted with F1 TV's own button), eased so it doesn't click
     setGain(v) {
       T.gain = v;
       for (const t of T.taps.values()) {

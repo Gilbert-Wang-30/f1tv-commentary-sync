@@ -12,7 +12,7 @@
     stream: '', // 'local': the streamer's live URL (streams.js)
     bufferMin: 15, // 'local': minutes of the stream kept, for rewinding F1 TV
     liveDirect: true, // 'server', live: the streamer's stream straight into this browser (fresher than the server's)
-    soundSync: true, // live: the commentary placed by F1 TV's own sound in the stream (offscreen.js, sync by sound)
+    soundSync: true, // the commentary placed by F1 TV's own sound in the stream, live and replays (offscreen.js, sync by sound)
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -20,15 +20,13 @@
     autoHold: true,
     collapsed: false,
     speed: 1, // replays only; live always plays at 1×
-    // F1 TV's own sound: 'mute' (off: the commentary carries the streamer's F1 TV sound), 'fx'
-    // (switched to its commentary-free "Track FX" track: a track switch, which F1 TV's player
-    // has crashed on), 'off' (left alone). Was autoFx: true/false (migrated in load()).
-    f1Audio: 'mute',
-    // F1 TV's picture, live: 'intl' (switched to INTERNATIONAL, the world feed streamers watch) or 'off'
-    f1Feed: 'intl',
+    // F1 TV's own (settings.js): its sound under the commentary, 'fx' (its commentary-free Track
+    // FX) or 'eng' (English Int.), picked on every video unless f1Pick is off; its subtitles; live,
+    // its picture switched to INTERNATIONAL ('intl', the world feed streamers watch) or not ('off').
+    // Was f1Audio and before that autoFx (migrated in the load below).
+    ...FoneSettings.DEFAULTS,
     anticipate: false, // measured delay + 0.9 s: commentary a little before the picture
   };
-  const F1_AUDIO = ['mute', 'fx', 'eng', 'off'];
   const sourceOf = (s) => (s.source === 'local' || s.source === 'server' ? s.source : s.servers?.length ? 'server' : 'local');
   const SPEEDS = [1, 1.5, 2];
   let settings = { ...DEFAULTS };
@@ -93,11 +91,14 @@
     const dm = window.FoneDanmaku?.diag(); // the danmaku overlay (danmaku.js)
     if (!tm) return dm ? { dm } : null;
     // sdk: page.js's log of the player's SDK calls (ours and F1 TV's), the core's fatal errors
-    // a: F1 TV's audio track as page.js sees it (which, who chose it, the switch's error), h: the
-    // MSE handle (a new one = the player rebuilt its pipeline), nv: tiledmedia-views in the page
+    // a: F1 TV's audio track as page.js sees it (which, who chose it, the switch's error; the sound
+    // fone picks, mode fx|eng|none; muted: F1 TV silenced with its own button, held by fone's gain;
+    // own: a mute of F1 TV's own held so), subs: F1 TV's subtitles as asked, h: the MSE handle (a
+    // new one = the player rebuilt its pipeline), nv: tiledmedia-views in the page
     const a = tm.audio ? { v: tm.audio.v, cur: tm.audio.cur, kind: tm.audio.kind, auto: tm.audio.auto, manual: tm.audio.manual,
-      on: tm.audio.on, fx: tm.audio.fx, err: tm.audio.err, tap: tm.audio.tap ?? null } : null;
-    return { ev: tm.eventType, r: tm.r, ob: tm.ob, obErr: tm.obErr, dm, a, h: tm.h, nv: tm.nViews, sdk: tm.sdk };
+      on: tm.audio.on, fx: tm.audio.fx, err: tm.audio.err, mode: tm.audio.mode ?? null, muted: !!tm.audio.muted, own: !!tm.audio.own,
+      tap: tm.audio.tap ?? null } : null;
+    return { ev: tm.eventType, r: tm.r, ob: tm.ob, obErr: tm.obErr, dm, a, subs: tm.subs ?? null, h: tm.h, nv: tm.nViews, sdk: tm.sdk };
   }
 
   function videoState() {
@@ -174,15 +175,16 @@
     const speed = SPEEDS.includes(Number(settings.speed)) ? Number(settings.speed) : 1;
     // (live and playing: not while auto-hold holds it)
     const live = playKind() === 'live' && !holding;
-    const tap = live && settings.soundSync !== false; // (F1 TV's sound handed on: sync by sound)
-    const key = `${speed}|${settings.f1Audio}|${settings.f1Feed}|${live}|${cid}|${tap}`;
+    // (F1 TV's sound handed on: sync by sound, live, and on replays from a fone server's recording)
+    const tap = settings.soundSync !== false && (live || sourceOf(settings) === 'server');
+    const prefer = FoneSettings.prefer(settings), subs = settings.f1Subs === true, feed = settings.f1Feed === 'off' ? 'none' : 'intl';
+    const key = `${speed}|${prefer}|${subs}|${feed}|${live}|${cid}|${tap}`;
     const t = Date.now();
     if (!force && key === lastCmd && t - lastCmdAt < 2000) return;
     lastCmd = key;
     lastCmdAt = t;
     pageCmd({ cmd: 'rate', value: speed });
-    pageCmd({ cmd: 'audio', prefer: ['fx', 'mute', 'eng'].includes(settings.f1Audio) ? settings.f1Audio : 'none',
-      feed: settings.f1Feed === 'intl' ? 'intl' : 'none', live, cid, tap });
+    pageCmd({ cmd: 'audio', prefer, subs, feed, live, cid, tap });
   }
 
   // Speed only for replays (Tiledmedia eventType vod); page.js keeps live at 1× regardless.
@@ -259,6 +261,7 @@
   button:hover { background: rgba(255,255,255,.2); }
   button.on { background: #e10600; color: #fff; }
   .lbl { color: #999; min-width: 42px; }
+  .f1 { display: grid; gap: 6px; } .f1 .lbl { min-width: 58px; }
   .hint { color: #999; font-size: 11.5px; }
   .hint.warn { color: #f5c542; }
   input[type=range] { flex: 1; min-width: 0; accent-color: #e10600; }
@@ -290,8 +293,10 @@
       <div class="row" id="statsRow"><button id="stats" title="Timing, track map and conditions beside the video (key S)">📊 Stats</button><button id="statsPop" title="Open the stats in a window of their own">⧉</button>
         <button id="dm" title="The live room's 弹幕 over the picture, in step with the commentary (key D)">弹 弹幕</button><button id="dmSet" title="弹幕设置">⚙</button><span class="hint" id="dmInfo"></span></div>
       <div class="row" id="picRow"><button id="pic" title="The streamer's picture, in step with the commentary: a window over F1 TV you can move and size (key V)">📺 Streamer</button><button id="picPop" title="The streamer's picture in a window of its own">⧉</button><button id="picPage" hidden title="The streamer's live page on their platform, in a new tab">↗ Live page</button></div>
-      <div class="row" id="fxRow" hidden><span class="lbl">F1 TV</span><button data-fa="mute" title="F1 TV's own sound off: the commentary carries the streamer's F1 TV sound (no track switch, no echo)">muted</button><button data-fa="fx" title="F1 TV switched to its commentary-free track (a track switch, which F1 TV's player sometimes crashes on)">track sound</button><button data-fa="eng" title="F1 TV's international English commentary (English Int.), not F1 TV's own (English F1 Live)">English Int.</button><button data-fa="off" title="F1 TV's sound left as it is">as is</button><span class="hint" id="faInfo"></span></div>
-      <div class="row" id="ffRow" hidden><span class="lbl">Picture</span><button data-ff="intl" title="Live: F1 TV switched to INTERNATIONAL, the world feed the streamer watches (its graphics, its replays), once per video">International</button><button data-ff="off" title="F1 TV's channel left as it is">as is</button><span class="hint" id="ffInfo"></span></div>
+      <div class="f1" id="f1Box" hidden>
+        <div class="row"><span class="lbl" title="F1 TV's own sound, under the commentary: F1 TV's mute button silences it">F1 TV</span><button data-fs="fx" title="F1 TV's commentary-free track: the circuit's sound under the commentary (team radio isn't filled in yet)">Track FX</button><button data-fs="eng" title="F1 TV's international English commentary (English Int.), not F1 TV's own (English F1 Live)">English Int.</button><span class="hint" id="f1Info"></span></div>
+        <div class="row"><span class="lbl" title="F1 TV's own subtitles (kept and handed to F1 TV's page; not switched in its player yet)">Subtitles</span><button data-cc="on">on</button><button data-cc="off">off</button><span class="hint" id="ccInfo"></span></div>
+      </div>
       <label class="row hint" id="antRow" hidden><input type="checkbox" id="anticipate"> Anticipate reactions: commentary 0.9 s early</label>
       <label class="row hint" id="holdRow"><input type="checkbox" id="autohold"> Pause video when ahead of live commentary</label>
       <details id="details"><summary>Details</summary>
@@ -356,23 +361,23 @@
     const kind = playKind();
     $('speedRow').hidden = kind !== 'replay';
     root.querySelectorAll('button[data-s]').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === (Number(settings.speed) || 1)));
-    $('fxRow').hidden = !FonePlayer.isTiledmedia();
     $('stats').classList.toggle('on', !!window.FoneLayout?.isOn());
     $('pic').classList.toggle('on', !!window.FoneStreamer?.isOn());
     $('picPage').hidden = !s.page;
     // the stats need a fone server (its timing service), the 弹幕 its capture of the room
     $('statsRow').hidden = serverless();
     $('dm').hidden = $('dmSet').hidden = $('dmInfo').hidden = local;
-    root.querySelectorAll('button[data-fa]').forEach((b) => b.classList.toggle('on', b.dataset.fa === settings.f1Audio));
-    $('ffRow').hidden = !FonePlayer.isTiledmedia();
-    root.querySelectorAll('button[data-ff]').forEach((b) => b.classList.toggle('on', b.dataset.ff === settings.f1Feed));
-    const fd = tm?.feed;
-    $('ffInfo').textContent = settings.f1Feed !== 'intl' || !fd ? '' : String(fd.ch) === '1025' ? 'INTERNATIONAL'
-      : fd.err ? fd.err : playKind() !== 'live' ? 'live sessions only' : '';
-    const au = tm?.audio;
-    $('faInfo').textContent = !au ? '' : settings.f1Audio === 'mute' ? (au.muted ? 'off' : au.err ? 'not muted: ' + au.err : '')
-      : settings.f1Audio === 'fx' ? (au.auto || au.kind === 'fx' ? 'Track FX' : au.manual ? 'your pick' : au.err ? au.err : au.due > 20000 ? 'waiting for the player…' : '')
-        : settings.f1Audio === 'eng' ? (au.manual ? 'your pick' : au.err ? au.err : au.due > 20000 ? 'waiting for the player…' : au.cur || '') : '';
+    // F1 TV's block: the sound fone picks for it (none lit while fone leaves it to F1 TV), how that
+    // goes (your own pick in F1 TV's menu, kept for the video; an error; the player not ready for a
+    // while), and F1 TV silenced with its own mute button (fone holding that by its gain), or by a
+    // mute of F1 TV's own, held the same way for its player
+    const au = tm?.audio, pick = settings.f1Pick !== false;
+    $('f1Box').hidden = !FonePlayer.isTiledmedia();
+    root.querySelectorAll('button[data-fs]').forEach((b) => b.classList.toggle('on', pick && b.dataset.fs === (settings.f1Sound === 'eng' ? 'eng' : 'fx')));
+    root.querySelectorAll('button[data-cc]').forEach((b) => b.classList.toggle('on', b.dataset.cc === (settings.f1Subs === true ? 'on' : 'off')));
+    const how = !pick ? 'left to F1 TV' : !au ? '' : au.manual ? `your pick${au.cur ? `: ${au.cur}` : ''}` : au.err ? au.err
+      : au.due > 20000 ? 'waiting for the player…' : settings.f1Sound === 'eng' && au.cur && au.cur !== 'English Int.' ? au.cur : '';
+    $('f1Info').textContent = [how, au?.muted ? "muted with F1 TV's button" : au?.own ? 'muted in F1 TV' : ''].filter(Boolean).join(' · ');
     $('antRow').hidden = s.delaySource !== 'measured';
     $('anticipate').checked = !!settings.anticipate;
     // the player not taking the speed for a while (2026-10-11: 7 minutes at 1x, silently)
@@ -414,6 +419,7 @@
         lost: 'lost F1 TV\'s sound in the stream (the delay holds; listening again)' }[sd.state] || sd.state;
       const how = [sd.score != null ? `match ${sd.score}` : null, sd.err != null && Math.abs(sd.err) >= 0.01 ? `${sd.err > 0 ? '+' : ''}${sd.err.toFixed(2)} s to go` : null,
         sd.v ? `speed ${sd.v > 0 ? '+' : ''}${(sd.v * 100).toFixed(1)}%` : null, sd.bias ? `your nudge ${sd.bias > 0 ? '+' : ''}${sd.bias} s` : null].filter(Boolean);
+      if (sd.why && sd.state !== 'locked' && sd.why !== 'matched') how.push(sd.why); // (what the last look came to)
       const tapErr = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.audio?.tap?.err : null; // (fone's copy of F1 TV's sound failing)
       if (tapErr) how.push(`copy failed: ${tapErr}`);
       rows.push(['by sound', `${what}${how.length ? ` · ${how.join(' · ')}` : ''}`]);
@@ -450,9 +456,16 @@
       else if (a.manual) txt += ' (your pick — kept for this video)';
       else if (a.on && a.kind === 'commentary' && !a.fx) txt += ' (no track sound on this feed)';
       if (a.err) txt += ` · ${a.err}`;
+      if (a.muted) txt += " · muted with F1 TV's button (fone's gain at 0, its player unmuted for sync by sound)";
+      else if (a.own) txt += " · muted in F1 TV, not by your press (held by fone's gain for this player, its player unmuted for sync by sound)";
       rows.push(['audio', txt]);
     }
     if (tm?.tracks?.length) rows.push(['tracks', tm.tracks.map(([n, l]) => (l && l !== n ? `${n} (${l})` : n)).join(', ')]);
+    // live, F1 TV's picture switched to INTERNATIONAL (the settings' f1Feed): there, or why not
+    const fd = tm?.feed;
+    if (fd && settings.f1Feed !== 'off' && kind === 'live') {
+      rows.push(['picture', String(fd.ch) === '1025' ? 'INTERNATIONAL' : fd.err ? `not INTERNATIONAL: ${fd.err}` : fd.done ? 'your channel, left as it is' : 'to INTERNATIONAL…']);
+    }
     if (s.fixes) {
       const f = s.fixes;
       rows.push(['corrections', `${f.seeks} seeks · ${f.rates} rate tweaks · ${f.speeds ?? 0} speed changes in the last min (×${f.rate.toFixed(3)}${f.pp ? ', pitch kept' : ''})`]);
@@ -506,8 +519,9 @@
   $('vol').addEventListener('input', (e) => save({ volume: Number(e.target.value), muted: false }));
   $('autohold').addEventListener('change', (e) => save({ autoHold: e.target.checked }));
   root.querySelectorAll('button[data-s]').forEach((b) => b.addEventListener('click', () => setSpeed(Number(b.dataset.s))));
-  root.querySelectorAll('button[data-fa]').forEach((b) => b.addEventListener('click', () => { save({ f1Audio: b.dataset.fa }); syncPage(true); }));
-  root.querySelectorAll('button[data-ff]').forEach((b) => b.addEventListener('click', () => { save({ f1Feed: b.dataset.ff }); syncPage(true); }));
+  // (a sound picked here: fone picks it, also where the settings had left F1 TV's sound to F1 TV)
+  root.querySelectorAll('button[data-fs]').forEach((b) => b.addEventListener('click', () => { save({ f1Sound: b.dataset.fs, f1Pick: true }); syncPage(true); }));
+  root.querySelectorAll('button[data-cc]').forEach((b) => b.addEventListener('click', () => { save({ f1Subs: b.dataset.cc === 'on' }); syncPage(true); }));
   $('anticipate').addEventListener('change', (e) => { save({ anticipate: e.target.checked }); push(true); });
   // layout.js (same content-script world) owns the split view; it may load after us.
   $('stats').addEventListener('click', () => { window.FoneLayout?.toggle(); render(); });
@@ -717,12 +731,13 @@
     render();
   });
 
-  chrome.storage.sync.get({ ...DEFAULTS, autoFx: null }).then((s) => {
-    // 0.2.26 and before had a track-sound checkbox (autoFx); off stays off, on becomes the
-    // new default, muted (no track switch, no echo against the recording's F1 TV sound)
-    if (!F1_AUDIO.includes(s.f1Audio)) s.f1Audio = s.autoFx === false ? 'off' : DEFAULTS.f1Audio;
-    if (s.f1Feed !== 'intl' && s.f1Feed !== 'off') s.f1Feed = DEFAULTS.f1Feed;
-    delete s.autoFx;
+  // (F1 TV's settings unset: null, for settings.js's migration of f1Audio and autoFx, written once)
+  const F1_UNSET = { f1Sound: null, f1Subs: null, f1Pick: null, f1Feed: null, f1Audio: null, autoFx: null };
+  chrome.storage.sync.get({ ...DEFAULTS, ...F1_UNSET }).then((s) => {
+    const { write, ...f1 } = FoneSettings.f1(s);
+    if (Object.keys(write).length) chrome.storage.sync.set(write).catch(() => {});
+    for (const k of Object.keys(F1_UNSET)) delete s[k];
+    Object.assign(s, f1);
     s.source = sourceOf(s);
     settings = s;
     setInterval(poll, 250);

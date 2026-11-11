@@ -18,13 +18,14 @@ being rewritten.
 ## The three test layers
 
 **1. Extension unit tests** (Node, no browser): the sync maths, the dashboard's layout and
-clock, the danmaku filters and lanes, the self-update logic, the live car-position relay, and
-the in-browser recorder (the demuxers against `extension/testdata/`, the buffer, the playlist
-reading). One file per module, `extension/<module>.test.js`, run from the repository root so
+clock, the danmaku filters and lanes, the self-update logic, the live car-position relay, the
+in-browser recorder (the demuxers against `extension/testdata/`, the buffer, the playlist
+reading), sync by sound's matching, and F1 TV's settings with their migration from older
+builds. One file per module, `extension/<module>.test.js`, run from the repository root so
 `livepos.test.js` can read `server/tests/fixtures`:
 
 ```bash
-for t in core dashcore dmcore background livepos demux localcore recorder; do
+for t in core dashcore dmcore background livepos demux localcore recorder sound settings; do
   docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine node $t.test.js
 done
 ```

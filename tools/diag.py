@@ -42,9 +42,14 @@ def line(e):
         sds = (f" | by sound {sd.get('state')} match {sd.get('score')} to go {sd.get('err')} speed {sd.get('v')} bias {sd.get('bias')}"
                f" looks {sd.get('looks')} ({sd.get('why')}) breaks {sd.get('breaks')} splices {sd.get('splices')} runs {sd.get('runs')}"
                f" tap {sd.get('tap')}") if sd else ""
+        # F1 TV's own sound: its track, the one fone picks (fx, eng, none: left to F1 TV), muted with its button
+        # (or a mute of F1 TV's own, held the same way), subtitles
+        fa, fs = ((v.get("dx") or {}).get("a")) or {}, ((v.get("dx") or {}).get("subs")) or {}
+        f1s = (f" | F1 TV {fa.get('cur')} pick {fa.get('mode')}{' MUTED' if fa.get('muted') else ' MUTED (its own)' if fa.get('own') else ''}"
+               f"{' subs on' if fs.get('want') else ''}") if fa.get("mode") else ""
         return (f"{t} snap  {e.get('state'):9} drift {drift if drift is None else round(drift, 3)}"
                 f" | audio x{a.get('rate')} pp {a.get('pp')} rs {a.get('rs')} ahead {a.get('ahead')}s paused {a.get('paused')}"
-                f" | video p {v.get('p')} paused {v.get('paused')} waiting {v.get('waiting')} {v.get('src')} | {speed_of(e)}{dms}{sds}")
+                f" | video p {v.get('p')} paused {v.get('paused')} waiting {v.get('waiting')} {v.get('src')} | {speed_of(e)}{f1s}{dms}{sds}")
     if k == "seek":
         return f"{t} SEEK  {e.get('from')} -> {e.get('to')} (target {e.get('target')}, x{e.get('rate')}, ahead {e.get('ahead')}s, {e.get('src')})"
     if k == "state":
@@ -72,7 +77,14 @@ def line(e):
         return f"{t} PLAYER {e.get('from')} -> {e.get('to')} at p {e.get('p')} (want {e.get('want')} sdk {e.get('sdk')}, audio {e.get('audio')}, handle {e.get('h')}, views {e.get('nv')}{', err ' + repr(e.get('err')) if e.get('err') else ''})"
     if k == "audio":
         who = "fone" if e.get("auto") else "user" if e.get("manual") else "?"
-        return f"{t} AUDIO {e.get('from')} -> {e.get('to')} ({e.get('kind')}, by {who}, fx {e.get('on')}, best {e.get('fx')}) at p {e.get('p')} ps {e.get('ps')} handle {e.get('h')}{', err ' + repr(e.get('err')) if e.get('err') else ''}"
+        # mode: the sound fone picks (fx Track FX, eng English Int., none left to F1 TV; before 0.3.11 also
+        # mute); muted: F1 TV silenced with its own button, held by fone's gain (own: a mute of F1 TV's own
+        # held so); subs: the subtitles asked for
+        pick = f"pick {e['mode']}" if e.get("mode") else f"fx {e.get('on')}"  # (0.3.10 and before: no mode)
+        extra = (" MUTED (F1 TV's button)" if e.get("muted") else " MUTED (F1 TV's own)" if e.get("own") else "")
+        extra += f" subs {'on' if e.get('subs') else 'off'}" if e.get("subs") is not None else ""
+        return (f"{t} AUDIO {e.get('from')} -> {e.get('to')} ({e.get('kind')}, by {who}, {pick}, best {e.get('fx')}){extra} at p {e.get('p')}"
+                f" ps {e.get('ps')} handle {e.get('h')}{', err ' + repr(e.get('err')) if e.get('err') else ''}")
     if k == "handle":
         return f"{t} HANDLE {e.get('from')} -> {e.get('to')} at p {e.get('p')} ps {e.get('ps')} (audio {e.get('audio')}, want {e.get('want')}, views {e.get('nv')})"
     if k == "sdk":

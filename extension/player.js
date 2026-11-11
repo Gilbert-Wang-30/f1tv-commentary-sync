@@ -274,12 +274,13 @@
     return S.rate;
   }
 
-  // Tiledmedia state from page.js: content type, speed, audio. null when page.js is silent.
+  // Tiledmedia state from page.js: content type, speed, audio, subtitles. null when page.js is silent.
   function tm() {
     const d = S.tm;
     if (!d || now() - S.tmAt > 3000) return null;
     return { eventType: d.c ? d.c.eventType : null, r: d.r || null, audio: S.audio, tracks: S.tracks,
-      ob: d.ob || null, obErr: d.obErr || null, h: d.h ?? null, nViews: d.nViews ?? null, sdk: d.sdk || null, feed: d.feed || null };
+      ob: d.ob || null, obErr: d.obErr || null, h: d.h ?? null, nViews: d.nViews ?? null, sdk: d.sdk || null, feed: d.feed || null,
+      subs: d.subs || null };
   }
 
   function diag() {

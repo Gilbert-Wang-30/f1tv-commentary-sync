@@ -50,10 +50,30 @@ measured delay and 弹幕.</p>
 </fieldset>
 
 <label><input type="checkbox" id="autoHold"> Live: pause F1 TV while it's ahead of the commentary</label>
-<label><input type="checkbox" id="soundSync"> Live: sync by sound
+<label><input type="checkbox" id="soundSync"> Sync by sound, live and replays
   <span class="hint">— where the streamer passes F1 TV's own sound through (its track sound, or the international feed),
-  fone finds it in their stream, matches it to F1 TV's and keeps the commentary there by itself: no delay to tune.
+  fone finds it in their stream, matches it to F1 TV's and keeps the commentary there by itself: no delay to tune
+  (replays at 1×; at other speeds it keeps the place it found).
   It eases the commentary's speed a little to get there, so you don't hear it correct. A nudge of yours is kept on top.</span></label>
+
+<fieldset>
+  <legend>F1 TV <span class="hint">— also in the panel on F1 TV</span></legend>
+  <label>Its sound, under the commentary
+    <span class="hint">— F1 TV's own mute button silences it (fone keeps that through every video until you unmute it there)</span></label>
+  <label class="hint" style="margin-top:6px"><input type="radio" name="f1Sound" value="fx" id="f1SoundFx"> <b>Track FX</b>: the circuit's sound, no
+    commentary (team radio not filled in yet)</label>
+  <label class="hint" style="margin-top:6px"><input type="radio" name="f1Sound" value="eng" id="f1SoundEng"> <b>English Int.</b>: the international
+    English commentary (the world feed's, not F1 TV's own English F1 Live)</label>
+  <label><input type="checkbox" id="f1Subs"> Its subtitles <span class="hint">— kept, not switched in F1 TV's player yet</span></label>
+  <details style="margin-top:12px"><summary class="hint">Advanced</summary>
+    <label><input type="checkbox" id="f1Pick"> Let fone pick F1 TV's sound track
+      <span class="hint">— on every video, as F1 TV starts each one on its own default. Off: F1 TV's sound is left
+      as you set it in F1 TV's own menu, and the choice above does nothing.</span></label>
+    <label><input type="checkbox" id="f1Intl"> Live: switch F1 TV to INTERNATIONAL
+      <span class="hint">— the world feed the streamer watches (its graphics, its replays) instead of F1 LIVE, once per
+      video, by F1 TV's own channel switcher. Go back to F1 LIVE yourself and it's left there. Replays are left as they are.</span></label>
+  </details>
+</fieldset>
 
 <button id="save">Save</button> <span class="out" id="saved"></span>
 
@@ -67,5 +87,6 @@ measured delay and 弹幕.</p>
   <tr><td><b>S</b> · <b>D</b></td><td>stats beside the video · 弹幕 (with a fone server)</td></tr>
 </table>
 <script src="local.js"></script>
+<script src="settings.js"></script>
 <script src="streams.js"></script>
 <script src="options.js"></script>
