@@ -429,7 +429,9 @@
     const levels = items.length && !items.some((it) => Number.isFinite(it.ul));
     $('lvlNote').textContent = levels ? '这段弹幕来自存档，没有等级信息：等级屏蔽对它不起作用' : '';
     $('pstat').textContent = net.err ? `弹幕: ${net.err}` : `${S.active.length} on screen · ${items.length} loaded${net.live ? ' · live' : ''}`;
-    $('psub').textContent = status?.channel ? `${status.channel}${net.live ? ' · 直播中' : ''}` : '';
+    // (直播中: the streamer on air as the engine knows it, not the server's capture of the room
+    // being connected, which it is through 轮播 replays too)
+    $('psub').textContent = status?.channel ? `${status.channel}${status.onAir ? ' · 直播中' : ''}` : '';
     host.dataset.state = JSON.stringify({ on: settings.on, items: items.length, shown: S.active.length, live: net.live,
       err: net.err, clock: S.disp, rect: S.rect, lanes: S.geo?.n ?? 0,
       texts: S.active.slice(-30).map((a) => a.it.x) }); // for the e2e test

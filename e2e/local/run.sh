@@ -21,9 +21,13 @@ docker run --rm $CAP -v "$WORK":/w "$IMAGE" sh -c '
 set -e
 ffmpeg -v error -y -f lavfi -i color=c=gray:s=64x36:r=2:d=1200 -f lavfi -i anullsrc=r=48000:cl=stereo -t 1200 \
   -c:v libx264 -preset ultrafast -g 4 -c:a aac -b:a 16k -movflags +faststart /w/media/video.mp4
-ffmpeg -v error -y -f lavfi -i sine=frequency=440:beep_factor=4:sample_rate=48000:duration=1200 \
-  -f lavfi -i color=c=black:s=64x36:r=5:d=1200 -c:a aac -b:a 64k -ac 2 -c:v libx264 -preset ultrafast -g 10 \
-  -shortest -f flv /w/media/live.flv
+# F1 TV sound (f1.wav: the mock F1 TV page plays it, ?f1audio=1), and the stream of the streamer:
+# a voice over that sound passed through 12 dB down, at the same moments (sync by sound finds it)
+ffmpeg -v error -y -f lavfi -i "anoisesrc=d=1200:c=pink:r=8000:a=0.5:seed=7,tremolo=f=0.7:d=0.8" -ac 1 /w/media/f1.wav
+ffmpeg -v error -y -i /w/media/f1.wav -f lavfi -i "anoisesrc=d=1200:c=brown:r=8000:a=0.6:seed=11,bandpass=f=1000:w=1500,tremolo=f=5:d=0.9" \
+  -f lavfi -i color=c=black:s=64x36:r=5:d=1200 \
+  -filter_complex "[0:a]volume=0.25[f];[1:a][f]amix=inputs=2:normalize=0,aresample=48000[a]" -map "[a]" -map 2:v \
+  -c:a aac -b:a 64k -ac 2 -c:v libx264 -preset ultrafast -g 10 -shortest -f flv /w/media/live.flv
 ffmpeg -v error -y -f lavfi -i sine=frequency=660:beep_factor=4:sample_rate=48000:duration=1200 \
   -f lavfi -i color=c=black:s=64x36:r=5:d=1200 -c:a aac -b:a 64k -ac 2 -c:v libx264 -preset ultrafast -g 10 \
   -shortest -f hls -hls_time 2 -hls_list_size 0 -hls_segment_filename /w/media/hls/seg_%05d.ts /w/media/hls/index.m3u8
@@ -37,7 +41,7 @@ if [ "${1:-}" = real ]; then # the real platforms (real.py), streams given as th
   shift
   mkdir -p "$WORK/out" && chmod 777 "$WORK/out"
   docker run --rm --cpus 4 --cpu-shares 256 --ipc=host \
-    -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e REAL_TRACE -e REAL_SECS \
+    -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e REAL_TRACE -e REAL_SECS -e REAL_PICTURE -e REAL_FULL \
     "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/local/real.py "$@"' real "$@"
   if [ -n "${E2E_OUT:-}" ]; then cp "$WORK/out/"* "$E2E_OUT"/; fi
   exit

@@ -22,16 +22,22 @@ async function ensureOffscreen() {
   await creating;
 }
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target === 'engine' && sender.tab) {
-    ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({ ...msg, target: 'offscreen', tab: sender.tab.id }))
-      .catch(() => {});
+    const sent = ensureOffscreen().then(() => chrome.runtime.sendMessage({ ...msg, target: 'offscreen', tab: sender.tab.id }));
+    if (msg.type === 'golive') { // the engine answers this one (how far to move F1 TV)
+      sent.then(sendResponse, () => sendResponse(null));
+      return true;
+    }
+    sent.catch(() => {});
   } else if (msg?.target === 'background' && msg.type === 'status' && msg.tab != null) {
     chrome.tabs.sendMessage(msg.tab, { type: 'fone-status', status: msg.status }).catch(() => {});
   } else if (msg?.target === 'background' && msg.type === 'popout-dashboard') {
     // The stats in a window of their own (layout.js's fallback, e.g. for a second screen).
     chrome.windows.create({ url: chrome.runtime.getURL('dashboard.html'), type: 'popup', width: 560, height: 1000 });
+  } else if (msg?.target === 'background' && msg.type === 'popout-streamer') {
+    // The streamer's picture in a window of its own (streamerbox.js's ⧉).
+    chrome.windows.create({ url: chrome.runtime.getURL('streamer.html?mode=window'), type: 'popup', width: 640, height: 380 });
   }
 });
 

@@ -55,9 +55,14 @@ wall_start = p0 + 40 - 300
 dur = 1800
 name = datetime.fromtimestamp(wall_start, ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M") + "-【胡闹P房】16点 巴林 排位赛.flv"
 path = f"rec/胡闹P房/{name}"
+# F1 TV's sound (f1.wav: the mock F1 TV page plays it, ?f1audio=1), passed through under the
+# commentary's tone 12 dB down at the recording's own times (sync by sound on a replay finds it)
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"anoisesrc=d={dur}:c=pink:r=8000:a=0.5:seed=7,tremolo=f=0.7:d=0.8",
+                "-ac", "1", "media/f1.wav"], check=True)
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=330:sample_rate=48000:duration={dur}",
-                "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=5:d={dur}", "-c:a", "aac", "-b:a", "64k",
-                "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-shortest", "-f", "flv", path], check=True)
+                "-i", "media/f1.wav", "-f", "lavfi", "-i", f"color=c=black:s=64x36:r=5:d={dur}",
+                "-filter_complex", "[1:a]volume=0.25[f];[0:a][f]amix=inputs=2:normalize=0,aresample=48000[a]", "-map", "[a]", "-map", "2:v",
+                "-c:a", "aac", "-b:a", "64k", "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-shortest", "-f", "flv", path], check=True)
 os.utime(path, (wall_start + dur, wall_start + dur))
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x36:r=2:d=1800",
                 "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "1800", "-c:v", "libx264", "-preset", "ultrafast",
@@ -113,7 +118,7 @@ docker network create $NET >/dev/null
 docker run -d $CAP --name $NAME-server --network $NET \
   -v "$WORK/rec":/rec:ro -v "$WORK/data":/data \
   -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 \
-  -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 "$IMAGE" >/dev/null
+  -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 -e FONE_DANMAKU_KEEP_DAYS=3650 "$IMAGE" >/dev/null
 
 echo "== starting a live (growing) commentary recording"
 docker run -d --cpus 1 --cpu-shares 256 --name $NAME-writer -v "$WORK/rec":/rec "$IMAGE" sh -c '

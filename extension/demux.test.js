@@ -41,6 +41,20 @@ test('FLV: the AAC frames, timed by the tags, however the bytes arrive', () => {
   assert.ok(r.video, 'saw the video');
 });
 
+test('FLV: its video tags too, when asked: the decoder configuration first, then frames, keyframes marked', () => {
+  const b = data('sine.flv');
+  const r = D.flvReader({ video: true });
+  for (let i = 0; i < b.length; i += 1000) r.push(b.subarray(i, i + 1000));
+  const v = r.vtags;
+  assert.ok(v.length > 5, `${v.length} video tags`);
+  assert.ok(v[0].seq && v[0].codec === 'avc' && v[0].data[0] === 1, 'an AVCDecoderConfigurationRecord first');
+  const frames = v.filter((x) => !x.seq);
+  assert.ok(frames[0].key, 'the first frame is a keyframe');
+  assert.ok(frames.every((x, i) => i === 0 || x.t >= frames[i - 1].t), 'in decode order');
+  assert.ok(Math.abs(frames[0].t - 100) < 0.5, `on the stream's timestamps (${frames[0].t})`);
+  assert.equal(D.flvReader().vtags.length, 0); // (not asked: none kept)
+});
+
 test('FLV: anything else is refused', () => {
   assert.throws(() => D.flvReader().push(data('sine.ts')), /not an FLV/);
   const b = data('sine.flv').slice();
