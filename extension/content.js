@@ -262,6 +262,7 @@
   .row { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   .delay { font-variant-numeric: tabular-nums; }
   .nudge { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; margin-top: -3px; }
+  .nudge[hidden] { display: none; }
   .nudge button { padding: 3px 0; text-align: center; font-variant-numeric: tabular-nums; }
   button { all: unset; cursor: pointer; padding: 3px 7px; border-radius: 6px; background: rgba(255,255,255,.1); font: 12px system-ui; color: #eee; }
   button:hover { background: rgba(255,255,255,.2); }
@@ -295,7 +296,7 @@
         <button data-d="0.02" title=".">+.02</button><button data-d="0.1" title="=">+.1</button><button data-d="0.5" title="]">+½</button><button data-d="5" title="}">+5</button>
       </div>
       <div class="row" id="liveRow" hidden><button id="golive" title="F1 TV and the commentary to the freshest moment both have (L, or F1 TV's LIVE)">⏭ Go live</button><button id="relive" title="Re-anchor the commentary to its live edge, F1 TV where it is">⟲ Re-sync</button><span class="hint">L · or F1 TV's LIVE</span></div>
-      <div class="hint">Reactions come <b>after</b> the action → <b>+</b> &nbsp;·&nbsp; spoilers → <b>−</b> &nbsp;·&nbsp; keys <b>{ [ − , . = ] }</b></div>
+      <div class="hint" id="nudgeHint">Reactions come <b>after</b> the action → <b>+</b> &nbsp;·&nbsp; spoilers → <b>−</b> &nbsp;·&nbsp; keys <b>{ [ − , . = ] }</b></div>
       <div class="row"><button id="mute">🔊</button><input type="range" id="vol" min="0" max="1" step="0.05"></div>
       <div class="row" id="speedRow" hidden><span class="lbl">Speed</span><button data-s="1">1×</button><button data-s="1.5">1.5×</button><button data-s="2">2×</button><span class="hint" id="speedInfo">keys <b>&lt; &gt;</b></span></div>
       <div class="row" id="statsRow"><button id="stats" title="Timing, track map and conditions beside the video (key S)">📊 Stats</button><button id="statsPop" title="Open the stats in a window of their own">⧉</button>
@@ -358,7 +359,7 @@
     if (settings.collapsed) return;
 
     $('liveRow').hidden = s.clock !== 'edge';
-    $('delay').textContent = s.delay != null ? `delay ${s.delay.toFixed(2)} s` : 'delay –';
+    $('delay').textContent = s.delay != null ? `delay ${s.delay.toFixed(2)} s${settings.soundSync !== false && s.sound?.state === 'locked' ? ' · kept by sound' : ''}` : 'delay –';
     $('mute').textContent = settings.muted ? '🔇' : '🔊';
     if (document.activeElement !== host) $('vol').value = settings.volume;
     $('autohold').checked = settings.autoHold;
@@ -385,6 +386,9 @@
     root.querySelectorAll('button[data-cc]').forEach((b) => b.classList.toggle('on', b.dataset.cc === (settings.f1Subs === true ? 'on' : 'off')));
     // Sync: by sound (fone keeps it) or by hand (the delay as set), and how the sound stands
     const bySound = settings.soundSync !== false, sd = s.sound;
+    // (by sound, fone keeps the delay: the nudges are for by hand)
+    root.querySelector('.nudge').hidden = bySound;
+    $('nudgeHint').hidden = bySound;
     root.querySelectorAll('button[data-sync]').forEach((b) => b.classList.toggle('on', (b.dataset.sync === 'sound') === bySound));
     $('syncInfo').textContent = !bySound ? '' : !sd ? '' : {
       locked: '● locked to F1 TV\'s sound', listening: 'listening for F1 TV\'s sound…', lost: 'lost it for now: the delay holds',
@@ -739,7 +743,9 @@
     if (msg?.type !== 'fone-status') return;
     status = msg.status;
     // ducking F1 TV: on as soon as it's locked by sound, off once it hasn't been for 10 s
-    const locked = status.sound?.state === 'locked' && (status.state === 'sync' || status.state === 'syncing');
+    // (or known to carry it: a lock on this stream before, and nothing says F1 TV's sound is missing)
+    const sd0 = status.sound, carries = sd0?.carries && sd0.state !== 'deaf' && sd0.state !== 'quiet';
+    const locked = (sd0?.state === 'locked' || carries) && (status.state === 'sync' || status.state === 'syncing');
     if (locked) duckSeen = Date.now();
     const duckNow = duckSeen > 0 && Date.now() - duckSeen < 10000;
     if (duckNow !== duckOn) { duckOn = duckNow; syncPage(true); }

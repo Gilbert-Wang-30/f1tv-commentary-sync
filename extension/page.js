@@ -1244,7 +1244,7 @@
       try { emit(view.currentContentTime, view.currentWallclockTime, 'heartbeat'); } catch { /* torn down */ }
     }
     try { steerOnboards(); } catch (e) { OB.err = errText(e); } // with or without a main view (removals)
-    if (now - lastHeardSent >= 1000) { lastHeardSent = now; sendHeard(); }
+    if (now - lastHeardSent >= 250) { lastHeardSent = now; sendHeard(); } // (4 a second: team radio's sting heard sooner)
     const player = view?.associatedPlayer;
     if (!player) return;
     steerRate(player, videoOf(view)).catch(() => {});

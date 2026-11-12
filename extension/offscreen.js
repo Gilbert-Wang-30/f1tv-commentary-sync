@@ -1049,18 +1049,21 @@ function goLive(held = false, chase = false, pMax = null) {
 const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
   VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
 const sndBiasKey = () => `soundBias|${S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
+// (and whether its stream has been heard to carry F1 TV's sound: F1 TV's own ducked from the start)
+const sndCarriesKey = () => sndBiasKey().replace('soundBias|', 'soundCarries|');
 // (the stream recorded here: its nudge bias read back)
 function sndStart() {
-  let bias = 0;
+  let bias = 0, carries = false;
   try { bias = Number(JSON.parse(localStorage.getItem(sndBiasKey()) || 'null')?.bias) || 0; } catch { /* none */ }
-  S.snd = { bias };
+  try { carries = localStorage.getItem(sndCarriesKey()) != null; } catch { /* none */ }
+  S.snd = { bias, carries };
   sndReset('start');
 }
 // (a speed still easing carries over: it's let down gently, sndSteer)
 function sndReset(why) {
-  const bias = S.snd?.bias ?? 0, v = S.snd?.v ?? 0;
+  const bias = S.snd?.bias ?? 0, v = S.snd?.v ?? 0, carries = !!S.snd?.carries;
   S.snd = { runs: [], est: [], target: null, v, at: null, lock: S.liveLock, measAt: 0, wideAt: 0, miss: 0, accepted: 0, okAt: null,
-    heardAt: null, seen: null, busy: false, startedAt: now(), bias, state: 'listening', last: null, why: why || null };
+    heardAt: null, seen: null, busy: false, startedAt: now(), bias, carries, state: 'listening', last: null, why: why || null };
 }
 // The video reports kept a while: where F1 TV's picture was at a wall time.
 function vAt(w) {
@@ -1215,11 +1218,13 @@ const mAtDelay = (p, delay) => momentAt(C.eventTime(S.clock, S.content, p, null,
 // One look: the newest stretch of F1 TV's sound (older, when the newest would be looked for past
 // what's recorded yet), found in the stream around where the sound was last (or the lock has it).
 async function sndMeasure(t, vn) {
+  // (15 s looks till it's found, quicker to a first lock; 25 s once locked: stronger matches)
+  const WIN = S.snd?.target == null ? 15 : SND.WIN;
   const sn = S.snd, L = S.liveLock, pl = sndPlace(), src = sndSource();
   const r = sn.runs[sn.runs.length - 1];
   // (sn.why: what the last look came to, for the status and the diag)
   if (S.clock === 'edge' && !S.local) { sn.why = "live from the server's recording: not yet"; return; }
-  if (!pl || !src || !r || r.x.length < SND.WIN * SND.SR) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
+  if (!pl || !src || !r || r.x.length < WIN * SND.SR) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
   if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
   sn.seen = { r, n: r.n };
   const wide = sn.target == null || t - sn.wideAt > SND.REWIDE || sn.miss >= SND.MISSES, R = wide ? SND.WIDE : SND.NEAR;
@@ -1231,18 +1236,18 @@ async function sndMeasure(t, vn) {
     return m == null ? null : m - p;
   };
   const { end, first } = src;
-  const pNew0 = r.p0 + r.x.length / SND.SR - SND.WIN, c = cAt(pNew0);
+  const pNew0 = r.p0 + r.x.length / SND.SR - WIN, c = cAt(pNew0);
   if (c == null) { sn.why = 'not recorded there'; return; }
   // The newest stretch of F1 TV's sound; after a look that missed, every other look an older one
   // (as old as the run allows), so the look reaches R s past where it was within what's recorded:
   // the streamer's latency grown by more than the commentary's lead puts the newest out of reach.
   // (Not a silent one: F1 TV's sound may have started after the copy did.)
-  const pEnd = r.p0 + r.x.length / SND.SR, pNew = pEnd - SND.WIN;
-  const stretch = (p) => { const i = Math.round((p - r.p0) * SND.SR); return r.x.subarray(i, i + SND.WIN * SND.SR); };
+  const pEnd = r.p0 + r.x.length / SND.SR, pNew = pEnd - WIN;
+  const stretch = (p) => { const i = Math.round((p - r.p0) * SND.SR); return r.x.subarray(i, i + WIN * SND.SR); };
   let pa = pNew, x = stretch(pNew);
-  const pOld = Math.max(r.p0, Math.min(pNew, end - c - SND.WIN - R));
+  const pOld = Math.max(r.p0, Math.min(pNew, end - c - WIN - R));
   // (also when the newest one's window would be cut short by what's recorded: no look, no miss)
-  if ((sn.miss % 2 === 1 || end - (pNew + c - R) < SND.WIN + 2) && pOld < pNew - 1) {
+  if ((sn.miss % 2 === 1 || end - (pNew + c - R) < WIN + 2) && pOld < pNew - 1) {
     const xo = stretch(pOld);
     if (FoneSound.rms(xo) >= 1e-4) { pa = pOld; x = xo; }
   }
@@ -1250,8 +1255,8 @@ async function sndMeasure(t, vn) {
   if (FoneSound.rms(x) < 1e-4) { sn.state = 'quiet'; sn.why = 'F1 TV silent'; return; }
   const ca = cAt(pa);
   if (ca == null) { sn.why = 'not recorded there'; return; }
-  const lo = Math.max(first, pa + ca - R), hi = Math.min(end, pa + ca + SND.WIN + R);
-  if (!(hi - lo >= SND.WIN + 2)) { sn.why = 'not recorded there'; return; }
+  const lo = Math.max(first, pa + ca - R), hi = Math.min(end, pa + ca + WIN + R);
+  if (!(hi - lo >= WIN + 2)) { sn.why = 'not recorded there'; return; }
   sn.busy = true;
   try {
     const PL = S.playlist, got = await src.read(lo, hi - lo);
@@ -1291,6 +1296,7 @@ async function sndMeasure(t, vn) {
     sn.target = want;
     sn.state = 'locked';
     sn.okAt = t;
+    if (!sn.carries) { sn.carries = true; try { localStorage.setItem(sndCarriesKey(), String(Date.now())); } catch { /* private mode */ } }
     // found the first time far off (the delay was a guess), or a step too big to ease: there at once
     if (Math.abs(err) > (fresh ? SND.JUMP : SND.JUMP_LATER)) {
       shiftCommentary(err, true);
@@ -1456,12 +1462,16 @@ function trMatch(ps, score, t) {
   diag('tr', { sting: Math.round(ps * 100) / 100, score: Math.round(score * 100) / 100, E: Math.round(E * 10) / 10, clip: best?.x.name ?? null, d: best ? Math.round(best.d * 100) / 100 : null });
   if (!best) { R.last = { at: t, what: 'a sting, no message near it' }; return; }
   const x = best.x;
+  if (R.playing?.x === x) { // (started ahead, by the clock: put where the sting says, if it's off)
+    const pOn = ps + FoneRadio.STING_TO_SPEECH, pl = R.playing, want = pOn - (x.onset - pl.t0);
+    if (Math.abs(want - pl.pStart) > 0.25) pl.pStart = want;
+  }
   if (x.onset != null) {
     R.cal.push(speech - (x.T + x.onset));
     if (R.cal.length > 7) R.cal.shift();
     R.C = [...R.cal].sort((a, b) => a - b)[R.cal.length >> 1];
   }
-  trPlay(x, ps + FoneRadio.STING_TO_SPEECH);
+  if (R.playing?.x !== x) trPlay(x, ps + FoneRadio.STING_TO_SPEECH);
 }
 // Play a message with its speech at picture position pOn (from just before it: the opening skipped).
 async function trPlay(x, pOn) {
@@ -1472,7 +1482,8 @@ async function trPlay(x, pOn) {
   const el = new Audio(x.src);
   el.preservesPitch = true;
   const t0 = Math.max(0, x.onset - 0.3); // (mp3 time to start from: just before the speech)
-  R.playing = { x, el, pStart: pOn - (x.onset - t0), t0 };
+  R.playing = { x, el, pStart: pOn - (x.onset - t0), t0, began: null };
+  diag('tr', { play: x.name, pOn: Math.round(pOn * 100) / 100, p: Math.round((S.sndRef?.p ?? 0) * 100) / 100, onset: Math.round(x.onset * 100) / 100 });
   x.state = 'playing';
   R.last = { at: now(), what: `${x.name.split('_')[0]}` };
 }
@@ -1494,6 +1505,17 @@ function trTick(t, v, vn) {
   const E = trE(vn.p);
   if (E != null) for (const x of R.clips) if (x.state === 'new' && Math.abs(x.T - E) < TR.FETCH) trFetch(x);
   if (!v.paused && !v.seeking && !v.waiting) trListen(t);
+  // once two matches agree on the clock, a message starts on time by it, ahead of its sting (which
+  // is heard a second or so late: waiting for it cuts the message's first words); the sting then
+  // only puts it right
+  const cal = R.cal.length >= 2 && Math.max(...R.cal) - Math.min(...R.cal) < 1.5;
+  if (cal && E != null && !R.playing && !v.paused) {
+    for (const x of R.clips) {
+      if (x.state !== 'ready' || x.onset == null) continue;
+      const pOn = vn.p + (x.T + x.onset + R.C - E), lead = pOn - vn.p;
+      if (lead < 0.6 && lead > -1) { trPlay(x, pOn); break; }
+    }
+  }
   const pl = R.playing;
   if (pl) {
     const tau = pl.t0 + (vn.p - pl.pStart); // (where in the mp3 the picture is)
@@ -1504,8 +1526,9 @@ function trTick(t, v, vn) {
       if (el.playbackRate !== rate) el.playbackRate = rate;
       if (v.paused || v.seeking || v.waiting) { if (!el.paused) el.pause(); }
       else {
-        if (Math.abs(el.currentTime - tau) > 0.25) el.currentTime = tau;
-        if (el.paused) el.play().catch((e) => { R.err = `play: ${e.message}`; });
+        // (not chopped: put right only when it's well off, and not while it's starting)
+        if (el.paused) { el.currentTime = tau; el.play().catch((e) => { R.err = `play: ${e.message}`; }); pl.began = now(); }
+        else if (now() - (pl.began ?? 0) > 1 && Math.abs(el.currentTime - tau) > 0.4) el.currentTime = tau;
       }
     }
   }
@@ -1845,7 +1868,7 @@ function tick() {
     const pl = sndPlace(), err = sn.target != null && pl ? pl.err : null;
     base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
       v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
-      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)) };
+      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)), carries: !!sn.carries };
   }
   // team radio, filled in: how it stands, for Details
   try {
