@@ -32,7 +32,7 @@
   const sourceOf = (s) => (s.source === 'local' || s.source === 'server' ? s.source : s.servers?.length ? 'server' : 'local');
   const SPEEDS = [1, 1.5, 2];
   let settings = { ...DEFAULTS };
-  let speedStallSince = 0;
+  let speedStallSince = 0, speedAskedAt = 0;
   let video = null;
   let cid = null;
   let status = null;
@@ -162,6 +162,7 @@
     host.hidden = !(cid && video);
     if (cid && video) push(false);
     syncPage(false);
+    speedStalled();
     render();
   }
 
@@ -198,6 +199,22 @@
     lastCmdAt = t;
     pageCmd({ cmd: 'rate', value: speed });
     pageCmd({ cmd: 'audio', prefer, subs, feed, live, cid, tap, duck });
+  }
+
+  // F1 TV's player not at the speed asked for (a replay): asked afresh every SPEED_ASK ms for as
+  // long as it isn't (page.js's own tries back off to every 30 s; this is as if you pressed the
+  // speed again), from 4 s after it was seen not taking it.
+  const SPEED_ASK = 4000;
+  function speedStalled() {
+    const r = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.r : null;
+    const stalled = alive && cid && playKind() === 'replay' && r && r.want > 0 && r.sdk > 0 && Math.abs(r.sdk - r.want) > 0.05;
+    if (!stalled) { speedStallSince = 0; return; }
+    const t = Date.now();
+    speedStallSince ||= t;
+    if (t - speedStallSince >= SPEED_ASK && t - speedAskedAt >= SPEED_ASK) {
+      speedAskedAt = t;
+      pageCmd({ cmd: 'rate', value: r.want, force: true });
+    }
   }
 
   // Speed only for replays (Tiledmedia eventType vod); page.js keeps live at 1× regardless.
@@ -411,13 +428,10 @@
       au?.muted ? "muted with F1 TV's button" : au?.own ? 'muted in F1 TV' : ''].filter(Boolean).join(' · ');
     $('antRow').hidden = s.delaySource !== 'measured';
     $('anticipate').checked = !!settings.anticipate;
-    // the player not taking the speed for a while (2026-10-11: 7 minutes at 1x, silently)
-    const r = tm?.r;
-    const stalled = kind === 'replay' && r && r.want > 0 && r.sdk > 0 && Math.abs(r.sdk - r.want) > 0.05;
-    if (!stalled) speedStallSince = 0;
-    else speedStallSince ||= Date.now();
+    // the player not taking the speed for a while (2026-10-11: 7 minutes at 1x, silently): fone
+    // keeps asking (speedStalled), the panel says so
     const stall = speedStallSince && Date.now() - speedStallSince > 20000;
-    $('speedInfo').innerHTML = stall ? '<b>F1 TV isn\'t taking the speed</b> — press it again' : 'keys <b>&lt; &gt;</b>';
+    $('speedInfo').innerHTML = stall ? '<b>F1 TV isn\'t taking the speed</b> — fone keeps asking' : 'keys <b>&lt; &gt;</b>';
     $('speedInfo').classList.toggle('warn', !!stall);
     $('holdRow').hidden = s.lead == null;
     $('hold').hidden = !holding;
