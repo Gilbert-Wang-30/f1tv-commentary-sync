@@ -1928,6 +1928,13 @@ function diagPlayer(prev, v) {
   }
 }
 
+// fone's copy of F1 TV's sound, for the snap (its element lists only while it isn't copying: the
+// server keeps events under 4 kB)
+function tapBrief(tp) {
+  if (!tp) return null;
+  const { seen, media, els, ...rest } = tp;
+  return tp.copying ? rest : { ...rest, els, media };
+}
 function diagSnap(st) {
   const v = S.video || {};
   diag('snap', {
@@ -1946,8 +1953,9 @@ function diagSnap(st) {
     // sync by sound: where it stands and what the last look came to (the first real sessions judge it)
     sound: st.sound ? { state: st.sound.state, score: st.sound.score, err: st.sound.err, v: st.sound.v, bias: st.sound.bias,
       why: st.sound.why, looks: st.sound.looks, breaks: st.sound.breaks, splices: st.sound.splices, runs: st.sound.runs,
-      tap: S.video?.dx?.a?.tap ?? null } : null,
-    vod: st.vod ?? null, // (the streamer's Bilibili replay, a session nothing else covers)
+      tap: tapBrief(S.video?.dx?.a?.tap) } : null,
+    // (the streamer's Bilibili replay, a session nothing else covers; its text is the snap's)
+    vod: st.vod ? { state: st.vod.state, bvid: st.vod.bvid, how: st.vod.how, tries: st.vod.tries, cuts: st.vod.cuts } : null,
   });
 }
 
