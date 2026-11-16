@@ -1064,7 +1064,9 @@ function goLive(held = false, chase = false, pMax = null) {
 // for SND.LOST s: lost, the delay holds and it listens again. A nudge of yours on top of where the
 // sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
 const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
-  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
+  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0, SOON: 5, QUICK: 3, RESYNC_MAX: 90 };
+// (SOON: the look after one that found it moved; QUICK: looks this often while a resync asked for
+// looks for it, given up after RESYNC_MAX s)
 // (a Bilibili replay's own: the streamer's setup then may not be theirs now)
 const sndBiasKey = () => `soundBias|${S.timeline?.vod ? `vod:${S.timeline.vod}` : S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
 // (and whether its stream has been heard to carry F1 TV's sound: F1 TV's own ducked from the start)
@@ -1302,14 +1304,19 @@ async function sndMeasure(t, vn) {
     diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, wide, c: r2(ca) });
     sn.state = sn.target != null ? 'locked' : 'listening';
     if (!sure) { sn.miss++; sn.why = 'not sure'; return; }
-    // (found well away from where it was: look widely again till that's confirmed)
-    sn.miss = sn.target != null && Math.abs(val + sn.bias - sn.target) > 1 ? SND.MISSES : 0;
+    // (found well away from where it was: look widely again till that's confirmed, and soon: the
+    // commentary is that far off till then)
+    const far = sn.target != null && Math.abs(val + sn.bias - sn.target) > 1;
+    sn.miss = far ? SND.MISSES : 0;
+    if (far) sn.measAt = Math.min(sn.measAt, t - SND.EVERY + SND.SOON);
     sn.est = [...sn.est.filter((e) => t - e.at < 180), { at: t, val }].slice(-4);
     const agree = sn.est.filter((e) => Math.abs(e.val - val) <= SND.AGREE);
-    if (agree.length < 2) { sn.why = 'waiting for a second match'; return; }
+    // (resync asked for: the first sure match will do)
+    const quick = sn.quick != null;
+    if (agree.length < 2 && !quick) { sn.why = 'waiting for a second match'; return; }
     sn.miss = 0;
-    sn.why = 'matched';
-    const o = agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
+    sn.why = quick ? 'resynced' : 'matched';
+    const o = quick ? val : agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
     const now_ = sndPlace(); // (where it sits now: an easing may have moved it meanwhile)
     if (!now_) return;
     // (live: an offset on the lock, from where the lock is; a replay: the delay that puts it there)
@@ -1319,10 +1326,17 @@ async function sndMeasure(t, vn) {
     sn.state = 'locked';
     sn.okAt = t;
     if (!sn.carries) { sn.carries = true; try { localStorage.setItem(sndCarriesKey(), String(Date.now())); } catch { /* private mode */ } }
-    // found the first time far off (the delay was a guess), or a step too big to ease: there at once
-    if (Math.abs(err) > (fresh ? SND.JUMP : SND.JUMP_LATER)) {
+    // found the first time far off (the delay was a guess), or a step too big to ease: there at
+    // once (a resync: there at once, unless it's already there)
+    if (Math.abs(err) > (quick ? 0.05 : fresh ? SND.JUMP : SND.JUMP_LATER)) {
       shiftCommentary(err, true);
-      diag('sound', { jump: r2(err) });
+      diag('sound', { jump: r2(err), resync: quick || undefined });
+    }
+    if (quick) {
+      sn.quick = null;
+      sn.resyncedAt = t;
+      // by hand: a resync places it once, then it's yours again (the delay it set, to nudge)
+      if (!S.soundOn) Object.assign(sn, { target: null, est: [], state: 'off', why: 'by hand' });
     }
     sn.accepted++;
     // the delay that puts it there (what relocks use, and the panel shows), kept: for the stream
@@ -1414,7 +1428,8 @@ function sndSteer(t, v) {
 // (WIN..WIN_MAX s of F1 TV's sound, a look every STEP s more of it; the replay fetched and decoded
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14, WEAK: 7, AGREE: 0.3, CONFIRM: 8,
-  AGAIN: 600, URL: 'https://vod.fone.invalid/' };
+  AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60 };
+// (AHEAD: repeats looked for this far ahead of what plays, SCAN s of the replay a look)
 function vodWanted(tl) {
   const c = S.content;
   if (!S.room || !c || c.p0 == null || !['preroll', 'multiviewer'].includes(S.clock) || !S.clockFinal) return false;
@@ -1487,9 +1502,12 @@ async function vodCuts(V, gen) {
   for (const r of V.reps) {
     if (r.cutsDone) continue;
     try {
-      r.cuts = await FoneVod.findCuts(r, (i, t0, t1) => vodFrames(r, i, t0, t1));
+      const joins = await FoneVod.findCuts(r, (i, t0, t1) => vodFrames(r, i, t0, t1));
+      // (with the ones found ahead of playing meanwhile, where they aren't a join's)
+      const ahead = r.cuts.filter((c) => c.ahead && !joins.some((j) => c.m < j.m + j.d + 1 && c.m + c.d > j.m - 1));
+      r.cuts = [...joins, ...ahead].sort((a, b) => a.m - b.m);
       r.cutsDone = true;
-      FoneVod.store.set(`vodCuts|${r.bvid}`, { cuts: r.cuts, at: Date.now() });
+      FoneVod.store.set(`vodCuts|${r.bvid}`, { cuts: r.cuts, at: Date.now(), joins: true });
       diag('vod', { cuts: r.bvid, n: r.cuts.length, assumed: r.cuts.filter((c) => c.assumed).length });
     } catch (e) {
       diag('vod', { cutsErr: String(e?.message || e).slice(0, 120) });
@@ -1497,6 +1515,23 @@ async function vodCuts(V, gen) {
     }
     if (gen !== S.gen || S.vod !== V) return;
     if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
+  }
+}
+// Repeats away from the joins (Bilibili's recording now and then has a whole segment twice: the
+// commentary heard twice, then 5 s late till sync by sound catches it), looked for a window at a
+// time ahead of the moment playing, so it's cut before it's heard (kept with the joins').
+async function vodScan(V, r, gen) {
+  const a = r.scanTo, b = Math.min(r.total, a + VOD.SCAN);
+  try {
+    const c = await FoneVod.scanRepeat(r, (i, t0, t1) => vodFrames(r, i, t0, t1), a, b, r.cuts);
+    if (r.scanTo === a) r.scanTo = b >= r.total ? r.total : b - 15; // (overlapping by more than a repeat is long)
+    if (!c || gen !== S.gen || S.vod !== V) return;
+    r.cuts = [...r.cuts, c].sort((x, y) => x.m - y.m);
+    FoneVod.store.set(`vodCuts|${r.bvid}`, { cuts: r.cuts, at: Date.now(), joins: !!r.cutsDone });
+    diag('vod', { ahead: c });
+    if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
+  } catch (e) {
+    diag('vod', { scanErr: String(e?.message || e).slice(0, 120) });
   }
 }
 // The replay playing as the timeline (as a server's /api/timeline gives one) and its playlist.
@@ -1657,6 +1692,15 @@ async function vodSearch(V, gen, Q) {
 // in VOD.CONFIRM looks of its own while hearing F1 TV (playing on meanwhile).
 function vodTick(t, v) {
   const V = S.vod, sn = S.snd;
+  // repeats ahead of the moment playing (from where it plays, after a seek)
+  const r = V?.cur, m = S.lastTarget;
+  if (V && r && V.state === 'placed' && S.timeline?.vod === r.bvid && m != null && !V.scanning) {
+    if (r.scanTo == null || r.scanTo < m - 30 || r.scanTo > m + VOD.AHEAD + VOD.SCAN) r.scanTo = Math.max(0, m - 15);
+    if (r.scanTo < Math.min(r.total, m + VOD.AHEAD)) {
+      V.scanning = true;
+      vodScan(V, r, S.gen).finally(() => { V.scanning = false; });
+    }
+  }
   if (!V || V.busy || !sn || v.paused || v.seeking || v.waiting) return;
   const since = V.lastTryAt == null ? Infinity : t - V.lastTryAt;
   // (listening: a look whenever there's STEP s more of F1 TV's sound; after a whole plan missed, RETRY s on)
@@ -2234,8 +2278,14 @@ function tick() {
   // commentary sits for the picture this tick); how it stands, for the panel
   S.sndRef = { p: vn.p, m: map.m };
   const sn = S.snd;
-  if (sn && S.soundOn) {
-    if (!sn.busy && t - sn.measAt >= SND.EVERY && !v.paused && !v.seeking && !v.waiting && (S.clock !== 'edge' || S.liveLock?.cid === S.cid)) {
+  // (a resync asked for: looks every SND.QUICK s, by hand too, till one is sure or it gives up)
+  if (sn?.quick != null && t - sn.quick > SND.RESYNC_MAX) {
+    Object.assign(sn, { quick: null, why: 'resync: not found' });
+    if (!S.soundOn) sn.state = 'off';
+    diag('sound', { resync: 'not found' });
+  }
+  if (sn && (S.soundOn || sn.quick != null)) {
+    if (!sn.busy && t - sn.measAt >= (sn.quick != null ? SND.QUICK : SND.EVERY) && !v.paused && !v.seeking && !v.waiting && (S.clock !== 'edge' || S.liveLock?.cid === S.cid)) {
       sn.measAt = t;
       sn.looks = (sn.looks || 0) + 1;
       sndMeasure(t, vn);
@@ -2245,6 +2295,8 @@ function tick() {
     base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
       v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
       splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)),
+      // (the panel's Resync: looking, or just done)
+      resync: sn.quick != null ? 'looking' : sn.resyncedAt != null && t - sn.resyncedAt < 8 ? 'done' : null,
       // (a Bilibili replay placed: it carries F1 TV's sound, it was found by it: F1 TV's own off)
       carries: !!sn.carries || S.vod?.state === 'placed' };
   }
@@ -2299,6 +2351,19 @@ function fmtDur(s) {
 }
 
 // ---- messages ------------------------------------------------------------------
+
+// The panel's Resync: F1 TV's sound looked for in the stream again, now and widely, and the
+// commentary put where the first sure match says (the lock's own looks wait for two that agree).
+// By hand too: placed once, then yours again. A Bilibili replay still being looked for: again.
+function resync() {
+  const sn = S.snd;
+  if (!sn) return;
+  Object.assign(sn, { quick: now(), est: [], miss: SND.MISSES, measAt: 0, wideAt: 0, seen: null, why: 'resyncing…' });
+  if (!S.soundOn) Object.assign(sn, { target: null, state: 'listening' });
+  const V = S.vod;
+  if (V && V.state !== 'placed' && !V.busy) Object.assign(V, { tries: 0, lastTryAt: null });
+  diag('sound', { resync: 'asked' });
+}
 
 function nudge(delta) {
   if (S.delay == null) return;
@@ -2467,6 +2532,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     else if (prev && (prev.paused !== S.video.paused || prev.seeking !== S.video.seeking || Math.abs(prev.p - S.video.p) > 1)) tick();
   } else if (msg.type === 'nudge') {
     nudge(msg.delta);
+  } else if (msg.type === 'resync') {
+    resync();
   } else if (msg.type === 'detach' && (msg.tab == null || msg.tab === S.tab)) {
     detach();
   }

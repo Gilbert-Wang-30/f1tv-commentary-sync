@@ -66,12 +66,18 @@ extension and the install paths all go by that name.
   found, which is saved for the video). It needs the streamer to
   pass F1 TV's sound through (the panel says "by sound" when it has it; Details says what it
   hears, and "lost" after 10 minutes without it). The panel's **Sync** row switches between by sound and by hand, and the F1 TV row says when F1 TV's own sound is off because the stream's copy plays.
+  When a look finds the sound somewhere else (the stream skipped or repeated a little), the next
+  look comes 5 s later instead of 15, so the commentary is put back within ~20 s. **⟳ resync
+  sound** (or `R`) looks again at once and puts the commentary where the first sure match says
+  (by hand too: found once, then left to your nudges).
 - **Old replays play the streamer's Bilibili replay.** A session your server has nothing for
   (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
   直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
   session, finds this moment in it by F1 TV's sound (its title only says which hour the stream
   started in: the first look takes 10-60 s, F1 TV at 1× meanwhile), cuts Bilibili's ~4 s repeats
-  every half hour, turns F1 TV's own sound off and keeps it in sync by sound, with the replay's own
+  every half hour and any other stretch Bilibili's recording has twice (a whole ~5 s segment now
+  and then: found a minute ahead of what plays, so it's never heard twice and never puts the
+  commentary 5 s late), turns F1 TV's own sound off and keeps it in sync by sound, with the replay's own
   弹幕 (the live chat on it), and the streamer window (📺) shows the replay's own picture, their
   timing tower and map with it. Where it was is kept for the video, a nudge for the replay; by
   hand, it's still found by sound and then left to your nudges. Needs a server (for the replay's
@@ -142,8 +148,11 @@ extension and the install paths all go by that name.
   platform (their Bilibili room, Twitch channel, YouTube live, Douyin or Huya room) in a new tab.
 
 **Stats beside the video** (📊 Stats or the S key; needs a server)
-- F1 TV shrinks to the top-left 77% of the tab. The timing tower (gaps, intervals, last and best
-  laps, tyres and their age, pit stops) runs down the right edge to the picture's bottom.
+- F1 TV shrinks to the top-left 77% of the tab. The timing tower runs down the right edge to the
+  picture's bottom, in the streamer's order: places gained since the start, interval, gap, best
+  and last lap (IN PIT / OUT in its place), the tyre history (the set on now and its age, then the
+  ones before with their laps). Old sessions the server never captured have it too, rebuilt from
+  OpenF1's history.
 - Below it: session conditions (flag, clock, weather), a track map with every car and the corner
   numbers, and up to four **driver onboards**. These are F1 TV's own onboard feeds, drawn by F1
   TV's player in step with the main picture.
@@ -151,6 +160,9 @@ extension and the install paths all go by that name.
   the car positions on the map come from your own F1 TV login, read in the browser.
 - A window much wider than tall has no room under the picture: the stats go in a column on the
   right instead. The **Onboards** switch (or O) shrinks the picture until onboards fit.
+- **Their screen** (the switch in the map's top-right corner, or T): the streamer's own timing
+  screen instead of fone's, cut up into the same panels, found on their screen whatever the
+  session's layout.
 
 <p align="center">
   <img src="docs/images/stats-wide.jpg" alt="A wide window: the stats stacked in a column on the right" width="700">
@@ -325,13 +337,13 @@ Open any F1 TV video. The fone panel sits top-right:
 | **delay −5 … +5** | nudge the commentary, in steps of 5, ½, 0.1 and 0.02 s. Hear the reaction **after** the action? `+`. Before it (spoilers)? `−`. Saved per video on the server; live from the stream pulled into the browser (without a server, or a server's Bilibili channel live), per stream in this browser. The fine steps are for nulling an echo against F1 TV's own sound by ear, where the engine then holds the alignment to a millisecond for hours. |
 | 🔊 and the slider | mute and volume of the commentary |
 | **0.5× 1× 1.5× 2×** and **◂ ▸** | replay speed (live stays 1×); ◂ ▸ pause F1 TV and step it a frame back / on, to watch a move frame by frame (the frame's length measured from the picture) |
-| **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own. For a session with no timing (an old replay: F1's archive refuses, the server only has what it captured live) the same layout is cut from the streamer's own screen, which is their timing screen: their tower in the tower's place (race control under it where there's room), their session bar for the conditions, their track map for the map; the onboards as usual |
+| **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own: the timing tower in the streamer's order (places gained since the start, interval, gap, best and last lap, the tyre history newest first; a car in the pits or out says so in its last lap's cell), the conditions, the track map, onboards with `O`. **Their screen** (in the map's corner, or `T`) shows the streamer's own timing screen instead, cut up into the same panels: fone finds each part on their screen whatever the session's layout (the overview's two columns of drivers or the race tab's one wide table, at whatever size and place, the map's window wherever it is), so their table fills the tower (slimmed when narrow; race control under it where there's room), their session bar the conditions (cut into its pieces and laid out as large as the panel takes them) and their map the map. A session fone has no timing for at all shows their screen either way |
 | **📺 Streamer** and **⧉** | the streamer's picture in step with the commentary: a window over F1 TV (move it by its bar, size it by its corner), or in a window of its own |
 | **↗ Live page** | the streamer's live page on their platform, in a new tab (on a Bilibili replay: that replay, at the moment playing) |
 | **弹 弹幕** and **⚙** | danmaku on/off and their settings |
 | **F1 TV: Track FX / English Int.** | F1 TV's own sound under the commentary, picked on every video (F1 TV starts each one on its own default). *Track FX* (default): its commentary-free track, the circuit's sound (team radio isn't filled in yet). *English Int.*: its international English commentary (the world feed's), not F1 TV's own *English F1 Live*. A track you pick in F1 TV's own menu is kept for that video. To silence F1 TV, use its own mute button: fone holds that through every video, channel switch and page load until you unmute it there, with the button or by dragging F1 TV's volume up (fone turns F1 TV's sound down itself rather than muting F1 TV's player, so sync by sound goes on hearing it; the panel says "muted with F1 TV's button"). Live, a mute F1 TV makes itself is held the same way until F1 TV sets up its player afresh (the next video), the panel saying "muted in F1 TV" |
 | **Subtitles: on / off** | F1 TV's own subtitles (default off; kept and handed to F1 TV's page, not switched in the player yet) |
-| **Picture: auto / best** | how sharp F1 TV's picture is (what its player is playing, e.g. 1080p50, and the feed's sharpest); *best* pins its sharpest quality (4K where F1 TV has it for you), *auto* leaves it to F1 TV, which adapts to your connection. fone also turns on the Quality list in F1 TV's own ⚙ menu |
+| **Picture: auto / best** | how sharp F1 TV's picture is (what its player is playing, e.g. 1080p50, and the feed's sharpest); *best* pins its sharpest quality, *auto* leaves it to F1 TV, which adapts to your connection. In Chrome F1 TV's sharpest is 1080p: it streams 4K only to its Apple TV and Roku apps. fone also turns on the Quality list in F1 TV's own ⚙ menu |
 | *Anticipate reactions* | with a measured delay: play the commentary 0.9 s early, so reactions land on the action instead of after it (off by default: with it on, the streamer's pass-through F1 TV sound runs 0.9 s ahead of the picture) |
 | *Pause video when ahead of live commentary* | live auto-hold. Without a server, when the stream stops arriving (the streamer offline, or nothing for 30 s) the panel says so and F1 TV is let go rather than held |
 | **⏭ Go live** | F1 TV and the commentary to the freshest moment both have (also `L`, or F1 TV's LIVE badge) |
@@ -357,6 +369,8 @@ are left as they are).
 | `>` / `<` | replay speed up / down |
 | `S` | stats beside the video |
 | `O` | stats ↔ onboards layout |
+| `T` | the stats' timing: fone's own ↔ the streamer's screen, cut up |
+| `R` | resync by sound now |
 | `D` | danmaku on / off |
 | `V` | the streamer's picture on / off |
 
@@ -396,7 +410,8 @@ The server reads environment variables (see `docker-compose.yml`):
 | `FONE_REACTION_SECONDS` | `0.9` | the streamer's reaction time, added to the measured screen delay when the panel's *Anticipate reactions* is on |
 | `FONE_SEGMENT_SECONDS` | `2` | HLS segment length |
 | `FONE_TIMING`, `FONE_ADS`, `FONE_SCREENCLOCK`, `FONE_VIDEO`, `FONE_BACKFILL`, `FONE_DANMAKU` | `1` | each optional service; `0` turns it off (`/api/health` lists the running ones) |
-| `FONE_TIMING_RECORD` | `1` | capture live sessions' timing from 15 min before the start (while F1's archive refuses, since 2026-10-18, the only source of a session's stats) |
+| `FONE_TIMING_RECORD` | `1` | capture live sessions' timing from 15 min before the start (while F1's archive refuses, since 2026-10-18, the stats' best source: the rest is rebuilt from OpenF1) |
+| `FONE_TIMING_OPENF1` | `1` | rebuild the timing of a session the server didn't capture from OpenF1's history (any past session, any year; half an hour after it ends) |
 | `FONE_DANMAKU_CAPTURE`, `FONE_DANMAKU_ARCHIVE` | `1` | the two danmaku sources: our own listening, and danmakus.com for the rest |
 | `FONE_DANMAKU_KEEP_DAYS` | `30` | how long danmaku are kept |
 | `FONE_BACKFILL_DANMAKUS` | `1` | backfill may ask danmakus.com when a stream started |
@@ -612,8 +627,10 @@ docs/                  architecture, F1 data sources, README images
   aren't documented and change; Douyin's and Huya's especially.
 - F1's live-timing archive has answered 401 to everyone since 2026-10-18. While it refuses,
   replays the server anchored before then stay exact and newer ones use the pre-roll estimate, a
-  session has stats only if the server captured it live (`FONE_TIMING_RECORD`), and nothing
-  stored is pruned.
+  session the server didn't capture live (`FONE_TIMING_RECORD`) gets its stats from OpenF1's
+  history instead (half an hour after it ends; a minute or so to build on first ask: a few
+  seconds' lag on tyres after a pit stop, and in practice and qualifying "in the pits" from the
+  in-lap's end), and nothing stored is pruned.
 - An old replay from the streamer's Bilibili replays needs F1 TV's sound to be in the stream at
   the moment you're at: until fone hears it there (the streamer talking over a muted F1 TV, or
   before their stream began), it says it's still looking and plays nothing. F1 TV's sound

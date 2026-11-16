@@ -260,6 +260,16 @@ test('row marks: retired first, then in pit, then pit out', () => {
   assert.equal(D.rowMark(row(1, { inPit: true })).text, 'IN PIT');
   assert.equal(D.rowMark(row(1, { pitOut: true })).text, 'PIT OUT');
   assert.equal(D.rowMark(row(1)), null);
+  // places gained since the start (races), and the tyre history newest first
+  assert.deepEqual(D.diffCell(row(3, { grid: 7 }), 'race'), { text: '▲4', cls: 'up' });
+  assert.deepEqual(D.diffCell(row(9, { grid: 2 }), 'race'), { text: '▼7', cls: 'down' });
+  assert.deepEqual(D.diffCell(row(4, { grid: 4 }), 'race'), { text: '–', cls: 'same' });
+  assert.deepEqual(D.diffCell(row(4, { grid: 9 }), 'quali'), { text: '', cls: '' });
+  assert.deepEqual(D.diffCell(row(4), 'race'), { text: '', cls: '' });
+  const st = [{ compound: 'MEDIUM', laps: 18, new: true }, { compound: 'HARD', laps: 21, new: true }, { compound: 'SOFT', laps: 3, new: false }, { compound: 'HARD', laps: 2, new: true }];
+  assert.deepEqual(D.stintList(row(1, { stints: st })).map((x) => `${x.c[0]}${x.laps}${x.cur ? '*' : ''}`), ['H2*', 'S3', 'H21']);
+  assert.deepEqual(D.stintList(row(1, { tyre: 'SOFT', tyreAge: 4, newTyre: false })), [{ c: 'SOFT', laps: 4, new: false, cur: true }]);
+  assert.deepEqual(D.stintList(row(1, { tyre: 'UNKNOWN' })), []);
   assert.equal(D.tyreLetter('INTERMEDIATE'), 'I');
   assert.equal(D.tyreLetter('UNKNOWN'), '?');
 });
@@ -572,16 +582,18 @@ test('cornerSpot: the number sits gap px off the track, in the data\'s direction
   assert.ok(Math.abs(Math.hypot(sx - fx, sy - fy) - 12) < 1e-6);
 });
 
-test('towerColumns: a narrow tower drops the pit count, then the interval, to keep the text readable', () => {
+test('towerColumns: a narrow tower drops the places gained, then the interval, to keep the text readable', () => {
   const at = (w) => D.towerColumns(w);
   assert.deepEqual(at(560).hide, []); // a 1920 px screen's column: everything
   const mac = at(274); // a 1248 px window at 77%
-  assert.ok(mac.hide.includes('pits') && 274 / mac.em >= 9.5);
-  assert.ok(at(200).hide.length === 2 && at(200).cols.every(([k]) => k !== 'int' && k !== 'pits'));
-  for (const w of [200, 274, 330, 430, 560, 900]) { // never drops lap times, tyres, gaps or the marks
+  assert.ok(mac.hide.includes('diff') && 274 / mac.em >= 9.5);
+  assert.ok(at(200).hide.length === 2 && at(200).cols.every(([k]) => k !== 'int' && k !== 'diff'));
+  for (const w of [200, 274, 330, 430, 560, 900]) { // never drops lap times, the tyres or gaps
     const keys = at(w).cols.map(([k]) => k);
-    for (const k of ['pos', 'drv', 'gap', 'last', 'best', 'tyre', 'mark']) assert.ok(keys.includes(k), `${w}: ${k}`);
+    for (const k of ['pos', 'drv', 'gap', 'last', 'best', 'tyres']) assert.ok(keys.includes(k), `${w}: ${k}`);
   }
+  // the streamer's order: places gained, interval, gap, best, last, tyres
+  assert.deepEqual(at(900).cols.map(([k]) => k), ['pos', 'drv', 'diff', 'int', 'gap', 'best', 'last', 'tyres']);
   const m = D.towerMetrics(274, 700, 22);
   assert.ok(m.fs > 274 / D.TOWER.EM && m.cols.length < D.TOWER.COLS.length);
 });

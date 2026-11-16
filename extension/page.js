@@ -37,7 +37,8 @@
   // The SDK's promises are answered by its WASM core; one that never answers must not
   // wedge our steering (busy flags) forever.
   const NO_ANSWER = 'the player did not answer';
-  const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(NO_ANSWER)), ms))]);
+  // (no ms given: 10 s, never 0: a timer without a delay fires at once, "not answered" before it could be)
+  const within = (p, ms = 10000) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(NO_ANSWER)), ms))]);
   // An SDK call as a promise, also when it throws before returning one.
   const call = (f) => { try { return Promise.resolve(f()); } catch (e) { return Promise.reject(e); } };
 
@@ -234,7 +235,7 @@
   // feed's sharpest), and with 'best' pins the sharpest itself (again after F1 TV switches feeds:
   // its selection is then the new feed's). Back to auto: the feed again.
   try { sessionStorage.setItem('enableTMVideoQuality', 'true'); } catch { /* storage off */ }
-  const PIC = { want: false, pinned: null, info: null, err: null, busy: false };
+  const PIC = { want: false, pinned: null, at: 0, info: null, err: null, busy: false };
   const qRes = async (q) => { try { const r = await q.resolution; return Array.isArray(r) ? r.map(Number) : [0, 0]; } catch { return [0, 0]; } };
   const qFps = async (q) => { try { const f = await q.framerate; return Array.isArray(f) && Number(f[1]) ? Number(f[0]) / Number(f[1]) : null; } catch { return null; } };
   async function pictureTick() {
@@ -252,21 +253,27 @@
       PIC.info = { cur: fmt(cw, ch, cf), h: ch || null, best: best ? fmt(best.w, best.h, best.fps) : null, bestH: best?.h ?? null, n: list.length };
       const Sel = window.Tiledmedia?.VideoSelection;
       if (typeof Sel !== 'function') return;
+      // Asked once, as F1 TV's own Quality list does: its player kept being asked every second or
+      // two (2026-11-16: 369 calls in 8 minutes, each "not answered" by a timer that never waited)
+      // while a replay played. Again only for another feed's quality, or a minute after a call
+      // that didn't take.
       if (PIC.want && best) {
         const key = keyOf(best.q);
-        if (PIC.pinned === key && keyOf(view.desiredVideoSelection?.selection) === key) return;
+        if (keyOf(view.desiredVideoSelection?.selection) === key) { PIC.pinned = key; PIC.err = null; return; }
+        if (PIC.pinned === key && Date.now() - PIC.at < 60000) return;
         if (!lock('picture')) return;
+        PIC.pinned = key;
+        PIC.at = Date.now();
         try {
           view.desiredVideoSelection = new Sel(best.q);
-          await sdkCall('applyDesiredState', `best ${fmt(best.w, best.h, best.fps)}`, player, () => player.applyDesiredState());
-          PIC.pinned = key;
+          await sdkCall('applyDesiredState', `best ${fmt(best.w, best.h, best.fps)}`, player, () => player.applyDesiredState(), 15000);
         } finally { unlock(); }
       } else if (!PIC.want && PIC.pinned != null) {
         if (!lock('picture')) return;
+        PIC.pinned = null;
         try {
           view.desiredVideoSelection = new Sel(feed);
-          await sdkCall('applyDesiredState', 'auto picture', player, () => player.applyDesiredState());
-          PIC.pinned = null;
+          await sdkCall('applyDesiredState', 'auto picture', player, () => player.applyDesiredState(), 15000);
         } finally { unlock(); }
       }
       PIC.err = null;

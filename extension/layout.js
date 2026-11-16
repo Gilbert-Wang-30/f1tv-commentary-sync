@@ -388,6 +388,21 @@
     } catch { /* extension reloaded */ }
   }, true);
 
+  // T flips the stats' timing between fone's own and the streamer's screen, cut up (chrome.storage
+  // .local 'statsSource', which the dashboard follows), while the split is on.
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyT' || e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || e.repeat || !active) return;
+    const t = e.composedPath()[0];
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      chrome.storage.local.get('statsSource').then(({ statsSource }) => chrome.storage.local.set({
+        statsSource: statsSource === 'theirs' ? 'ours' : 'theirs',
+      })).catch(() => {});
+    } catch { /* extension reloaded */ }
+  }, true);
+
   window.addEventListener('message', (e) => {
     if (!frame || e.source !== frame.contentWindow || e.origin !== DASH_ORIGIN || e.data?.type !== 'fone-layout-cmd') return;
     const { cmd } = e.data;

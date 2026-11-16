@@ -282,7 +282,8 @@
     rep.total = pages.reduce((s, pg) => s + pg.dur, 0);
     const cuts = store.get(`vodCuts|${rep.bvid}`);
     rep.cuts = Array.isArray(cuts?.cuts) ? cuts.cuts : [];
-    rep.cutsDone = Array.isArray(cuts?.cuts);
+    // (joins: false, only repeats found ahead of playing so far: the joins' still to look for)
+    rep.cutsDone = Array.isArray(cuts?.cuts) && cuts.joins !== false;
     return rep;
   }
 
@@ -322,6 +323,24 @@
       off += pg.dur;
     }
     return cuts.map((c) => ({ ...c, m: Math.round(c.m * 1e4) / 1e4, d: Math.round(c.d * 1e4) / 1e4 }));
+  }
+
+  // Repeats anywhere, not just at the joins: Bilibili's recording now and then has a whole ~5 s
+  // segment twice (the 2026 Japanese GP race's replay, page 1 at 1:25:42: the same 235 packets
+  // again, the commentary heard twice and then 5 s late). Looked for ahead of where the replay
+  // plays (offscreen.js), a window m0..m1 (its axis) at a time, within the page m0 is in: the cut
+  // {m, d} of the repeat there, unless it's one of `known` (a join's, found before), else null.
+  async function scanRepeat(rep, frames, m0, m1, known = []) {
+    let off = 0, i = 0;
+    while (i < rep.pages.length - 1 && m0 >= off + rep.pages[i].dur) off += rep.pages[i++].dur;
+    const pg = rep.pages[i], pkt = 1024 / (pg.initInfo?.fmt?.rate || 48000);
+    const fr = await frames(i, Math.max(0, m0 - off), Math.min(pg.dur, m1 - off));
+    if (fr.length < 200) return null;
+    const r = findRepeat(fr.map((f) => f.data.subarray(7)), { minLag: 40, maxLag: 640 });
+    if (!r || r.e + 1 >= fr.length) return null;
+    const m = off + fr[r.e + 1].t, d = r.lag * pkt;
+    if (known.some((c) => m < c.m + c.d + 1 && m + d > c.m - 1)) return null;
+    return { m: Math.round(m * 1e4) / 1e4, d: Math.round(d * 1e4) / 1e4, ahead: true };
   }
 
   // A page's sound (AAC-LC ~72 kbps: 30232; else whatever AAC there is): its URLs, signed for ~2 h
@@ -420,5 +439,5 @@
   }
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
-    owner, replays, load, sound, urlOf, range, failed, store, FRAG };
+    owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

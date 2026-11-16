@@ -327,6 +327,7 @@
   button { all: unset; cursor: pointer; padding: 3px 7px; border-radius: 6px; background: rgba(255,255,255,.1); font: 12px system-ui; color: #eee; }
   button:hover { background: rgba(255,255,255,.2); }
   button.on { background: #e10600; color: #fff; }
+  #resync.busy { opacity: .6; }
   .lbl { color: #999; min-width: 42px; }
   .f1 { display: grid; gap: 6px; } .f1 .lbl { min-width: 58px; }
   .hint { color: #999; font-size: 11.5px; }
@@ -350,7 +351,7 @@
     <div class="body">
       <div class="hold" id="hold" hidden></div>
       <div class="row"><span class="delay" id="delay">delay –</span></div>
-      <div class="row"><span class="lbl" title="How the commentary is kept on the picture">Sync</span><button data-sync="sound" title="fone finds F1 TV's own sound in the streamer's stream and keeps the commentary there by itself">by sound</button><button data-sync="hand" title="The delay as you set it with the buttons below">by hand</button><span class="hint" id="syncInfo"></span></div>
+      <div class="row"><span class="lbl" title="How the commentary is kept on the picture">Sync</span><button data-sync="sound" title="fone finds F1 TV's own sound in the streamer's stream and keeps the commentary there by itself">by sound</button><button data-sync="hand" title="The delay as you set it with the buttons below">by hand</button><button id="resync" title="Find F1 TV's sound in the stream again now and put the commentary there (R)">⟳ resync sound</button><span class="hint" id="syncInfo"></span></div>
       <div class="nudge">
         <button data-d="-5" title="{">−5</button><button data-d="-0.5" title="[">−½</button><button data-d="-0.1" title="-">−.1</button><button data-d="-0.02" title=",">−.02</button>
         <button data-d="0.02" title=".">+.02</button><button data-d="0.1" title="=">+.1</button><button data-d="0.5" title="]">+½</button><button data-d="5" title="}">+5</button>
@@ -452,17 +453,23 @@
     root.querySelectorAll('button[data-cc]').forEach((b) => b.classList.toggle('on', b.dataset.cc === (settings.f1Subs === true ? 'on' : 'off')));
     root.querySelectorAll('button[data-pq]').forEach((b) => b.classList.toggle('on', b.dataset.pq === (settings.f1Best === true ? 'best' : 'auto')));
     const pq = tm?.pic;
-    $('pqInfo').textContent = [pictureQuality(), pq?.best && pq.cur !== pq.best ? `its sharpest ${pq.best}` : '', pq?.err ? pq.err : ''].filter(Boolean).join(' · ');
+    // (F1 TV streams 4K only to its Apple TV and Roku apps: in Chrome its sharpest is 1080p)
+    const top = pq?.bestH ? (pq.bestH >= 2000 ? '' : `F1 TV's sharpest in Chrome (4K: its TV apps only)`) : '';
+    $('pqInfo').textContent = [pictureQuality(), pq?.best && pq.cur !== pq.best ? `its sharpest ${pq.best}` : settings.f1Best === true ? top : '',
+      pq?.err ? pq.err : ''].filter(Boolean).join(' · ');
     // Sync: by sound (fone keeps it) or by hand (the delay as set), and how the sound stands
     const bySound = settings.soundSync !== false, sd = s.sound;
     // (by sound, fone keeps the delay: the nudges are for by hand)
     root.querySelector('.nudge').hidden = bySound;
     $('nudgeHint').hidden = bySound;
     root.querySelectorAll('button[data-sync]').forEach((b) => b.classList.toggle('on', (b.dataset.sync === 'sound') === bySound));
-    $('syncInfo').textContent = !bySound ? '' : !sd ? '' : {
-      locked: '● locked to F1 TV\'s sound', listening: 'listening for F1 TV\'s sound…', lost: 'lost it for now: the delay holds',
-      deaf: 'can\'t hear F1 TV (its sound on?)', quiet: 'F1 TV is silent: turn its sound on' }[sd.state] || '';
-    $('syncInfo').classList.toggle('good', bySound && sd?.state === 'locked');
+    const rs = sd?.resync;
+    $('resync').classList.toggle('busy', rs === 'looking');
+    $('syncInfo').textContent = rs === 'looking' ? 'resyncing: finding F1 TV\'s sound…' : rs === 'done' ? '● resynced'
+      : sd?.why === 'resync: not found' ? 'resync: F1 TV\'s sound not found (its sound on?)' : !bySound ? '' : !sd ? '' : {
+        locked: '● locked to F1 TV\'s sound', listening: 'listening for F1 TV\'s sound…', lost: 'lost it for now: the delay holds',
+        deaf: 'can\'t hear F1 TV (its sound on?)', quiet: 'F1 TV is silent: turn its sound on' }[sd.state] || '';
+    $('syncInfo').classList.toggle('good', rs === 'done' || (bySound && sd?.state === 'locked' && rs !== 'looking'));
     const tp = au?.tap, f1off = !!tp?.ducked;
     const how = !pick ? 'left to F1 TV' : !au ? '' : au.manual ? `your pick${au.cur ? `: ${au.cur}` : ''}` : au.err ? au.err
       : au.due > 20000 ? 'waiting for the player…' : settings.f1Sound === 'eng' && au.cur && au.cur !== 'English Int.' ? au.cur : '';
@@ -607,6 +614,11 @@
     render();
   }
 
+  // ⟳ / R: find F1 TV's sound in the stream again and put the commentary there (offscreen.js resync)
+  function resync() {
+    send({ type: 'resync' });
+    toast('Resyncing by sound…');
+  }
   function nudge(d) {
     send({ type: 'nudge', delta: d });
     const next = status?.delay != null ? status.delay + d - (REPLAY_CLOCKS.has(status.clock) ? REPLAY_ZERO : 0) : null;
@@ -626,6 +638,7 @@
   root.querySelectorAll('button[data-cc]').forEach((b) => b.addEventListener('click', () => { save({ f1Subs: b.dataset.cc === 'on' }); syncPage(true); }));
   root.querySelectorAll('button[data-pq]').forEach((b) => b.addEventListener('click', () => { save({ f1Best: b.dataset.pq === 'best' }); syncPage(true); }));
   root.querySelectorAll('button[data-sync]').forEach((b) => b.addEventListener('click', () => { save({ soundSync: b.dataset.sync === 'sound' }); syncPage(true); push(true); }));
+  $('resync').addEventListener('click', () => resync());
   $('anticipate').addEventListener('change', (e) => { save({ anticipate: e.target.checked }); push(true); });
   // layout.js (same content-script world) owns the split view; it may load after us.
   $('stats').addEventListener('click', () => { window.FoneLayout?.toggle(); render(); });
@@ -655,6 +668,7 @@
       else if (e.key === '\\') { save({ muted: !settings.muted }); toast(settings.muted ? 'Commentary muted' : 'Commentary on'); }
       else if (e.key === '|') save({ collapsed: !settings.collapsed });
       else if ((e.key === 'l' || e.key === 'L') && status?.clock === 'edge') goLive();
+      else if (e.key === 'r' || e.key === 'R') resync();
       else if (e.key === '>' || e.key === '<') stepSpeed(e.key === '>' ? 1 : -1);
       else return;
       e.preventDefault();

@@ -6,13 +6,14 @@
 <body>
 <section class="panel tower" id="tower" hidden>
   <div class="thead" id="thead">
-    <span class="ttl" id="ttl"></span><span>Gap</span><span class="int">Int</span><span>Last</span><span>Best</span><span class="c">Tyre</span><span class="c pits">Pit</span><span></span>
+    <span class="ttl" id="ttl"></span><span class="diff">Diff</span><span class="int">Int</span><span>Gap</span><span>Best</span><span>Last</span><span class="tyh">Tyres</span>
   </div>
   <div class="tbody" id="rows"><div class="cut" id="cut" hidden></div></div>
   <div class="note" id="towerNote" hidden></div>
 </section>
 <section class="panel map" id="map" hidden>
   <button class="obtog" id="obToggle" type="button" hidden title="Make room below the picture for drivers’ onboard cameras (key O)">Onboards</button>
+  <button class="obtog src" id="srcToggle" type="button" hidden>Their screen</button>
   <canvas id="mapBg"></canvas>
   <canvas id="mapFg"></canvas>
   <div class="note" id="mapNote" hidden></div>
@@ -54,4 +55,5 @@
   <button class="opt none" id="menuNone" type="button" data-num="">None</button>
 </div>
 <script src="dashcore.js"></script>
+<script src="shotlayout.js"></script>
 <script src="dashboard.js"></script>

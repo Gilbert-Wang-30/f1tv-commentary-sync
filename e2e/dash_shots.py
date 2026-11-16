@@ -81,6 +81,12 @@ SCENARIOS = [
     ("iframe2560x1270_onboards_mode", SQ, T_SQ1, (2560, 1270), {"x": 0, "y": 0, "w": 1968, "h": 1107},
      {"picks": [1, 44, 16, 81], "mode": "onboards", "box": {"w": 1792, "h": 1008}}),
     ("popout560_sq1_running", SQ, T_SQ1, (560, 1000), None, {}),  # background.js's pop-out window
+    # the race tower at the author's window: places gained, interval, gap, best, last, the tyre history
+    ("iframe2560x1270_race_stats", RACE, T_SQ1, (2560, 1270), {"x": 0, "y": 0, "w": 1968, "h": 1107}, {"picks": [44, 16]}),
+    ("iframe2560x1270_race_onboards", RACE, T_SQ1, (2560, 1270), {"x": 0, "y": 0, "w": 1968, "h": 1107},
+     {"picks": [1, 44, 16, 81], "mode": "onboards", "box": {"w": 1792, "h": 1008}}),
+    # a session no capture covers, its timing rebuilt from OpenF1 (2026 Japanese GP race, lap 13)
+    ("iframe2560x1270_openf1_jpn26_lap13", 11253, 1774762463, (2560, 1270), {"x": 0, "y": 0, "w": 1968, "h": 1107}, {"cid": ""}),
 ]
 
 
@@ -105,7 +111,11 @@ def race_state(t):
                  gap="LAP 23" if i == 0 else f"+{gap:.3f}", interval="LAP 23" if i == 0 else f"+{step:.3f}",
                  last=f"1:{40 + i % 7}.{(i * 137) % 1000:03d}", lastFlag="personal" if i % 5 == 2 else "none",
                  best=f"1:{38 + i % 5}.{(i * 251) % 1000:03d}", pits=1 + i % 2, tyre=["HARD", "MEDIUM", "HARD", "SOFT"][i % 4],
-                 tyreAge=3 + (i * 7) % 20, newTyre=i % 6 == 1)
+                 tyreAge=3 + (i * 7) % 20, newTyre=i % 6 == 1,
+                 # where they started (places gained: grid − pos) and the stints so far
+                 grid=[3, 1, 5, 2, 9, 6, 4, 12, 8, 7, 15, 10, 11, 18, 13, 14, 20, 16, 22, 17, 19, 21][i])
+        r["stints"] = ([{"compound": "MEDIUM", "laps": 14 + i % 5, "new": True}] if i % 2 else [{"compound": "SOFT", "laps": 9, "new": True}, {"compound": "MEDIUM", "laps": 11, "new": False}][: 1 + i % 3 // 2]) \
+            + [{"compound": r["tyre"], "laps": r["tyreAge"], "new": r["newTyre"]}]
     st["tower"][0]["lastFlag"] = "overall"
     st["tower"][17].update(gap="1L", interval="+1 LAP")
     st["tower"][18].update(gap="1L", interval="+12.402")
@@ -134,7 +144,10 @@ def fake_streams():
     return out
 
 
-STREAMS = fake_streams()
+try:
+    STREAMS = fake_streams()
+except (KeyError, OSError, ValueError):  # a server without the SQ session (a dev server): no onboard list
+    STREAMS = []
 CHANNEL = {s["number"]: s["channelId"] for s in STREAMS if s["type"] == "obc"}  # racing number -> channel
 CODE = {s["channelId"]: s["title"] for s in STREAMS}
 

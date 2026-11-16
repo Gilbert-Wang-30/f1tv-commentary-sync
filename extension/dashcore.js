@@ -258,6 +258,24 @@
     return best;
   }
 
+  // Places gained (or lost) since the start: the grid against the place now, races only (as the
+  // streamer's timing screen shows it: ▲2, ▼3, – for none).
+  function diffCell(r, kind) {
+    if (kind !== 'race' || !(r.grid > 0) || !(r.pos > 0)) return { text: '', cls: '' };
+    const d = r.grid - r.pos;
+    return d > 0 ? { text: `▲${d}`, cls: 'up' } : d < 0 ? { text: `▼${-d}`, cls: 'down' } : { text: '–', cls: 'same' };
+  }
+
+  // The tyre history: the car's stints, newest first, at most `n` ({c: compound, laps, new, cur}:
+  // cur, the one it's on, its laps its tyre's age). From the server's stints (each {compound,
+  // laps, new}), else the tyre it's on alone (a server from before them).
+  function stintList(r, n = 3) {
+    const list = Array.isArray(r.stints) && r.stints.length ? r.stints
+      : r.tyre && r.tyre !== 'UNKNOWN' ? [{ compound: r.tyre, laps: r.tyreAge, new: r.newTyre }] : [];
+    return list.map((s, i) => ({ c: String(s.compound || 'UNKNOWN').toUpperCase(), laps: Number.isFinite(s.laps) ? s.laps : null,
+      new: !!s.new, cur: i === list.length - 1 })).reverse().slice(0, n);
+  }
+
   // The status mark at the end of a tower row: retired beats pit states.
   function rowMark(r) {
     if (r.retired) return { cls: 'ret', text: 'OUT' };
@@ -285,9 +303,11 @@
   //
   // Tower columns in em of the tower's font size; a fixed template keeps the font size (set
   // from the panel's width) from changing with what's in the cells.
+  // (the streamer's timing screen's order: places gained, interval, gap, best, last, the tyres
+  // history; a pit or out mark shows in the last lap's cell, as there)
   const TOWER = {
-    COLS: [['pos', 1.35], ['drv', 3.3], ['gap', 4.1], ['int', 4.1], ['last', 4.15], ['best', 4.15],
-      ['tyre', 2.75], ['pits', 1.2], ['mark', 3.85]],
+    COLS: [['pos', 1.35], ['drv', 3.3], ['diff', 2.2], ['int', 4.1], ['gap', 4.1], ['best', 4.15], ['last', 4.15],
+      ['tyres', 7.8]],
     GAP: 0.42, PADX: 0.55, PADY: 0.4, HEAD: 1.55, ROW_MIN: 1.5, ROW_MAX: 2.6, FS_MIN: 8, FS_MAX: 30,
   };
   const emOf = (cols) => cols.reduce((a, c) => a + c[1], 0) + TOWER.GAP * (cols.length - 1) + 2 * TOWER.PADX;
@@ -300,10 +320,10 @@
     TOWER.COLS = TOWER.COLS.map(([k, w]) => [k, widths?.[k] > 0.5 && widths[k] < 12 ? Math.round(widths[k] * 100) / 100 : w]);
     TOWER.EM = emOf(TOWER.COLS);
   }
-  // A narrow column (the player box takes 77% of the width) drops what matters least, the pit
-  // count and then the interval, before every lap time and gap shrinks below a size readable
+  // A narrow column (the player box takes 77% of the width) drops what matters least, the places
+  // gained and then the interval, before every lap time and gap shrinks below a size readable
   // at a glance.
-  const TOWER_DROP = ['pits', 'int'];
+  const TOWER_DROP = ['diff', 'int'];
   const TOWER_COMFY_FS = 11;
 
   function towerColumns(w) {
@@ -619,7 +639,7 @@
     clockAt, clockStep, pickTab,
     chunkOf, chunksFor, chunkComplete, mergeChunks, carAt,
     parseClock, fmtClock, countdownStep, countdownAt,
-    sessionKind, partLabel, towerTitle, flagChip, lapSeconds, fmtGap, gapCells, fastestRow, rowMark, tyreLetter, cutAfter, compass,
+    sessionKind, partLabel, towerTitle, flagChip, lapSeconds, fmtGap, gapCells, fastestRow, rowMark, tyreLetter, cutAfter, compass, diffCell, stintList,
     towerMetrics, towerColumns, towerNeed, setTowerCols, defaultRect, onboardBox, layout, onboardSlots, trackAspect,
     onboardList, pickOnboard, onboardPicks,
     fitTrack, project, cornerSpot, placeLabels, labelBox,
