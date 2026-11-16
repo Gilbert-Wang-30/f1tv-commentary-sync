@@ -2044,7 +2044,8 @@ async function refreshDashDelay(gen) {
 }
 
 function dashClock(t, v, vn, E, liveM) {
-  if (t - S.dashAt < DASH.EVERY || S.content?.sessionKey == null) return;
+  // (a video with no timing session too: the stats then show the streamer's screen)
+  if (t - S.dashAt < DASH.EVERY || !S.content) return;
   S.dashAt = t;
   let e = E;
   if (S.clock === 'edge') {
@@ -2057,7 +2058,7 @@ function dashClock(t, v, vn, E, liveM) {
   if (!Number.isFinite(e)) return;
   chrome.runtime.sendMessage({
     target: 'dashboard', type: 'clock', tab: S.tab, E: e, playing: !v.paused, rate: v.rate || 1, at: t,
-    sessionKey: S.content.sessionKey, cid: S.cid, server: S.base, live: S.clock === 'edge',
+    sessionKey: S.content.sessionKey ?? null, cid: S.cid, server: S.base, live: S.clock === 'edge',
   }).catch(() => {});
 }
 

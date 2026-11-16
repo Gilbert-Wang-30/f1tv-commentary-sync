@@ -328,8 +328,9 @@
   // (deadline); other upos mirrors serve the same signed path.
   const MIRRORS = ['upos-sz-mirrorcosov.bilivideo.com', 'upos-sz-mirrorali.bilivideo.com', 'upos-sz-mirrorhw.bilivideo.com',
     'upos-sz-mirrorbd.bilivideo.com', 'upos-sz-mirrorcos.bilivideo.com', 'upos-sz-mirroraliov.bilivideo.com'];
-  // pg.kind 'video': its picture instead (H.264, the tallest up to VIDEO_H; the streamer window's).
-  const VIDEO_H = 720, AVC = 7;
+  // pg.kind 'video': its picture instead (H.264, the tallest up to VIDEO_H; the streamer window's:
+  // the streamer's stream is their timing screen, its small print wants 1080p).
+  const VIDEO_H = 1080, AVC = 7;
   async function sound(rep, pg) {
     const d = await json(`https://api.bilibili.com/x/player/playurl?bvid=${rep.bvid}&cid=${pg.cid}&fnval=16&fnver=0&qn=0&try_look=1`);
     let a;

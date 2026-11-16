@@ -325,7 +325,7 @@ Open any F1 TV video. The fone panel sits top-right:
 | **delay −5 … +5** | nudge the commentary, in steps of 5, ½, 0.1 and 0.02 s. Hear the reaction **after** the action? `+`. Before it (spoilers)? `−`. Saved per video on the server; live from the stream pulled into the browser (without a server, or a server's Bilibili channel live), per stream in this browser. The fine steps are for nulling an echo against F1 TV's own sound by ear, where the engine then holds the alignment to a millisecond for hours. |
 | 🔊 and the slider | mute and volume of the commentary |
 | **0.5× 1× 1.5× 2×** and **◂ ▸** | replay speed (live stays 1×); ◂ ▸ pause F1 TV and step it a frame back / on, to watch a move frame by frame (the frame's length measured from the picture) |
-| **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own |
+| **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own. For a session with no timing (an old replay: F1's archive refuses, the server only has what it captured live) they show the streamer's own screen instead, their timing tower, race control and track map, beside F1 TV at half the width each |
 | **📺 Streamer** and **⧉** | the streamer's picture in step with the commentary: a window over F1 TV (move it by its bar, size it by its corner), or in a window of its own |
 | **↗ Live page** | the streamer's live page on their platform, in a new tab (on a Bilibili replay: that replay, at the moment playing) |
 | **弹 弹幕** and **⚙** | danmaku on/off and their settings |

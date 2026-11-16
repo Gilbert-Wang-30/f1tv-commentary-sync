@@ -58,9 +58,13 @@ class Mock(BaseHTTPRequestHandler):
             return self.send({"rooms": {"23954427": {"channel": CHANNEL}}})
         if p == f"/api/f1tv/{CID}":
             return self.send({"contentId": CID, "title": "British Grand Prix - Race", "sessionName": "Race", "subtype": "REPLAY",
-                              "p0": P0, "anchor": "preroll", "duration": 7200})
+                              "p0": P0, "anchor": "preroll", "duration": 7200, "sessionKey": 9947})
+        if p.startswith("/api/timing/session/9947/"):  # (as a fone server answers for so old a session)
+            return self.send({"available": False, "reason": "no timing data for this session"})
         if p.startswith("/api/sync/"):
             return self.send({"delay": 45.0, "source": "channel"})
+        if p.startswith("/api/timing/content/"):  # (no timing for so old a session)
+            return self.send({"sessionKey": None})
         if p == "/api/timeline":
             return self.send({"files": [], "pieces": [], "playlist": None, "live": False, "complete": True, "mutes": [], "edge": None})
         return self.send({"detail": "not here"}, 404)
@@ -117,7 +121,7 @@ async def main():
 
         async def open_replay():
             nonlocal page
-            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/2025-british-gp-race?action=play&tm=1&f1audio=element")
+            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/2025-british-gp-race?action=play&tm=1&grid=1&f1audio=element")
             await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
             await page.evaluate("() => { window.__f1Off = 0; }")  # (F1 TV's sound at the picture's own position)
 
@@ -221,6 +225,24 @@ async def main():
         E.check(ps and ps.get("src") == "vod" and abs(ps["vtime"] - ps["target"]) < 0.6,
                 f"📺 the streamer window plays the replay's picture at the commentary's moment ({json.dumps(ps)[:160]})")
         await page.evaluate(f"() => {E.PANEL}.getElementById('pic').click()")
+        # 📊 Stats with no timing for the session: the streamer's screen (their timing tower and map)
+        # beside F1 TV's player, which takes half the width
+        await page.evaluate(f"() => {E.PANEL}.getElementById('stats').click()")
+        deadline, ss = time.time() + 60, None
+        while time.time() < deadline:
+            dash = next((f for f in page.frames if "dashboard.html" in f.url), None)
+            scr = next((c for c in (dash.child_frames if dash else []) if "streamer.html" in c.url), None)
+            raw = await scr.evaluate("() => document.documentElement.dataset.state || null") if scr else None
+            ss = json.loads(raw) if raw else None
+            if ss and ss.get("src") == "vod" and ss.get("target") and ss["vtime"] > 1 and abs(ss["vtime"] - ss["target"]) < 0.6:
+                break
+            await asyncio.sleep(0.5)
+        box = await page.evaluate("() => { const r = document.querySelector('div.video-grid').getBoundingClientRect(); return [r.width, innerWidth]; }")
+        if dash:
+            print("   dash:", json.dumps(await dash.evaluate("() => { const s = __dash.snapshot(); const S = __dash.S; return { layout: s.layout, E: s.E, na: s.na, note: s.note, key: S.key, cid: S.cid, server: S.server, myTab: s.myTab, screen: !!document.getElementById('screen') }; }"))[:400])
+        E.check(ss and ss.get("src") == "vod" and abs(ss["vtime"] - ss["target"]) < 0.6 and 0.4 < box[0] / box[1] < 0.6,
+                f"📊 no timing for the session: the stats show the streamer's screen beside F1 TV (player {box[0] / box[1]:.0%} wide)")
+        await page.evaluate(f"() => {E.PANEL}.getElementById('stats').click()")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("cuts") is not None, 120, "the repeats found")
         E.check(st["vod"]["cuts"] >= 7, f"the replay's ~5 s repeats found: {st['vod']['cuts']}")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.15, 30, "still in step after the repeats")

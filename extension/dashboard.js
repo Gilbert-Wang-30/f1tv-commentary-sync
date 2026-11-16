@@ -166,6 +166,7 @@ async function resolveCid(server, cid, k) {
     const c = await getJSON(`${server}/api/timing/content/${encodeURIComponent(cid)}`);
     S.cids.set(k, c?.sessionKey ?? null);
     S.cidBusy.delete(k);
+    applyLayout(); // (no timing: the streamer's screen instead)
   } catch {
     setTimeout(() => S.cidBusy.delete(k), 10000); // try again with a later report
   }
@@ -239,6 +240,7 @@ function takeState(st) {
       applyLayout();
     }
   }
+  if (screenOn() !== !!$('screen')) applyLayout(); // (no timing there: the streamer's screen; back from it)
   renderState();
 }
 
@@ -345,7 +347,49 @@ function place(el, box) {
   if (box) Object.assign(el.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
 }
 
+// ---- the streamer's screen: a session with no timing (an old replay, a session the server didn't
+// capture) ---------------------------------------------------------------------------------
+// The streamer's stream is their timing screen (MultiViewer's tower, race control, the track map),
+// so where fone has no timing for a video, the stats show theirs: the streamer window's page
+// (streamer.html, following the commentary's clock: the Bilibili replay's picture, or a server's
+// recording's) beside F1 TV's player, which takes half the width.
+function screenOn() {
+  // (no session for the video, or one the server has no timing for)
+  return MODE === 'iframe' && !!S.server && !!S.clock && (!!(S.key && S.na) || (!S.key && !!S.cid && S.cids.has(`${S.server}|${S.cid}`)));
+}
+function screenPlayerBox() {
+  const steps = Math.floor((innerWidth * 0.5) / 16);
+  return { w: 16 * steps, h: 9 * steps };
+}
+function placeScreen() {
+  let f = $('screen');
+  if (!screenOn()) { if (f) f.remove(); return false; }
+  if (!f) {
+    f = document.createElement('iframe');
+    f.id = 'screen';
+    f.title = "The streamer's screen";
+    f.src = 'streamer.html?mode=box';
+    f.style.cssText = 'position:fixed;border:0;background:#000;border-radius:6px;z-index:5';
+    document.body.append(f);
+  }
+  const r = playerRect() || { x: 0, y: 0, w: innerWidth / 2, h: (innerWidth / 2) * 9 / 16 };
+  const g = Math.round(Math.max(6, Math.min(12, Math.min(innerWidth, innerHeight) * 0.008)));
+  const x = r.x + r.w + g, w = Math.max(0, innerWidth - x - g), h = Math.min(innerHeight - 2 * g, Math.round((w * 9) / 16));
+  Object.assign(f.style, { left: `${x}px`, top: `${r.y}px`, width: `${w}px`, height: `${h}px` });
+  return true;
+}
+
 function applyLayout() {
+  if (placeScreen()) {
+    S.L = { kind: 'screen', tower: null, cond: null, map: null, slots: [] };
+    for (const id of ['tower', 'cond', 'map']) place($(id), null);
+    for (let i = 0; i < D.OB_SLOTS; i++) place($(`slot${i}`), null);
+    document.body.dataset.layout = 'screen';
+    S.ver++;
+    postOnboards();
+    askPlayer();
+    return;
+  }
   const L = D.layout({ mode: MODE, vw: innerWidth, vh: innerHeight, rect: playerRect(), rows: S.rows, mapAspect: S.aspect });
   S.L = L;
   place($('tower'), L.tower);
@@ -510,6 +554,7 @@ function renderTower() {
 
 // What the tower says when it has no rows to show.
 function renderNotes() {
+  if (screenOn() !== !!$('screen')) applyLayout(); // (the streamer's screen, in or out)
   let main = '', sub = '';
   if (!S.clock) {
     main = MODE === 'iframe' ? 'Waiting for the player…' : 'Waiting for F1 TV…';
@@ -983,7 +1028,7 @@ function askPlayer() {
   btn.hidden = MODE !== 'iframe' || !S.L?.map;
   btn.classList.toggle('on', MODE_ST.mode === 'onboards');
   if (MODE !== 'iframe' || window.parent === window) return;
-  const box = MODE_ST.mode === 'onboards'
+  const box = screenOn() ? screenPlayerBox() : MODE_ST.mode === 'onboards'
     ? D.onboardBox({ vw: innerWidth, vh: innerHeight, rows: S.rows, mapAspect: S.aspect }) : null;
   // in the page's px, should ours differ (as postOnboards); whole 16x9 steps either way
   const m = S.layoutMsg, k = m?.vw > 0 && innerWidth > 0 ? m.vw / innerWidth : 1;
