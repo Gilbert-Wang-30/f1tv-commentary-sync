@@ -1608,7 +1608,10 @@ async function vodSearch(V, gen, Q) {
   const prev = V.prevBest, off = best ? best.m - pa : null;
   V.prevBest = best && best.score >= VOD.WEAK && best.score >= 1.2 * rival ? { rep: best.rep, off, score: best.score } : null;
   const agree = !!(prev && V.prevBest && prev.rep === best.rep && Math.abs(prev.off - off) <= VOD.AGREE);
-  if (best && ((best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival) || agree)) {
+  // (placed already, and sync by sound not confirming it: moved only by a match far above all else)
+  const sure = placed ? !!best && best.score >= VOD.SURE && best.score >= 2 * rival
+    : !!best && ((best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival) || agree);
+  if (sure) {
     // F1 TV's sound at picture pa is at best.m in the replay: put there with the delay at VOD.D0
     // (and the nudge on top of the sound, as sync by sound keeps it)
     const T0 = E + VOD.D0 - FoneVod.contentAt(best.rep, best.m), delay = VOD.D0 + (sn.bias || 0);
@@ -2171,7 +2174,9 @@ function tick() {
     const pl = sndPlace(), err = sn.target != null && pl ? pl.err : null;
     base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
       v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
-      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)), carries: !!sn.carries };
+      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)),
+      // (a Bilibili replay placed: it carries F1 TV's sound, it was found by it: F1 TV's own off)
+      carries: !!sn.carries || S.vod?.state === 'placed' };
   }
   // team radio, filled in: how it stands, for Details
   try {

@@ -139,6 +139,7 @@ async def main():
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("state") == "placed", 240, "placed in the replay by sound")
         E.check(st["vod"]["bvid"] == BVID, f"this moment found in {st['vod']['bvid']} ({st['vod']['title']}) by sound in {time.time() - t0:.0f}s"
                 f" ({st['vod']['tries']} looks)")
+        E.check((st.get("sound") or {}).get("carries") is True, "placed: F1 TV's own sound turned off (the replay carries it)")
         await E.wait_js(page, "() => window.__sdkRate()", lambda r: r == 2, 15, "2× again")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.5, 30, "in step at 2×")
         E.check(True, f"…then 2× again, the commentary in step ({placed(st) * 1000:+.0f} ms, drift {st['drift'] * 1000:+.0f} ms)")
@@ -154,6 +155,8 @@ async def main():
         E.check(2.4 < st["audioTime"] - a0 < 3.6 and st["state"] == "sync", f"the replay's sound plays: {st['audioTime'] - a0:.2f}s in 3 s")
         details = await page.evaluate(E.DETAILS)
         E.check(f"Bilibili 直播回放 {BVID}" in details, "Details: the recording is the Bilibili replay")
+        shown = await page.evaluate(f"() => {E.PANEL}.getElementById('delay').textContent")
+        E.check(shown.startswith("delay 0.0") or shown.startswith("delay −0.0"), f"the delay reads against 50 s: {shown!r}")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("cuts") is not None, 120, "the repeats found")
         E.check(st["vod"]["cuts"] >= 7, f"the replay's ~5 s repeats found: {st['vod']['cuts']}")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.15, 30, "still in step after the repeats")

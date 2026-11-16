@@ -176,6 +176,9 @@
   // Desired state, re-sent every 2 s: page.js stops steering when we go quiet.
   // A replay playing the streamer's Bilibili replay, this moment in it not found yet: F1 TV at 1×
   // meanwhile (it's found by F1 TV's sound, heard at 1× only), the speed chosen kept for after.
+  // A replay's delay is shown less this: the streamer's usual on a replay (their screen's ~50 s
+  // behind the events), so a replay in step at it reads 0.00.
+  const REPLAY_ZERO = 50, REPLAY_CLOCKS = new Set(['preroll', 'multiviewer', 'epoch']);
   const vodLooking = () => ['listening', 'searching'].includes(status?.vod?.state) && playKind() === 'replay';
   function syncPage(force) {
     if (!alive || !cid || !video || !FonePlayer.isTiledmedia()) return;
@@ -364,7 +367,9 @@
     if (settings.collapsed) return;
 
     $('liveRow').hidden = s.clock !== 'edge';
-    $('delay').textContent = s.delay != null ? `delay ${s.delay.toFixed(2)} s${settings.soundSync !== false && s.sound?.state === 'locked' ? ' · kept by sound' : ''}` : 'delay –';
+    // (a replay's delay read against REPLAY_ZERO s, the streamer's usual: 0.00 there, you asked)
+    const shown = s.delay == null ? null : REPLAY_CLOCKS.has(s.clock) ? s.delay - REPLAY_ZERO : s.delay;
+    $('delay').textContent = shown != null ? `delay ${shown >= 0 ? '' : '−'}${Math.abs(shown).toFixed(2)} s${settings.soundSync !== false && (s.sound?.state === 'locked' || s.vod?.state === 'placed') ? ' · kept by sound' : ''}` : 'delay –';
     $('mute').textContent = settings.muted ? '🔇' : '🔊';
     if (document.activeElement !== host) $('vol').value = settings.volume;
     $('autohold').checked = settings.autoHold;
@@ -548,7 +553,7 @@
 
   function nudge(d) {
     send({ type: 'nudge', delta: d });
-    const next = status?.delay != null ? status.delay + d : null;
+    const next = status?.delay != null ? status.delay + d - (REPLAY_CLOCKS.has(status.clock) ? REPLAY_ZERO : 0) : null;
     toast(`${d > 0 ? '+' : '−'}${Math.abs(d)} s → commentary ${d > 0 ? 'sooner' : 'later'}${next != null ? ` (delay ${next.toFixed(1)} s)` : ''}`);
   }
 
