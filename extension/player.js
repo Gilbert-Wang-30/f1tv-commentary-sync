@@ -280,7 +280,7 @@
     if (!d || now() - S.tmAt > 3000) return null;
     return { eventType: d.c ? d.c.eventType : null, r: d.r || null, audio: S.audio, tracks: S.tracks,
       ob: d.ob || null, obErr: d.obErr || null, h: d.h ?? null, nViews: d.nViews ?? null, sdk: d.sdk || null, feed: d.feed || null,
-      subs: d.subs || null };
+      subs: d.subs || null, pic: d.pic || null };
   }
 
   function diag() {
