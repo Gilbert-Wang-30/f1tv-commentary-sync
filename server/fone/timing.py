@@ -1,15 +1,20 @@
 """F1 timing for the dashboard: per-session state, car positions and track map at any UTC.
 
-Two sources, one on-disk format (`<data_dir>/timing/<session_key>/<Topic>.jsonStream`,
+Three sources, one on-disk format (`<data_dir>/timing/<session_key>/<Topic>.jsonStream`,
 see timing_state.py), told apart by `meta.json`:
   * live    - our own SignalR capture (livefeed.py) of every session on the OpenF1
               calendar, from 15 min before the scheduled start until SessionStatus "Ends"
               (safety stop 4 h after the start). Anonymous access has everything except
               car positions; the extension forwards those from the viewer's F1 TV login
-              (POST /positions), so the server never sees the token.
+              (POST /positions), so the server never sees the token. A finished capture
+              nobody relayed positions for gets OpenF1's (below) when the map asks.
   * archive - livetiming.formula1.com/static/<path>, published ~20 min after a session
               (403 until then), no auth until 2026-10-18 (401 for everyone since). Replaces
               the live capture once it appears; while it refuses, nothing stored is pruned.
+  * openf1  - for a session with nothing stored that the archive won't give: rebuilt from
+              OpenF1's historical API (timing_openf1.py), once it's been over for 30 min.
+              Asked for by the dashboard (any past session, any year) or by the plan for
+              sessions that just ended uncaptured. Never over a capture or an archive.
 UTC of a message = t0 + its offset; t0 is the archive's AudioStreams/ContentStreams
 "Utc", or for a capture the moment its first message arrived. Feed messages are written
 at their own timestamp (the archive's clock), so captures and archives line up.
@@ -36,7 +41,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Path as PathParam, Query
 from pydantic import BaseModel, Field
 
-from . import livefeed
+from . import livefeed, timing_openf1
 from .config import Config
 from .timing_state import (
     POSITION_TOPIC, SessionTimeline, deflate, format_offset, iso, read_stream, track_outline,
@@ -61,6 +66,14 @@ ARCHIVE_KEYFRAMES = ["AudioStreams", "ContentStreams", "ArchiveStatus", "Session
 REQUIRED_STREAMS = {"SessionInfo", "TimingData"}
 MAX_POSITION_WINDOW = 120.0
 MAX_UPLOAD_MESSAGES = 5000
+# Archive answers after which a session is rebuilt from OpenF1 instead ("not published" is
+# the archive's own "later": it publishes within ~20 min).
+ARCHIVE_GONE = ("refused", "unknown session")
+# Before trying OpenF1 again for a session, by its last answer (errors: OPENF1_RETRY_ERROR).
+OPENF1_RETRY = {"no data": 6 * 3600.0, "not over": 5 * 60.0, "stored": 0.0, "ok": 0.0}
+OPENF1_RETRY_ERROR = 10 * 60.0
+# Sources that are complete in themselves: nothing captured live may append to them.
+FINAL_SOURCES = ("archive", "openf1")
 
 
 @dataclass(frozen=True)
@@ -77,6 +90,10 @@ class TimingSettings:
     static_base: str = STATIC
     schedule_url: str = OPENF1_SESSIONS
     live_base: str = livefeed.BASE
+    openf1: bool = True  # rebuild uncaptured sessions from OpenF1
+    openf1_base: str = timing_openf1.BASE
+    openf1_pace: float = 0.5  # seconds between OpenF1 requests (its free tier is rate limited)
+    openf1_retry: float = 2.0  # first backoff after a 429/5xx, doubling
 
     @classmethod
     def from_env(cls) -> TimingSettings:
@@ -88,6 +105,7 @@ class TimingSettings:
             archive_days=float(env("FONE_TIMING_ARCHIVE_DAYS", "3")),
             keep_days=float(env("FONE_TIMING_KEEP_DAYS", "30")),
             max_loaded=int(env("FONE_TIMING_MAX_LOADED", "4")),
+            openf1=env("FONE_TIMING_OPENF1", "1") not in ("0", "false", "no"),
         )
 
 
@@ -183,8 +201,8 @@ class CaptureWriter:
         self.dir = store.dir(key)
         meta = store.meta(key) or {}
         self.t0: float | None = meta["t0"] if meta.get("source") == "live" else None
-        # Once the archive is installed nothing may append to its directory.
-        self.closed = meta.get("source") == "archive"
+        # Once the archive (or an OpenF1 rebuild) is installed nothing may append to its directory.
+        self.closed = meta.get("source") in FINAL_SOURCES
         self._files: dict[str, Any] = {}
         self._lock = threading.Lock()
 
@@ -291,6 +309,11 @@ class TimingService:
         self._corner_tasks: dict[int, asyncio.Task] = {}
         self._pruned_at = -1e18
         self._fetch_sem: asyncio.Semaphore | None = None
+        self._openf1_sem: asyncio.Semaphore | None = None
+        self._openf1: dict[int, _Attempt] = {}  # last OpenF1 answer per session
+        self._openf1_busy: set[int] = set()  # being rebuilt from OpenF1, or waiting their turn
+        self._fills: dict[int, _Attempt] = {}  # OpenF1's car positions for a capture that had none
+        self._fill_tasks: dict[int, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self.clock = time.time  # live capture's notion of now (tests replay old sessions)
@@ -303,7 +326,8 @@ class TimingService:
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
-        tasks = [t for t in (self._task, *self._captures.values(), *self._fetching.values()) if t]
+        tasks = [t for t in (self._task, *self._captures.values(), *self._fetching.values(),
+                             *self._fill_tasks.values()) if t]
         for t in tasks:
             t.cancel()
         if tasks:
@@ -382,10 +406,11 @@ class TimingService:
             if not (live_window or archive_window):
                 continue
             meta = self.store.meta(sess.key) or {}
-            archived = meta.get("source") == "archive"
-            if live_window and not archived and not meta.get("ended") and sess.key not in self._captures:
+            source = meta.get("source")
+            if live_window and source not in FINAL_SOURCES and not meta.get("ended") and sess.key not in self._captures:
                 captures.append(sess.key)
-            if not archive_window or (archived and meta.get("complete")) or sess.key in self._fetching:
+            # (an OpenF1 rebuild still gets the archive, should F1 ever serve it again)
+            if not archive_window or (source == "archive" and meta.get("complete")) or sess.key in self._fetching:
                 continue
             last = self._attempts.get(sess.key)
             interval = 5 * 60 if since_end < 3 * 3600 else 30 * 60
@@ -582,8 +607,8 @@ class TimingService:
     def _finish_download(self, key: int, path: str, staged: Path, got: dict) -> str:
         complete = got["status"] in (None, "Complete")
         current = self.store.meta(key) or {}
-        if not complete and current.get("source") == "live":
-            return "partial"  # keep the capture until the archive is whole
+        if not complete and current.get("source") in ("live", "openf1"):
+            return "partial"  # keep the capture (or rebuild) until the archive is whole
         info = got["info"]
         self.store.write_meta(key, {
             "key": key, "source": "archive", "t0": got["t0"], "path": path, "complete": complete,
@@ -610,9 +635,137 @@ class TimingService:
             result = await self.fetch_archive(key)
             if result == "ok" and capture:
                 capture.cancel()  # Ends never came; the archive supersedes the capture
+            elif result in ARCHIVE_GONE and self._openf1_due(key):
+                self._openf1[key] = _Attempt(time.time(), await self.fetch_openf1(key))
             self._attempts[key] = _Attempt(time.time(), result)
         finally:
             self._fetching.pop(key, None)
+
+    def _openf1_due(self, key: int) -> bool:
+        if not self.settings.openf1 or key in self._captures or self.store.meta(key):
+            return False  # never over anything stored: a capture, the archive, an earlier rebuild
+        last = self._openf1.get(key)
+        if last is None:
+            return True
+        wait = OPENF1_RETRY.get(last.result, OPENF1_RETRY_ERROR)
+        return time.time() - last.at >= wait
+
+    # ---- OpenF1
+    async def fetch_openf1(self, key: int) -> str:
+        """Rebuild a session from OpenF1 and install it, unless something is stored for it.
+        Returns ok | stored | not over | no data | error: ..."""
+        if self._openf1_sem is None:
+            self._openf1_sem = asyncio.Semaphore(1)
+        self._openf1_busy.add(key)
+        try:
+            async with self._openf1_sem:  # one session at a time: a race is ~35 requests, ~100 MB
+                if self.store.meta(key):
+                    return "stored"
+                sess = self.schedule.get(key)
+                if sess and time.time() < sess.end + timing_openf1.SETTLE_SECONDS:
+                    return "not over"
+                started = time.monotonic()
+                api = timing_openf1.OpenF1(self._client(), self.settings.openf1_base, pace=self.settings.openf1_pace,
+                                           retry=self.settings.openf1_retry)
+                tables = await timing_openf1.fetch(api, key, time.time())
+                if isinstance(tables, str):
+                    return tables
+                staged = self.store.staging(key)
+                try:
+                    meta = await asyncio.to_thread(timing_openf1.build, tables, staged)
+                    result = await asyncio.to_thread(self._install_openf1, key, staged, meta)
+                finally:
+                    if staged.exists():
+                        shutil.rmtree(staged, ignore_errors=True)
+                log.info("timing %s %s rebuilt from OpenF1 (%s): %d requests, %.1f MB in %.0f s", key,
+                         meta.get("name"), result, api.requests, api.bytes / 1e6, time.monotonic() - started)
+                return result
+        except (httpx.HTTPError, timing_openf1.OpenF1Error, ValueError, KeyError, TypeError, OSError) as e:
+            log.warning("OpenF1 %s: %s", key, e)
+            return f"error: {e}"
+        finally:
+            self._openf1_busy.discard(key)
+
+    def _has_positions(self, key: int) -> bool:
+        try:
+            return (self.store.dir(key) / f"{POSITION_TOPIC}.jsonStream").stat().st_size > 0
+        except OSError:
+            return False
+
+    def _kick_positions(self, key: int) -> None:
+        """From any thread: a finished capture with no car positions at all (nobody relayed
+        them from F1 TV) gets OpenF1's, unless tried lately. Nothing else in it is touched."""
+        loop, last = self._loop, self._fills.get(key)
+        if loop is None or not self.settings.openf1 or key in self._fill_tasks or key in self._captures:
+            return
+        if last and time.time() - last.at < OPENF1_RETRY.get(last.result, OPENF1_RETRY_ERROR):
+            return
+        if self._has_positions(key):
+            return
+        meta = self.store.meta(key) or {}
+        if meta.get("source") != "live" or not meta.get("ended"):
+            return
+        self._fills[key] = _Attempt(time.time(), "downloading")
+        try:
+            loop.call_soon_threadsafe(self._spawn_fill, key)
+        except RuntimeError:
+            pass  # loop closed: shutting down
+
+    def _spawn_fill(self, key: int) -> None:
+        if key not in self._fill_tasks:
+            self._fill_tasks[key] = asyncio.create_task(self._fill_task(key))
+
+    async def _fill_task(self, key: int) -> None:
+        try:
+            self._fills[key] = _Attempt(time.time(), await self.fill_positions(key))
+            if self._fills[key].result == "ok":
+                self._track_miss.pop(self._meeting(key), None)  # the map can be drawn now
+        finally:
+            self._fill_tasks.pop(key, None)
+
+    async def fill_positions(self, key: int) -> str:
+        """Add OpenF1's car positions to a finished live capture that has none.
+        Returns ok | has positions | not a finished capture | not over | no data | error: ..."""
+        if self._openf1_sem is None:
+            self._openf1_sem = asyncio.Semaphore(1)
+        try:
+            async with self._openf1_sem:
+                meta = self.store.meta(key) or {}
+                if meta.get("source") != "live" or not meta.get("ended") or key in self._captures:
+                    return "not a finished capture"
+                if self._has_positions(key):
+                    return "has positions"
+                api = timing_openf1.OpenF1(self._client(), self.settings.openf1_base, pace=self.settings.openf1_pace,
+                                           retry=self.settings.openf1_retry)
+                tables = await timing_openf1.fetch_positions(api, key, time.time())
+                if isinstance(tables, str):
+                    return tables
+                lines = await asyncio.to_thread(timing_openf1.position_lines, tables)
+                result = await asyncio.to_thread(self._write_positions, key, lines)
+                log.info("timing %s: %d lines of car positions from OpenF1 (%s)", key, len(lines), result)
+                return result
+        except (httpx.HTTPError, timing_openf1.OpenF1Error, ValueError, KeyError, TypeError, OSError) as e:
+            log.warning("OpenF1 positions for %s: %s", key, e)
+            return f"error: {e}"
+
+    def _write_positions(self, key: int, lines: list[tuple[float, str]]) -> str:
+        with self._key_lock(key):  # browser uploads go through the same writer under this lock
+            if (self.store.meta(key) or {}).get("source") != "live" or self._has_positions(key):
+                return "has positions"
+            writer = self._writer(key)
+            for utc, payload in lines:
+                writer.write(POSITION_TOPIC, payload, utc)
+        return "ok"
+
+    def _install_openf1(self, key: int, staged: Path, meta: dict) -> str:
+        with self._key_lock(key):
+            if self.store.meta(key):
+                return "stored"  # a capture or the archive got there first
+            self.store.write_meta(key, {"key": key, "source": "openf1", "complete": True, "fetched": time.time(),
+                                        "builder": timing_openf1.BUILDER, **meta}, directory=staged)
+            self.store.install(key, staged)
+            self._evict(key)
+        return "ok"
 
     def _kick_fetch(self, key: int) -> None:
         """From any thread: fetch the archive soon, unless tried within retry_seconds."""
@@ -673,6 +826,15 @@ class TimingService:
         if key in self._captures:
             return "waiting for the live timing feed"
         self._kick_fetch(key)
+        if key in self._openf1_busy:
+            return "downloading timing from OpenF1"
+        rebuilt = self._openf1.get(key)
+        if rebuilt is not None and rebuilt.result not in ("ok", "stored"):
+            if rebuilt.result == "no data":
+                return "no timing data for this session"  # nowhere: OpenF1 hasn't it either
+            if rebuilt.result == "not over":
+                return "timing comes from OpenF1 half an hour after the session"
+            return f"timing unavailable (OpenF1: {rebuilt.result})"
         last = self._attempts.get(key)
         if last is None or last.result == "downloading" or key in self._fetching:
             return "downloading the timing archive"
@@ -694,7 +856,10 @@ class TimingService:
         if tl is None:
             return {"cars": {}, "available": False, "reason": self._missing_reason(key)}
         t_to = min(t_to, t_from + MAX_POSITION_WINDOW)
-        return {"cars": tl.positions(t_from, t_to) if t_to >= t_from else {}}
+        cars = tl.positions(t_from, t_to) if t_to >= t_from else {}
+        if not cars:
+            self._kick_positions(key)
+        return {"cars": cars}
 
     def _meeting(self, key: int) -> int | None:
         meta = self.store.meta(key) or {}
@@ -717,13 +882,15 @@ class TimingService:
             pass
         if time.time() - self._track_miss.get(meeting, -1e18) < 60:
             return {"available": False, "reason": "no car positions for this weekend yet"}
-        # This session first, then the rest of the weekend (archives first, newest first).
+        # This session first, then the rest of the weekend (archives and rebuilds, which have
+        # positions, first, newest first).
         siblings = [k for k in self.store.keys() if k != key and self._meeting(k) == meeting]
-        siblings.sort(key=lambda k: ((self.store.meta(k) or {}).get("source") != "archive", -k))
+        siblings.sort(key=lambda k: ((self.store.meta(k) or {}).get("source") not in FINAL_SOURCES, -k))
         timelines = [tl for k in [key, *siblings] if (tl := self.timeline(k)) is not None]
         found = track_outline(timelines) if timelines else None
         if not found:
             self._track_miss[meeting] = time.time()
+            self._kick_positions(key)
             for s in sorted(self.schedule.values(), key=lambda s: -s.start):  # fetch the weekend's archives
                 if s.meeting == meeting and s.end < time.time() and not self.store.meta(s.key):
                     self._kick_fetch(s.key)
@@ -788,7 +955,7 @@ class TimingService:
         """Decoded Position.z batches from the browser -> the session's Position.z stream,
         re-encoded exactly like the archive so both load the same way."""
         meta = self.store.meta(key) or {}
-        if meta.get("source") == "archive":
+        if meta.get("source") in FINAL_SOURCES:  # has its own positions: the extension stops relaying
             return {"ok": True, "stored": 0, "reason": "archived"}
         clean = []
         for m in messages[:MAX_UPLOAD_MESSAGES]:
@@ -825,6 +992,9 @@ class TimingService:
             "schedule": [{"key": s.key, "name": s.name, "meeting": s.meeting, "start": s.start, "end": s.end}
                          for s in upcoming],
             "attempts": {k: {"at": a.at, "result": a.result} for k, a in self._attempts.items()},
+            "openf1": {k: {"at": a.at, "result": a.result} for k, a in list(self._openf1.items())},
+            "rebuilding": sorted(self._openf1_busy),
+            "positions": {k: {"at": a.at, "result": a.result} for k, a in list(self._fills.items())},
         }
 
 

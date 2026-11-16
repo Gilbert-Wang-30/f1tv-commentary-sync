@@ -235,9 +235,10 @@ async def main():
               const lit = (id) => { const c = document.querySelector(`#${id} canvas.shot`); if (!c || !c.width) return 0;
                 const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0;
                 for (let i = 0; i < d.length; i += 4 * 97) if (d[i] + d[i + 1] + d[i + 2] > 60) n++; return n; };
-              return { shot: document.body.classList.contains('shot'), layout: __dash.snapshot().layout,
+              const s = __dash.snapshot();
+              return { shot: document.body.classList.contains('shot'), layout: s.layout, found: s.shot, btn: s.srcBtn,
                 tower: lit('tower'), cond: lit('cond'), map: lit('map') }; }""") if dash else None
-            if got and got["shot"] and got["tower"] > 50 and got["map"] > 5 and got["cond"] > 5:
+            if got and got["shot"] and got["tower"] > 50 and got["map"] > 5 and got["cond"] > 5 and (got.get("found") or {}).get("bar", 0) >= 5:
                 break
             await asyncio.sleep(0.5)
         box = await page.evaluate("() => { const r = document.querySelector('div.video-grid').getBoundingClientRect(); return [r.width, innerWidth]; }")
@@ -253,11 +254,22 @@ async def main():
             await asyncio.sleep(2)
         E.check(got and got["shot"] and got["layout"] == "L" and got["tower"] > 50 and got["map"] > 5 and got["cond"] > 5 and box[0] / box[1] > 0.7,
                 f"📊 no timing for the session: the usual stats, each panel cut from the streamer's screen ({json.dumps(got)}, player {box[0] / box[1]:.0%} wide)")
+        f = (got or {}).get("found") or {}
+        E.check(f.get("kind") == "columns" and f.get("cols") == 2 and f.get("rows") == 10 and f.get("map") and f.get("bar", 0) >= 5,
+                f"📊 their screen read as it is: the overview's two columns of ten, the map's window, the session bar's pieces ({json.dumps(f)})")
+        b = (got or {}).get("btn") or {}
+        E.check(not b.get("hidden") and b.get("on") and b.get("disabled"), f"📊 the switch says it's their screen, and can't go back without timing of fone's own ({json.dumps(b)})")
         await page.evaluate(f"() => {E.PANEL}.getElementById('stats').click()")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("cuts") is not None, 120, "the repeats found")
         E.check(st["vod"]["cuts"] >= 7, f"the replay's ~5 s repeats found: {st['vod']['cuts']}")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.15, 30, "still in step after the repeats")
         E.check(True, f"still in step with the repeats cut: {placed(st) * 1000:+.0f} ms")
+        # ⟳ resync: found again by sound at once (the first sure match), and still in step
+        await page.evaluate(f"() => {E.PANEL}.getElementById('resync').click()")
+        st = await E.wait_status(page, lambda s: ((s.get("sound") or {}).get("resync")) in ("looking", "done"), 10, "resync looking")
+        st = await E.wait_status(page, lambda s: ((s.get("sound") or {}).get("resync")) == "done", 60, "resynced")
+        st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.15, 30, "in step after the resync")
+        E.check(True, f"⟳ resync: found by sound again, in step: {placed(st) * 1000:+.0f} ms")
 
         # ---- a seek within the replay: there at once ----
         await page.evaluate("() => tmSeek(contentPos() + 120)")

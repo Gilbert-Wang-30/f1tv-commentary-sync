@@ -115,6 +115,25 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.ok(cuts.every((c) => Math.abs(c.d - 196 * pkt) < 1e-3 && !c.assumed));
   });
 
+  await test('a repeat away from the joins (a whole segment twice), found in a window ahead of playing', async () => {
+    // one page; at packet K the 235 packets before it (5.013 s, one ~5 s segment) come again
+    const r = lcg(21), K = 14000, L = 235;
+    const src = Array.from({ length: 28000 }, () => Uint8Array.from({ length: 80 + Math.floor(r() * 200) }, () => Math.floor(r() * 256)));
+    const P = [...src.slice(0, K), ...src.slice(K - L, K).map((p, i) => (i < 4 ? Uint8Array.of(...p, 7) : p)), ...src.slice(K)];
+    const rep = { bvid: 'BVseg', pages: [{ page: 1, dur: P.length * pkt, initInfo: { fmt: { rate: 48000 } } }], cuts: [] };
+    const frames = async (i, t0, t1) => {
+      const out = [];
+      for (let k = Math.max(0, Math.floor(t0 / pkt)); k < Math.min(P.length, Math.ceil(t1 / pkt)); k++) out.push({ t: k * pkt, data: Uint8Array.of(0, 0, 0, 0, 0, 0, 0, ...P[k]) });
+      return out;
+    };
+    const c = await V.scanRepeat(rep, frames, K * pkt - 30, K * pkt + 30, []);
+    assert.ok(c && c.ahead, JSON.stringify(c));
+    assert.ok(Math.abs(c.d - L * pkt) < 1e-3);
+    assert.ok(Math.abs(c.m - K * pkt) < 0.2, `${c.m} vs ${K * pkt}`); // (cut where the copy starts, give or take the few packets that differ)
+    assert.equal(await V.scanRepeat(rep, frames, K * pkt - 30, K * pkt + 30, [{ m: c.m, d: c.d }]), null); // (known)
+    assert.equal(await V.scanRepeat(rep, frames, 60, 120, []), null); // (none there)
+  });
+
   await test('the replay on the wall clock: the repeats skipped, its pages one after the other', () => {
     const rep = { bvid: 'BV1', title: 'x', live: 'race', pages: [{ page: 1, dur: 3600 }, { page: 2, dur: 1000 }], cuts: [{ m: 1800, d: 4 }, { m: 3600, d: 4 }] };
     const tl = V.timeline(rep, 1000);

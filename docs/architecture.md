@@ -175,12 +175,30 @@ after the display zone was checked), then the channel's latest tweak on a compar
 Each one is captured live over SignalR Core (`livefeed.py`, anonymous SSE transport) from
 15 min before the scheduled start until `SessionStatus: Ends` (safety stop 4 h after the
 start), and replaced by the static archive once F1 publishes it (~20 min after the session;
-403 until then). Since 2026-10-18 the archive answers 401 to everyone: a session has timing
-only if the server captured it live (`FONE_TIMING_RECORD`), and nothing stored is pruned while
-the archive refuses (`maybe_prune` asks the year index first; when it answers, sessions stored
-more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and fetched again on demand). Both
-are stored in the archive's format, one `<Topic>.jsonStream` per topic (`HH:MM:SS.mmm<json>`
-lines, offsets from the session's `t0`), so one loader serves both.
+403 until then). Since 2026-10-18 the archive answers 401 to everyone, so a session the server
+didn't capture live (`FONE_TIMING_RECORD`) is rebuilt from OpenF1's historical API instead
+(`timing_openf1.py`, meta `source: "openf1"`; `FONE_TIMING_OPENF1=0` turns it off): asked for by
+the dashboard (any past session, any year: `/v1/sessions?session_key=` for one outside the
+cached calendar) or by the plan for one that just ended uncaptured, once it has been over for
+30 min; never over a capture or the archive (a complete archive, should F1 serve it again,
+still replaces a rebuild). OpenF1's tables (drivers, laps, intervals, position, stints, pit,
+race_control, weather, session_result, and each car's location within the session's window:
+~35 requests, one at a time 0.5 s apart, backing off on 429/5xx; a race ~100 MB down, ~12 MB
+stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
+feed would have shown it (a lap's time when the lap ends, a stint's tyre at the pit exit, the
+deleted laps after race control's message, Retired once the car has stopped), so the state at
+`t` never shows the future. Checked against the server's real archives of the 2026 Singapore
+practice, qualifying and race at 20 s steps: positions 100 %, qualifying and practice bests,
+gaps and last laps 100 %; what differs are the feed's own lags (the compound UNKNOWN for a few
+seconds after a pit exit, tyre ages batched a little late). A finished capture with no car
+positions (nobody relayed them from F1 TV) gets OpenF1's when the map asks. Nothing stored is
+pruned while the archive refuses (`maybe_prune` asks the year index first; when it answers,
+sessions stored more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and fetched again
+on demand). All are stored in the archive's format, one `<Topic>.jsonStream` per topic
+(`HH:MM:SS.mmm<json>` lines, offsets from the session's `t0`), so one loader serves them all.
+Each row also carries `grid` (its `GridPos`, races) and `stints` (the car's tyre sets, oldest
+first: `{compound, laps, new}`; a pass through the pit lane on the same tyres folded into the
+set it continues), for the tower's places gained and tyre history.
 Anonymous access has everything except car positions; those come from the viewer's own F1 TV
 login through `POST /positions` (the server never sees the token). `docs/f1-data-sources.md`
 has the endpoints and formats.
@@ -465,7 +483,14 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   spectra whitened, 150–3600 Hz) gives one sharp peak where a quiet copy lines up; its height in
   standard deviations is how sure (`score`: ~4-5 with no copy, 10-30 for one 10-20 dB under the
   voice in the unit tests). A match counts at score ≥ 8, 1.6× the runner-up, not at the window's
-  edge, and is taken when two of the last four agree within 80 ms.
+  edge, and is taken when two of the last four agree within 80 ms. A sure match more than 1 s
+  from where it was brings the next look forward to `SND.SOON` (5) s instead of 15, so a stream
+  that skipped or repeated a few seconds is followed within ~20 s (2026-11-16: a repeated
+  segment of a Bilibili replay, followed only ~50 s later). **⟳ resync sound** (the Sync row,
+  `R`: `{type: 'resync'}`) looks again at once, widely, every `SND.QUICK` (3) s for up to
+  `SND.RESYNC_MAX` (90) s, and takes the first sure match (jumped to unless it's within 50 ms);
+  by hand too (found once, then the delay it set is the user's to nudge). A Bilibili replay not
+  placed yet is looked for again. The panel says resyncing / resynced (`sound.resync`).
 - **Getting there unheard** (`sndSteer`): the lock's offset is brought to the match plus your
   bias by a speed eased off 1× and back: `v` heads for `sign(err)·min(2 %, √(2·0.001·|err|))`,
   changing by at most 0.1 % a second (so it stops right there: 0.6 s took 78 s in the e2e). The
@@ -539,7 +564,15 @@ section):
   1-2 packets, reading 3 MB. The cuts are kept per replay. `FoneVod.timeline` puts the replay on
   the wall clock from its first sample's time `T0`, the cuts as gaps in `m` (pieces, files: what a
   server's `/api/timeline` gives), so the replay's own `m` plays and the repeats are skipped by
-  the usual wall-time mapping.
+  the usual wall-time mapping. Bilibili's recording also has a whole ~5 s segment twice now and
+  then, anywhere (the 2026 Japanese GP race's replay, page 1 at 1:25:42: the same 235 packets
+  again, 5.013 s; the commentary was heard twice and then ran 5 s late until sync by sound moved
+  it, ~50 s on): `vodScan` reads the replay `VOD.SCAN` (60) s at a time ahead of the moment
+  playing (`VOD.AHEAD`, 75 s; windows overlapping by 15 s; from where it plays after a seek) and
+  `FoneVod.scanRepeat` looks for any repeat of 40-640 packets there that isn't a known cut; one
+  found is added (`ahead: true`, kept with the joins': `vodCuts|<bvid>`, `joins: false` until the
+  joins' search is done) and the replay put on its timeline again with the moment playing where it
+  was, before the repeat is heard.
 - **Where this moment is.** Found by sound: the newest 25 s of F1 TV's sound heard (sync by
   sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
   stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
@@ -569,19 +602,38 @@ section):
   plays the replay's own picture (720p H.264, `FoneVod.loadVideo`, the same byte-range playlist,
   hls.js in `streamer.js`) at the commentary's `m`: their screen has their timing tower and map,
   which fone has no other source for so old (F1's archive refuses).
-- **Stats without timing.** For a video with no timing session, or one the server has no timing
-  for (`available: false`), the dashboard keeps its own layout and cuts the streamer's screen into
-  it (their stream is their timing screen: MultiViewer's tower in two columns of ten, race control
-  under it, the session bar on top, the map at the right; the same on the 2025 replays checked).
-  `streamer.html?mode=box` plays it in a frame of the dashboard's own (under F1 TV's player box,
-  on screen so it's decoded); each animation frame `drawShot` draws the parts (`SHOT`, in
-  1920×1080 units) into canvases over the tower, conditions and map panels: the tower's two columns
-  one above the other (slimmed to position, laps and gaps, tyre where that comes out larger), race
-  control under them where the column has room; the session bar in two lines, cut after its
-  track-status box (found every 2 s: the widest run of columns on a coloured ground; its text moves
-  with the clock and lap count) and the weather to the gap before the icons; the map. In the
-  column arrangement the tower takes all but the bar and a third of the height for the map. The
-  engine sends the dashboard its clock for such videos too.
+- **Their screen, cut up.** The dashboard can show the streamer's own timing screen instead of
+  fone's timing, in its own panels: where fone has no timing for the video (no timing session, or
+  `available: false`), and whenever asked for (the switch in the map's top-right corner, or `T`:
+  `chrome.storage.local.statsSource` 'theirs' / 'ours'). Their stream is their timing screen, a
+  live-timing app whose layout changes from one session to the next (16 replays of 2025-26
+  checked: the overview tab's two columns of driver rows, 10 a column in 2025 and 11 in 2026, at
+  50 px pitch on a 1080p screen; the race tab's one wide table of 22 at 31.6 px, with a header
+  line; the map's window anywhere right of it and of any size, sometimes a lap counter instead;
+  the whole screen a few px lower and 1% larger in one), so nothing is cut at a fixed place.
+  `streamer.html?mode=box` plays the picture in a frame of the dashboard's own (under F1 TV's
+  player box, on screen so it's decoded); every 1.5 s the picture is drawn at 960×540 and read by
+  `shotlayout.js` (`FoneShot.detect`): every row starts with the driver's tag, a box in the team's
+  colour (white and grey for some teams), so columns of tag-tall runs of bright pixels repeating
+  at a steady pitch are the table's tag columns (a column of timing pills is all one colour; a
+  tyre's ring or a gauge's arc isn't solid; the mini-sectors' bars are too short); the rows' own
+  ground gives its right edge (it drops to the black or darker grey around the app's panels); the
+  season's car count (22 from 2026, 20 before, from the clock) how many rows there are, dimmed
+  tags of cars out included; the map's window is the largest connected line drawing right of
+  the table in the upper part of the screen (ads there are solid pictures: a drawing filling more
+  than half its box isn't the map), padded for the corner numbers. A new layout is taken once two
+  looks agree, a moved map window likewise. Each animation frame `drawShot` draws into canvases
+  over the tower, conditions and map panels: the table's rows (both columns one above the other;
+  of the variants, the whole row, then without the race tab's rpm/speed/gear/pedals or the
+  overview's gauges and mini-sectors, then the least, a narrower one only where it comes out 25%
+  larger), race control under them where there's room; the session bar, its strip found above the
+  table and read at the picture's own px (`FoneShot.bar`: the name over the clock and lap count,
+  the track-status box, the widest run of columns on a coloured ground past the flag, each weather
+  item, a label over its value with a dark line between them that the app's icons after them go
+  through), its pieces laid out in rows as large as the panel takes them (`FoneShot.pack`: in
+  the user's onboards layout 1.8× the old two lines); the map's window, as large as it fits. In
+  the column arrangement the tower takes all but the bar and up to a third of the height for the
+  map (its window's shape). The engine sends the dashboard its clock for such videos too.
 - **Its danmaku.** The live chat Bilibili put on the replay (`x/v1/dm/list.so?oid=<cid>`, XML,
   each `<d p="progress,mode,size,colour,…,uid hash,…">`, `FoneVod.parseDanmaku`), each put on the
   replay's wall clock by its page and progress (`vodDanmaku`): the 弹幕 overlay asks the engine

@@ -473,6 +473,7 @@ def _row(num: str, ln: dict, drv: dict, app_ln: dict, kind: str, part: int | Non
     pits = ln.get("NumberOfPitStops")
     colour = drv.get("TeamColour")
     first, last_name = drv.get("FirstName"), drv.get("LastName")
+    grid = _num(app_ln.get("GridPos"))  # races only: "1".."22", pit lane starters at the back
     return {
         "pos": pos if isinstance(pos, int) else None,
         "num": num,
@@ -494,7 +495,25 @@ def _row(num: str, ln: dict, drv: dict, app_ln: dict, kind: str, part: int | Non
         "pitOut": bool(ln.get("PitOut")),
         "retired": bool(ln.get("Retired")),
         "knockedOut": bool(ln.get("KnockedOut")),
+        "grid": int(grid) if grid and grid >= 1 else None,
+        "stints": _tyre_sets(stints),
     }
+
+
+def _tyre_sets(stints: list[dict]) -> list[dict]:
+    """The car's tyre sets in order: a stint the feed opens for a pass through the pit lane on
+    the same tyres (TyresNotChanged, same compound: a drive-through, a pit lane start) only
+    moves that set's age on. (A new stint's compound is UNKNOWN for a few seconds: not folded.)"""
+    out: list[dict] = []
+    for s in stints:
+        compound = str(s.get("Compound") or "").upper()
+        compound = compound if compound in COMPOUNDS else "UNKNOWN"
+        laps = int(_num(s.get("TotalLaps")) or 0)
+        if out and str(s.get("TyresNotChanged")) == "1" and compound == out[-1]["compound"] != "UNKNOWN":
+            out[-1]["laps"] = max(out[-1]["laps"], laps)  # the feed may stop counting either
+            continue
+        out.append({"compound": compound, "laps": laps, "new": str(s.get("New")).lower() == "true"})
+    return out
 
 
 def _remaining(clk: dict, t: float) -> str | None:

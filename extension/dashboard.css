@@ -42,7 +42,8 @@ body.iframe { pointer-events: none; user-select: none; }
 .thead { height: 1.55em; box-sizing: border-box; align-items: end; padding-bottom: .3em; border-bottom: 1px solid var(--line); }
 .thead span { font-size: .6em; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); text-align: right; overflow: hidden; }
 .thead span.c { text-align: center; }
-.tower.no-pits .pits, .tower.no-int .int { display: none; } /* narrow column: towerColumns */
+.tower.no-diff .diff, .tower.no-int .int { display: none; } /* narrow column: towerColumns */
+.thead span.tyh { text-align: left; padding-left: .1em; }
 .thead span.ttl { grid-column: 1 / span 2; text-align: left; padding-left: .25em; font-size: .72em; font-weight: 800; letter-spacing: .06em; color: var(--fg); }
 .tbody { position: relative; }
 .row {
@@ -66,6 +67,20 @@ body.iframe { pointer-events: none; user-select: none; }
 .last.ob, .best.ob { color: var(--purple); }
 .best { color: #d7dbe2; }
 .last.long, .best.long { font-size: .8em; letter-spacing: -.02em; }
+/* places gained since the start, as the streamer's screen shows them */
+.diff { text-align: center; font-size: .86em; font-weight: 700; color: var(--faint); }
+.diff.up { color: var(--green); } .diff.down { color: #ff5a4e; }
+/* the tyre history, newest first: the one it's on (its age), then the ones before (their laps) */
+.tyres { display: flex; align-items: center; gap: .42em; }
+.st { display: flex; align-items: center; gap: .18em; }
+.st .n { font-size: .82em; color: #c9ced7; font-variant-numeric: tabular-nums; min-width: 1.1em; }
+.st.old { opacity: .55; }
+.st.old .ico { width: 1.05em; height: 1.05em; }
+/* a pit or out mark in the last lap's cell (as the streamer's screen has it) */
+.last .mk { font-style: normal; font-size: .72em; font-weight: 800; letter-spacing: .05em; padding: .15em .45em; border-radius: .3em; }
+.last .mk.pit { color: var(--pit); background: rgba(80, 130, 255, .16); }
+.last .mk.pitout { color: #6fe5a0; background: rgba(49, 210, 111, .15); }
+.last .mk.ret { color: #fff; background: #d6281e; }
 .tyre { display: flex; align-items: center; gap: .28em; }
 .ico {
   flex: none; position: relative; box-sizing: border-box; width: 1.22em; height: 1.22em; border-radius: 50%;
@@ -210,6 +225,9 @@ body.iframe { pointer-events: none; user-select: none; }
 .obtog.on { color: var(--fg); background: rgba(80, 130, 255, .18); border-color: rgba(120, 160, 255, .5); }
 .obtog.on::before { background: currentColor; }
 .obtog:hover { color: var(--fg); }
+/* their timing screen or fone's own, in the map's top-right corner */
+.obtog.src { left: auto; right: 6px; }
+.obtog.src:disabled { cursor: default; opacity: .7; }
 
 /* the streamer's screen, cut up (a session with no timing: dashboard.js shotMode): each panel
    shows its part of it, over the panel's own contents */
@@ -218,3 +236,4 @@ body.shot .panel.tower > :not(canvas.shot), body.shot .panel.cond > :not(canvas.
 body.shot .panel.map > canvas:not(.shot), body.shot .panel.map > .note { visibility: hidden; }
 body.shot .panel { background: #000; }
 body.shot .panel.map > .obtog { z-index: 4; }
+body.shot .panel.map > .obtog.src { background: rgba(0, 0, 0, .55); }
