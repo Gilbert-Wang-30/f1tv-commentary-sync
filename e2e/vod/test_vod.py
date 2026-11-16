@@ -172,6 +172,33 @@ async def main():
                 f"by hand: the replay plays on where it was, a nudge moves it (delay {b['delay']} -> {st['delay']}, {placed(st) * 1000:+.0f} ms)")
         await page.keyboard.press("[")
         await sw.evaluate("chrome.storage.sync.set({soundSync: true})")
+        # 0.5×: F1 TV and the commentary at half speed, in step
+        await sw.evaluate("chrome.storage.sync.set({speed: 0.5})")
+        await E.wait_js(page, "() => window.__sdkRate()", lambda r: r == 0.5, 15, "0.5×")
+        st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.6, 30, "in step at 0.5×")
+        a0, s0 = st["audioTime"], st
+        await asyncio.sleep(4)
+        st = await E.status(page)
+        E.check(abs((st["audioTime"] - a0) / (st["at"] - s0["at"]) - 0.5) < 0.1 and abs(placed(st)) < 0.6,
+                f"0.5×: F1 TV and the commentary at half speed ({(st['audioTime'] - a0) / (st['at'] - s0['at']):.2f}×), in step ({placed(st) * 1000:+.0f} ms)")
+        await sw.evaluate("chrome.storage.sync.set({speed: 1})")
+        await E.wait_js(page, "() => window.__sdkRate()", lambda r: r == 1, 15, "1× again")
+        # frame by frame: ▸ pauses F1 TV and steps a frame on; . and , a frame on and back while paused
+        await page.evaluate(f"() => {E.PANEL}.querySelector('button[data-frame=\"1\"]').click()")
+        await asyncio.sleep(1.5)
+        pos = "() => mainVid().currentTime + window.__off"  # (exact: contentPos() is F1 TV's 0.25 s steps)
+        c1 = await page.evaluate(pos)
+        await page.keyboard.press(".")
+        c2 = await E.wait_js(page, pos, lambda c: c > c1 + 0.001, 5, "a frame on")
+        await page.keyboard.press(",")
+        c3 = await E.wait_js(page, pos, lambda c: c < c2 - 0.001, 5, "a frame back")
+        paused = await page.evaluate("() => mainVid().paused")
+        print("   seeks:", await page.evaluate("() => JSON.stringify(window.__seekCalls.slice(-3))"))
+        st = await E.status(page)
+        E.check(paused and abs((c2 - c1) - 0.02) < 0.005 and abs(c3 - c1) < 0.005 and st.get("state") == "paused",
+                f"frame by frame: paused, a frame on and back ({(c2 - c1) * 1000:+.0f} ms, {(c3 - c2) * 1000:+.0f} ms), the commentary paused with it")
+        await page.evaluate("() => mainVid().play()")
+        await E.wait_status(page, lambda s: s.get("state") == "sync", 20, "playing again")
         # the replay's own danmaku (the live chat on it), on the overlay, in step with it
         await sw.evaluate("chrome.storage.sync.get('danmaku').then((s) => chrome.storage.sync.set({danmaku: {...(s.danmaku || {}), on: true}}))")
         n = await E.wait_js(page, "() => document.getElementById('fone-danmaku')?.shadowRoot?.querySelectorAll('.dm').length || 0",

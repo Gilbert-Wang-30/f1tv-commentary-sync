@@ -324,13 +324,14 @@ Open any F1 TV video. The fone panel sits top-right:
 |---|---|
 | **delay −5 … +5** | nudge the commentary, in steps of 5, ½, 0.1 and 0.02 s. Hear the reaction **after** the action? `+`. Before it (spoilers)? `−`. Saved per video on the server; live from the stream pulled into the browser (without a server, or a server's Bilibili channel live), per stream in this browser. The fine steps are for nulling an echo against F1 TV's own sound by ear, where the engine then holds the alignment to a millisecond for hours. |
 | 🔊 and the slider | mute and volume of the commentary |
-| **1× 1.5× 2×** | replay speed (live stays 1×) |
+| **0.5× 1× 1.5× 2×** and **◂ ▸** | replay speed (live stays 1×); ◂ ▸ pause F1 TV and step it a frame back / on, to watch a move frame by frame (the frame's length measured from the picture) |
 | **📊 Stats** and **⧉** | the stats beside the video, or in a window of their own |
 | **📺 Streamer** and **⧉** | the streamer's picture in step with the commentary: a window over F1 TV (move it by its bar, size it by its corner), or in a window of its own |
-| **↗ Live page** | the streamer's live page on their platform, in a new tab |
+| **↗ Live page** | the streamer's live page on their platform, in a new tab (on a Bilibili replay: that replay, at the moment playing) |
 | **弹 弹幕** and **⚙** | danmaku on/off and their settings |
 | **F1 TV: Track FX / English Int.** | F1 TV's own sound under the commentary, picked on every video (F1 TV starts each one on its own default). *Track FX* (default): its commentary-free track, the circuit's sound (team radio isn't filled in yet). *English Int.*: its international English commentary (the world feed's), not F1 TV's own *English F1 Live*. A track you pick in F1 TV's own menu is kept for that video. To silence F1 TV, use its own mute button: fone holds that through every video, channel switch and page load until you unmute it there, with the button or by dragging F1 TV's volume up (fone turns F1 TV's sound down itself rather than muting F1 TV's player, so sync by sound goes on hearing it; the panel says "muted with F1 TV's button"). Live, a mute F1 TV makes itself is held the same way until F1 TV sets up its player afresh (the next video), the panel saying "muted in F1 TV" |
 | **Subtitles: on / off** | F1 TV's own subtitles (default off; kept and handed to F1 TV's page, not switched in the player yet) |
+| **Picture: auto / best** | how sharp F1 TV's picture is (what its player is playing, e.g. 1080p50, and the feed's sharpest); *best* pins its sharpest quality (4K where F1 TV has it for you), *auto* leaves it to F1 TV, which adapts to your connection. fone also turns on the Quality list in F1 TV's own ⚙ menu |
 | *Anticipate reactions* | with a measured delay: play the commentary 0.9 s early, so reactions land on the action instead of after it (off by default: with it on, the streamer's pass-through F1 TV sound runs 0.9 s ahead of the picture) |
 | *Pause video when ahead of live commentary* | live auto-hold. Without a server, when the stream stops arriving (the streamer offline, or nothing for 30 s) the panel says so and F1 TV is let go rather than held |
 | **⏭ Go live** | F1 TV and the commentary to the freshest moment both have (also `L`, or F1 TV's LIVE badge) |
@@ -349,7 +350,7 @@ are left as they are).
 | `]` / `[` | commentary 0.5 s sooner / later |
 | `}` / `{` | 5 s sooner / later |
 | `=` / `-` | 0.1 s sooner / later |
-| `.` / `,` | 0.02 s sooner / later |
+| `.` / `,` | 0.02 s sooner / later; while F1 TV is paused on a replay, a frame on / back |
 | `\` | mute the commentary |
 | `\|` | collapse the panel |
 | `L` | go live |

@@ -15,6 +15,7 @@
     soundSync: true, // the commentary placed by F1 TV's own sound in the stream, live and replays (offscreen.js, sync by sound)
     soundDuck: true, // ...and while it has it, F1 TV's own sound off: the stream carries it in step (no doubled sound)
     teamRadio: true, // Track FX: the team-radio messages F1 TV leaves out played after their sting (offscreen.js)
+    f1Best: false, // F1 TV's picture pinned to its sharpest quality (page.js), rather than F1 TV's own choice
     servers: self.FONE_LOCAL?.servers || [], // local.js: this install's, or none (then the settings page)
     channel: '',
     volume: 1,
@@ -30,7 +31,7 @@
     anticipate: false, // measured delay + 0.9 s: commentary a little before the picture
   };
   const sourceOf = (s) => (s.source === 'local' || s.source === 'server' ? s.source : s.servers?.length ? 'server' : 'local');
-  const SPEEDS = [1, 1.5, 2];
+  const SPEEDS = [0.5, 1, 1.5, 2];
   let settings = { ...DEFAULTS };
   let speedStallSince = 0, speedAskedAt = 0;
   let video = null;
@@ -100,7 +101,7 @@
     const a = tm.audio ? { v: tm.audio.v, cur: tm.audio.cur, kind: tm.audio.kind, auto: tm.audio.auto, manual: tm.audio.manual,
       on: tm.audio.on, fx: tm.audio.fx, err: tm.audio.err, mode: tm.audio.mode ?? null, muted: !!tm.audio.muted, own: !!tm.audio.own,
       tap: tm.audio.tap ?? null } : null;
-    return { ev: tm.eventType, r: tm.r, ob: tm.ob, obErr: tm.obErr, dm, a, subs: tm.subs ?? null, h: tm.h, nv: tm.nViews, sdk: tm.sdk };
+    return { ev: tm.eventType, r: tm.r, ob: tm.ob, obErr: tm.obErr, dm, a, subs: tm.subs ?? null, h: tm.h, nv: tm.nViews, sdk: tm.sdk, pic: tm.pic ?? null };
   }
 
   function videoState() {
@@ -163,6 +164,7 @@
     if (cid && video) push(false);
     syncPage(false);
     speedStalled();
+    watchFrames(video);
     render();
   }
 
@@ -193,13 +195,15 @@
     // F1 TV's own sound off while fone has found it in the stream (locked by sound: the stream
     // carries it in step with the commentary, so it would only be heard twice): duckOn below
     const duck = tap && settings.soundDuck !== false && duckOn;
-    const key = `${speed}|${prefer}|${subs}|${feed}|${live}|${cid}|${tap}|${duck}`;
+    const best = settings.f1Best === true;
+    const key = `${speed}|${prefer}|${subs}|${feed}|${live}|${cid}|${tap}|${duck}|${best}`;
     const t = Date.now();
     if (!force && key === lastCmd && t - lastCmdAt < 2000) return;
     lastCmd = key;
     lastCmdAt = t;
     pageCmd({ cmd: 'rate', value: speed });
     pageCmd({ cmd: 'audio', prefer, subs, feed, live, cid, tap, duck });
+    pageCmd({ cmd: 'picture', best });
   }
 
   // F1 TV's player not at the speed asked for (a replay): asked afresh every SPEED_ASK ms for as
@@ -241,6 +245,37 @@
     const next = dir > 0 ? SPEEDS.find((s) => s > cur + 1e-9) ?? SPEEDS[SPEEDS.length - 1]
       : [...SPEEDS].reverse().find((s) => s < cur - 1e-9) ?? SPEEDS[0];
     setSpeed(next);
+  }
+
+  // Frame by frame (a replay): F1 TV paused, then one frame on or back by a precise seek of its
+  // player (page.js 'frame'). The frame's length measured from the picture as it plays (its
+  // frames' media times: requestVideoFrameCallback), 20 ms (50 fps) until it has been.
+  const FRAMES = { v: null, last: null, dt: [] };
+  function watchFrames(v) {
+    if (!v || v === FRAMES.v || typeof v.requestVideoFrameCallback !== 'function') return;
+    Object.assign(FRAMES, { v, last: null, dt: [] });
+    const cb = (_, md) => {
+      if (FRAMES.v !== v) return;
+      const d = FRAMES.last == null ? null : md.mediaTime - FRAMES.last;
+      if (d > 0.005 && d < 0.1) { FRAMES.dt.push(d); if (FRAMES.dt.length > 99) FRAMES.dt.shift(); }
+      FRAMES.last = md.mediaTime;
+      v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+  }
+  const frameLen = () => (FRAMES.dt.length < 10 ? 0.02 : [...FRAMES.dt].sort((a, b) => a - b)[FRAMES.dt.length >> 1]);
+  // How sharp F1 TV's picture is now (the frames its player decodes): 1080p50, 4K, …
+  function pictureQuality() {
+    const pq = FonePlayer.isTiledmedia() ? FonePlayer.tm()?.pic : null;
+    const h = pq?.h || video?.videoHeight;
+    if (!h) return '';
+    const fps = FRAMES.dt.length >= 10 ? Math.round(1 / frameLen()) : null;
+    return `📺 ${h >= 2000 ? '4K' : `${h}p`}${fps ? fps : ''}`;
+  }
+  function stepFrame(dir) {
+    if (playKind() !== 'replay' || !video) { toast('Frame by frame works on F1 TV replays'); return; }
+    if (!video.paused) video.pause();
+    pageCmd({ cmd: 'frame', by: dir * frameLen() });
   }
 
   // Live: if you're ahead of the commentary, pause the video until it catches up.
@@ -323,13 +358,14 @@
       <div class="row" id="liveRow" hidden><button id="golive" title="F1 TV and the commentary to the freshest moment both have (L, or F1 TV's LIVE)">⏭ Go live</button><button id="relive" title="Re-anchor the commentary to its live edge, F1 TV where it is">⟲ Re-sync</button><span class="hint">L · or F1 TV's LIVE</span></div>
       <div class="hint" id="nudgeHint">Reactions come <b>after</b> the action → <b>+</b> &nbsp;·&nbsp; spoilers → <b>−</b> &nbsp;·&nbsp; keys <b>{ [ − , . = ] }</b></div>
       <div class="row"><button id="mute">🔊</button><input type="range" id="vol" min="0" max="1" step="0.05"></div>
-      <div class="row" id="speedRow" hidden><span class="lbl">Speed</span><button data-s="1">1×</button><button data-s="1.5">1.5×</button><button data-s="2">2×</button><span class="hint" id="speedInfo">keys <b>&lt; &gt;</b></span></div>
+      <div class="row" id="speedRow" hidden><span class="lbl">Speed</span><button data-s="0.5">0.5×</button><button data-s="1">1×</button><button data-s="1.5">1.5×</button><button data-s="2">2×</button><button data-frame="-1" title="Previous frame: F1 TV paused there (key , while paused)">◂</button><button data-frame="1" title="Next frame: F1 TV paused there (key . while paused)">▸</button><span class="hint" id="speedInfo">keys <b>&lt; &gt;</b></span></div>
       <div class="row" id="statsRow"><button id="stats" title="Timing, track map and conditions beside the video (key S)">📊 Stats</button><button id="statsPop" title="Open the stats in a window of their own">⧉</button>
         <button id="dm" title="The live room's 弹幕 over the picture, in step with the commentary (key D)">弹 弹幕</button><button id="dmSet" title="弹幕设置">⚙</button><span class="hint" id="dmInfo"></span></div>
       <div class="row" id="picRow"><button id="pic" title="The streamer's picture, in step with the commentary: a window over F1 TV you can move and size (key V)">📺 Streamer</button><button id="picPop" title="The streamer's picture in a window of its own">⧉</button><button id="picPage" hidden title="The streamer's live page on their platform, in a new tab">↗ Live page</button></div>
       <div class="f1" id="f1Box" hidden>
         <div class="row"><span class="lbl" title="F1 TV's own sound, under the commentary: F1 TV's mute button silences it">F1 TV</span><button data-fs="fx" title="F1 TV's commentary-free track: the circuit's sound under the commentary (team radio isn't filled in yet)">Track FX</button><button data-fs="eng" title="F1 TV's international English commentary (English Int.), not F1 TV's own (English F1 Live)">English Int.</button><span class="hint" id="f1Info"></span></div>
         <div class="row"><span class="lbl" title="F1 TV's own subtitles (kept and handed to F1 TV's page; not switched in its player yet)">Subtitles</span><button data-cc="on">on</button><button data-cc="off">off</button><span class="hint" id="ccInfo"></span></div>
+        <div class="row"><span class="lbl" title="How sharp F1 TV's picture is. auto: F1 TV's own choice (it adapts to your connection); best: its sharpest quality, pinned (F1 TV's own ⚙ menu has a Quality list too)">Picture</span><button data-pq="auto">auto</button><button data-pq="best">best</button><span class="hint" id="pqInfo"></span></div>
       </div>
       <label class="row hint" id="antRow" hidden><input type="checkbox" id="anticipate"> Anticipate reactions: commentary 0.9 s early</label>
       <label class="row hint" id="holdRow"><input type="checkbox" id="autohold"> Pause video when ahead of live commentary</label>
@@ -414,6 +450,9 @@
     $('f1Box').hidden = !FonePlayer.isTiledmedia();
     root.querySelectorAll('button[data-fs]').forEach((b) => b.classList.toggle('on', pick && b.dataset.fs === (settings.f1Sound === 'eng' ? 'eng' : 'fx')));
     root.querySelectorAll('button[data-cc]').forEach((b) => b.classList.toggle('on', b.dataset.cc === (settings.f1Subs === true ? 'on' : 'off')));
+    root.querySelectorAll('button[data-pq]').forEach((b) => b.classList.toggle('on', b.dataset.pq === (settings.f1Best === true ? 'best' : 'auto')));
+    const pq = tm?.pic;
+    $('pqInfo').textContent = [pictureQuality(), pq?.best && pq.cur !== pq.best ? `its sharpest ${pq.best}` : '', pq?.err ? pq.err : ''].filter(Boolean).join(' · ');
     // Sync: by sound (fone keeps it) or by hand (the delay as set), and how the sound stands
     const bySound = settings.soundSync !== false, sd = s.sound;
     // (by sound, fone keeps the delay: the nudges are for by hand)
@@ -434,7 +473,7 @@
     // the player not taking the speed for a while (2026-10-11: 7 minutes at 1x, silently): fone
     // keeps asking (speedStalled), the panel says so
     const stall = speedStallSince && Date.now() - speedStallSince > 20000;
-    $('speedInfo').innerHTML = stall ? '<b>F1 TV isn\'t taking the speed</b> — fone keeps asking' : 'keys <b>&lt; &gt;</b>';
+    $('speedInfo').innerHTML = stall ? '<b>F1 TV isn\'t taking the speed</b> — fone keeps asking' : 'keys <b>&lt; &gt;</b> · frames <b>, .</b> paused';
     $('speedInfo').classList.toggle('warn', !!stall);
     $('holdRow').hidden = s.lead == null;
     $('hold').hidden = !holding;
@@ -499,7 +538,7 @@
     } else {
       rows.push(['recording', s.file || '–'], ['server', s.server || '–']);
     }
-    if (video) rows.push(['player', `${FonePlayer.diag()} · id ${cid} · v${chrome.runtime.getManifest().version}`]);
+    if (video) rows.push(['player', `${FonePlayer.diag()} · picture ${video.videoWidth}×${video.videoHeight}${FRAMES.dt.length >= 10 ? ` at ${Math.round(1 / frameLen())} fps` : ''} · id ${cid} · v${chrome.runtime.getManifest().version}`]);
     const nRate = video ? rateChangesPerMin() : 0;
     if (video && (nRate || video.playbackRate !== 1)) {
       const r = video.playbackRate;
@@ -585,6 +624,7 @@
   // (a sound picked here: fone picks it, also where the settings had left F1 TV's sound to F1 TV)
   root.querySelectorAll('button[data-fs]').forEach((b) => b.addEventListener('click', () => { save({ f1Sound: b.dataset.fs, f1Pick: true }); syncPage(true); }));
   root.querySelectorAll('button[data-cc]').forEach((b) => b.addEventListener('click', () => { save({ f1Subs: b.dataset.cc === 'on' }); syncPage(true); }));
+  root.querySelectorAll('button[data-pq]').forEach((b) => b.addEventListener('click', () => { save({ f1Best: b.dataset.pq === 'best' }); syncPage(true); }));
   root.querySelectorAll('button[data-sync]').forEach((b) => b.addEventListener('click', () => { save({ soundSync: b.dataset.sync === 'sound' }); syncPage(true); push(true); }));
   $('anticipate').addEventListener('change', (e) => { save({ anticipate: e.target.checked }); push(true); });
   // layout.js (same content-script world) owns the split view; it may load after us.
@@ -598,6 +638,7 @@
   $('dm').addEventListener('click', () => { window.FoneDanmaku?.toggle(); render(); });
   $('dmSet').addEventListener('click', () => window.FoneDanmaku?.openSettings());
   $('channel').addEventListener('change', (e) => save({ channel: e.target.value }));
+  root.querySelectorAll('button[data-frame]').forEach((b) => b.addEventListener('click', () => stepFrame(Number(b.dataset.frame))));
 
   // ±0.5 / ±5 s for the rough alignment; ±0.1 / ±0.02 s to null an echo against F1 TV's own
   // sound by ear (the live delay is set by ear alone, and the engine then holds it to ±1 ms)
@@ -608,7 +649,9 @@
       if (host.hidden || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.composedPath()[0];
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-      if (e.key in KEYS) nudge(KEYS[e.key]);
+      // (, . while F1 TV is paused on a replay: a frame back or on; otherwise the fine nudges)
+      if ((e.key === ',' || e.key === '.') && video?.paused && playKind() === 'replay') stepFrame(e.key === '.' ? 1 : -1);
+      else if (e.key in KEYS) nudge(KEYS[e.key]);
       else if (e.key === '\\') { save({ muted: !settings.muted }); toast(settings.muted ? 'Commentary muted' : 'Commentary on'); }
       else if (e.key === '|') save({ collapsed: !settings.collapsed });
       else if ((e.key === 'l' || e.key === 'L') && status?.clock === 'edge') goLive();

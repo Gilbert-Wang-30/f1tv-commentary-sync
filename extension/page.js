@@ -10,6 +10,8 @@
 //
 // content.js steers us with 'fone-cmd' CustomEvents (JSON string detail):
 //   {cmd: 'rate', value: 2}                    speed for replays; live always plays at 1x
+//   {cmd: 'frame', by: 0.02}                    one frame on (or back, by < 0): a precise seek, paused (content.js)
+//   {cmd: 'picture', best: true}                the main view pinned to its feed's sharpest quality (false: F1 TV's own choice)
 //   {cmd: 'audio', prefer: 'fx'|'eng'|'none', subs, feed: 'intl'|'none', live, cid, tap}   F1 TV's sound:
 //                                              its no-commentary track (Track FX) or its international English
 //                                              commentary (a track switch), or left alone; its subtitles on or
@@ -224,6 +226,68 @@
     document.dispatchEvent(new CustomEvent('fone-seek', { detail: JSON.stringify({ ok, by, did, err }) }));
   }
 
+  // ---- F1 TV's picture quality ------------------------------------------------------------
+  // F1 TV's player can pin a quality: its settings panel has a Quality list, shown only when
+  // sessionStorage enableTMVideoQuality is 'true' (vod chunk: the list's choice sets the view's
+  // desiredVideoSelection to one of its feed's videoQualities, ABR off; 'Auto', to the feed). fone
+  // turns that list on, says what's playing (the current video's resolution and frame rate, and the
+  // feed's sharpest), and with 'best' pins the sharpest itself (again after F1 TV switches feeds:
+  // its selection is then the new feed's). Back to auto: the feed again.
+  try { sessionStorage.setItem('enableTMVideoQuality', 'true'); } catch { /* storage off */ }
+  const PIC = { want: false, pinned: null, info: null, err: null, busy: false };
+  const qRes = async (q) => { try { const r = await q.resolution; return Array.isArray(r) ? r.map(Number) : [0, 0]; } catch { return [0, 0]; } };
+  const qFps = async (q) => { try { const f = await q.framerate; return Array.isArray(f) && Number(f[1]) ? Number(f[0]) / Number(f[1]) : null; } catch { return null; } };
+  async function pictureTick() {
+    if (PIC.busy) return;
+    PIC.busy = true;
+    try {
+      const player = view?.associatedPlayer, cur = view?.currentVideo;
+      if (!player || !cur || isDead(player)) return;
+      const feed = await cur.parentFeed;
+      const list = [];
+      for (const q of Array.from(feed?.videoQualities || [])) { const [w, h] = await qRes(q); list.push({ q, w, h, fps: await qFps(q) }); }
+      const [cw, ch] = await qRes(cur), cf = await qFps(cur);
+      const best = list.reduce((a, b) => (!a || b.w * b.h > a.w * a.h || (b.w * b.h === a.w * a.h && (b.fps || 0) > (a.fps || 0)) ? b : a), null);
+      const fmt = (w, h, f) => (w ? `${w}×${h}${f ? `@${Math.round(f)}` : ''}` : null);
+      PIC.info = { cur: fmt(cw, ch, cf), h: ch || null, best: best ? fmt(best.w, best.h, best.fps) : null, bestH: best?.h ?? null, n: list.length };
+      const Sel = window.Tiledmedia?.VideoSelection;
+      if (typeof Sel !== 'function') return;
+      if (PIC.want && best) {
+        const key = keyOf(best.q);
+        if (PIC.pinned === key && keyOf(view.desiredVideoSelection?.selection) === key) return;
+        if (!lock('picture')) return;
+        try {
+          view.desiredVideoSelection = new Sel(best.q);
+          await sdkCall('applyDesiredState', `best ${fmt(best.w, best.h, best.fps)}`, player, () => player.applyDesiredState());
+          PIC.pinned = key;
+        } finally { unlock(); }
+      } else if (!PIC.want && PIC.pinned != null) {
+        if (!lock('picture')) return;
+        try {
+          view.desiredVideoSelection = new Sel(feed);
+          await sdkCall('applyDesiredState', 'auto picture', player, () => player.applyDesiredState());
+          PIC.pinned = null;
+        } finally { unlock(); }
+      }
+      PIC.err = null;
+    } catch (e) {
+      PIC.err = errText(e);
+    } finally {
+      PIC.busy = false;
+    }
+  }
+  setInterval(() => { pictureTick().catch(() => {}); }, 3000);
+
+  // One frame on or back (by: its length, s): the player's precise relative seek, however small.
+  async function stepFrame(by) {
+    try {
+      for (let i = 0; i < 20 && SDK.busy; i++) await new Promise((r) => setTimeout(r, 100));
+      const player = view?.associatedPlayer;
+      if (!Number.isFinite(by) || !by || isDead(player) || typeof player.seek !== 'function' || !lock('seek')) return;
+      try { await seekCall(player, by); } finally { unlock(); }
+    } catch { /* the next press asks again */ }
+  }
+
   function seekCall(player, by) {
     const fields = { target: Math.round(by * 1000), timingType: TIMING.RELATIVE_TIME, targetPositionStrategy: TIMING.PRECISE, scrubType: 'none' };
     return sdkCall('seek', `${by > 0 ? '+' : ''}${by.toFixed(1)}s`, player, () => {
@@ -255,6 +319,8 @@
     if (!m || typeof m !== 'object') return;
     if (m.cmd === 'onboards') { obCommand(m.slots); return; } // its own lease: not the speed/audio one
     if (m.cmd === 'seek') { seekBy(Number(m.by)); return; } // one shot (Go live): no lease
+    if (m.cmd === 'frame') { stepFrame(Number(m.by)); return; } // one frame on or back (content.js), paused
+    if (m.cmd === 'picture') { PIC.want = m.best === true; pictureTick(); return; }
     want.at = Date.now();
     if (m.cmd === 'rate') {
       const r = Number(m.value);
@@ -1158,6 +1224,7 @@
         sdk: { pid: SDK.pid, dead: isDead(player), busy: SDK.busy ? SDK.busy.name : null,
           log: SDK.log.slice(-10), fatal: SDK.fatal.slice(-5), states: SDK.states.slice(-10) },
         ob: obReport(), // the dashboard's onboard views
+        pic: PIC.info ? { ...PIC.info, want: PIC.want, pinned: PIC.pinned != null, err: PIC.err } : null, // the picture's quality
         obErr: OB.err || undefined, // taking a view off its player failed, or a bug of ours
       }),
     }));
