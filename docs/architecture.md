@@ -554,7 +554,16 @@ section):
   (`vodPlace|<cid>|<bvid>`): the next time it starts there at once. Sync by sound not confirming a
   place in 8 looks of its own (2 min) while hearing F1 TV: looked for again, playing on (then
   every 10 min). Off the end (or start) of the replay playing: the streamer's next (previous)
-  one, kept or looked for. The danmaku of these sessions isn't shown (the server has none so old).
+  one, kept or looked for. Placed by sound, the replay carries F1 TV's sound: F1 TV's own is
+  turned off at once (`sound.carries`), not only once sync by sound locks (on the 2025 British GP
+  its looks scored 5-6 for long stretches against Track FX, then 17-108). A nudge on a replay is
+  kept for that replay (`soundBias|vod:<bvid>`), not the channel's: the streamer's setup then may
+  not be theirs now.
+- **Its danmaku.** The live chat Bilibili put on the replay (`x/v1/dm/list.so?oid=<cid>`, XML,
+  each `<d p="progress,mode,size,colour,…,uid hash,…">`, `FoneVod.parseDanmaku`), each put on the
+  replay's wall clock by its page and progress (`vodDanmaku`): the 弹幕 overlay asks the engine
+  (`{target: 'engine', type: 'vod-dm', from, to}`, answered through the service worker) instead
+  of the server while a replay plays, and shows them as the server's (no levels or medals).
 - **Status.** `vod: {state, text, bvid, title, how, tries, reps, cuts}` (states `finding`,
   `listening`, `searching`, `placed`, `none`, `error`); until placed the engine reports `syncing`
   (or `none`/`error`) with its text, plays nothing, and leaves F1 TV's own sound on. Details:

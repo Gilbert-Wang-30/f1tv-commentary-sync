@@ -25,7 +25,7 @@
   let status = null;
   const items = []; // sorted by when they show
   const seen = new Set();
-  const net = { channel: null, server: null, a: null, b: null, busy: false, at: 0, err: null, live: false };
+  const net = { channel: null, server: null, vod: null, a: null, b: null, busy: false, at: 0, err: null, live: false };
 
   // ---- the stage (over the picture) and the settings panel --------------------------------
 
@@ -330,8 +330,10 @@
       return;
     }
     if (!settings.on || !st?.channel || !st.server || !st.dm) return;
-    if (st.channel !== net.channel || st.server !== net.server) {
-      Object.assign(net, { channel: st.channel, server: st.server, a: null, b: null, at: 0, err: null, live: false });
+    // (a replay playing the streamer's Bilibili replay: that replay's own danmaku, from the engine)
+    const vod = st.vod?.state === 'placed' && st.vod.bvid ? st.vod.bvid : null;
+    if (st.channel !== net.channel || st.server !== net.server || vod !== net.vod) {
+      Object.assign(net, { channel: st.channel, server: st.server, vod, a: null, b: null, at: 0, err: null, live: false });
       items.length = 0;
       seen.clear();
       S.disp = null; // rebuild on the next frame
@@ -353,9 +355,11 @@
     net.busy = true;
     try {
       const url = `${net.server}/api/danmaku?channel=${encodeURIComponent(net.channel)}&from=${from.toFixed(3)}&to=${to.toFixed(3)}`;
-      const r = await chrome.runtime.sendMessage({ target: 'dash-fetch', url });
+      const r = vod ? await chrome.runtime.sendMessage({ target: 'engine', type: 'vod-dm', from, to })
+        .then((j) => (j && !j.error ? { ok: true, json: j } : { ok: false, error: j?.error || 'no answer' }))
+        : await chrome.runtime.sendMessage({ target: 'dash-fetch', url });
       if (!r?.ok) throw new Error(r?.error || 'no answer');
-      if (st.channel === net.channel) {
+      if (st.channel === net.channel && vod === net.vod) {
         const fresh = (r.json.items || []).filter((it) => it && !seen.has(D.key(it)));
         D.merge(items, seen, fresh);
         for (const it of fresh) for (const u of imagesOf(it)) loadImage(u); // here before they show

@@ -157,6 +157,11 @@ async def main():
         E.check(f"Bilibili 直播回放 {BVID}" in details, "Details: the recording is the Bilibili replay")
         shown = await page.evaluate(f"() => {E.PANEL}.getElementById('delay').textContent")
         E.check(shown.startswith("delay 0.0") or shown.startswith("delay −0.0"), f"the delay reads against 50 s: {shown!r}")
+        # the replay's own danmaku (the live chat on it), on the overlay, in step with it
+        await sw.evaluate("chrome.storage.sync.get('danmaku').then((s) => chrome.storage.sync.set({danmaku: {...(s.danmaku || {}), on: true}}))")
+        n = await E.wait_js(page, "() => document.getElementById('fone-danmaku')?.shadowRoot?.querySelectorAll('.dm').length || 0",
+                            lambda k: k > 0, 90, "the replay's danmaku on screen")
+        E.check(n > 0, f"the replay's own danmaku scroll over the picture ({n} on screen)")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("cuts") is not None, 120, "the repeats found")
         E.check(st["vod"]["cuts"] >= 7, f"the replay's ~5 s repeats found: {st['vod']['cuts']}")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.15, 30, "still in step after the repeats")

@@ -1063,7 +1063,8 @@ function goLive(held = false, chase = false, pMax = null) {
 // sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
 const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
   VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
-const sndBiasKey = () => `soundBias|${S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
+// (a Bilibili replay's own: the streamer's setup then may not be theirs now)
+const sndBiasKey = () => `soundBias|${S.timeline?.vod ? `vod:${S.timeline.vod}` : S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
 // (and whether its stream has been heard to carry F1 TV's sound: F1 TV's own ducked from the start)
 const sndCarriesKey = () => sndBiasKey().replace('soundBias|', 'soundCarries|');
 // (the stream recorded here: its nudge bias read back)
@@ -1527,9 +1528,11 @@ function vodPlace(V, r, T0, delay, how) {
   r.T0 = T0;
   Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map() });
   vodSay(V, 'placed', '');
-  S.delay = Math.round(delay * 1000) / 1000;
-  S.delaySource = 'sound';
   vodApply(V);
+  // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
+  if (S.snd) S.snd.bias = Number(FoneVod.store.get(sndBiasKey())?.bias) || 0;
+  S.delay = Math.round((how === 'sound' ? delay + (S.snd?.bias || 0) : delay) * 1000) / 1000;
+  S.delaySource = 'sound';
   S.resync = true;
   vodSave();
   diag('vod', { place: how, bvid: r.bvid, T0: Math.round(T0 * 10) / 10, delay: S.delay });
@@ -1614,7 +1617,7 @@ async function vodSearch(V, gen, Q) {
   if (sure) {
     // F1 TV's sound at picture pa is at best.m in the replay: put there with the delay at VOD.D0
     // (and the nudge on top of the sound, as sync by sound keeps it)
-    const T0 = E + VOD.D0 - FoneVod.contentAt(best.rep, best.m), delay = VOD.D0 + (sn.bias || 0);
+    const T0 = E + VOD.D0 - FoneVod.contentAt(best.rep, best.m), delay = VOD.D0;
     if (!(placed && V.cur === best.rep && Math.abs(T0 - best.rep.T0) < 1)) vodPlace(V, best.rep, T0, delay, 'sound');
     return true;
   }
@@ -1654,6 +1657,23 @@ function vodSwitch(r) {
   if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept');
   Object.assign(V, { tries: 0, lastTryAt: null, seen: null, prevBest: null });
   vodSay(V, 'listening', vodListenText(S.snd));
+}
+// The replay's own danmaku (the live chat on it) from `from` to `to` on its wall clock (the 弹幕
+// overlay's: danmakuClock's, the audio playing): {items (as /api/danmaku's), live: false}.
+async function vodDanmaku(from, to) {
+  const V = S.vod, r = V?.cur;
+  if (!r || V.state !== 'placed' || S.timeline?.vod !== r.bvid) return { items: [], live: false };
+  if (!r.dm) { r.dm = Promise.all(r.pages.map((pg) => FoneVod.danmaku(pg.cid))); r.dm.catch(() => { r.dm = null; }); }
+  const pages = await r.dm, pcs = S.timeline.pieces, items = [];
+  let off = 0;
+  pages.forEach((list, i) => {
+    for (const d of list) {
+      const w = C.wallOf(pcs, off + d.p);
+      if (w != null && w >= from && w < to) items.push({ t: Math.round(w * 1000) / 1000, x: d.x, m: d.m, s: d.s, c: d.c, u: d.u });
+    }
+    off += r.pages[i].dur;
+  });
+  return { items, live: false };
 }
 // For the panel and the diagnostics.
 function vodBrief() {
@@ -2293,6 +2313,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target !== 'offscreen') return;
   if (msg.type === 'f1audio') { if (msg.tab === S.tab && S.snd) sndHeard(msg); return; }
   if (msg.type === 'golive') { sendResponse(msg.tab === S.tab ? goLive(!!msg.holding, !!msg.chase, msg.pMax ?? null) : { handled: false }); return; }
+  if (msg.type === 'vod-dm') { // (the 弹幕 overlay, on a Bilibili replay: its own danmaku)
+    vodDanmaku(Number(msg.from), Number(msg.to)).then(sendResponse, (e) => sendResponse({ error: String(e?.message || e) }));
+    return true;
+  }
   if (msg.type === 'relive') { // "Re-sync to live": re-anchor to the commentary's live edge
     diag('relive', { delay: S.delay, keep: msg.keep ?? null, clock: S.video?.utc0 != null });
     // (after fone's own feed switch: with F1 TV's clock the lock keeps to the picture as it is)

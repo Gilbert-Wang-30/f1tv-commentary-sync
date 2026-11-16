@@ -371,6 +371,27 @@
     throw new Error(`Bilibili's sound: ${err?.message || err}`);
   }
 
-  root.FoneVod = { parseTitle, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
+  // A replay page's danmaku (the live chat Bilibili put on it: x/v1/dm/list.so, XML, each <d p=
+  // "progress,mode,size,colour,sent,pool,uid hash,id,…">): [{p (s into the page), m, s, c, u, x}].
+  const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  const unescapeXml = (t) => t.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (all, e) => (e[0] === '#'
+    ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)) : ENT[e] ?? all));
+  function parseDanmaku(xml) {
+    const out = [];
+    for (const m of String(xml || '').matchAll(/<d p="([^"]+)">([\s\S]*?)<\/d>/g)) {
+      const f = m[1].split(',');
+      const p = Number(f[0]);
+      if (!Number.isFinite(p)) continue;
+      out.push({ p, m: Number(f[1]) || 1, s: Number(f[2]) || 25, c: Number(f[3]) || 0xffffff, u: f[6] || '', x: unescapeXml(m[2]) });
+    }
+    return out.sort((a, b) => a.p - b.p);
+  }
+  async function danmaku(cid) {
+    const r = await fetch(`https://api.bilibili.com/x/v1/dm/list.so?oid=${cid}`, { credentials: 'omit', signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`Bilibili's danmaku: HTTP ${r.status}`);
+    return parseDanmaku(await r.text());
+  }
+
+  root.FoneVod = { parseTitle, parseDanmaku, danmaku, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
     owner, replays, load, sound, urlOf, range, failed, store, FRAG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

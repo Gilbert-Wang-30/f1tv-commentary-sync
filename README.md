@@ -70,9 +70,10 @@ extension and the install paths all go by that name.
   (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
   直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
   session, finds this moment in it by F1 TV's sound (its title only says which hour the stream
-  started in: the first look takes 10-60 s), cuts Bilibili's ~4 s repeats every half hour, and
-  keeps it in sync by sound. Where it was is kept for the video. Needs a server (for the
-  replay's timing), a Bilibili channel and sync by sound.
+  started in: the first look takes 10-60 s, F1 TV at 1× meanwhile), cuts Bilibili's ~4 s repeats
+  every half hour, turns F1 TV's own sound off and keeps it in sync by sound, with the replay's own
+  弹幕 (the live chat on it). Where it was is kept for the video, a nudge for the replay. Needs a
+  server (for the replay's timing), a Bilibili channel and sync by sound.
 - **Live works edge to edge, with or without a server.** fone locks the commentary's live edge
   to F1 TV's, by F1 TV's own clock (the time its player puts on the picture: how far behind live
   its picture really is, which differs by a few seconds every time the page loads), then follows

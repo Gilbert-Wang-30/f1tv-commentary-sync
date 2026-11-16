@@ -25,7 +25,7 @@ async function ensureOffscreen() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target === 'engine' && sender.tab) {
     const sent = ensureOffscreen().then(() => chrome.runtime.sendMessage({ ...msg, target: 'offscreen', tab: sender.tab.id }));
-    if (msg.type === 'golive') { // the engine answers this one (how far to move F1 TV)
+    if (msg.type === 'golive' || msg.type === 'vod-dm') { // the engine answers these (how far to move F1 TV; a Bilibili replay's danmaku)
       sent.then(sendResponse, () => sendResponse(null));
       return true;
     }

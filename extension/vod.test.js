@@ -155,5 +155,15 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.ok(Math.max(...all.map((c) => c.a + c.len)) >= 7199);
   });
 
+  await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
+    const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
+      + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';
+    const d = V.parseDanmaku(xml);
+    assert.equal(d.length, 2);
+    assert.deepEqual(d[0], { p: 12.5, m: 5, s: 25, c: 16646914, u: 'ff2b1ef', x: 'a & b <3 \u{1F600}' });
+    assert.equal(d[1].p, 6520.732);
+    assert.equal(d[1].x, '乐扣冲出去了！！');
+  });
+
   console.log(`${n} passed`);
 })().catch((e) => { console.error(e); process.exit(1); });
