@@ -31,6 +31,9 @@ ffmpeg -v error -y -f lavfi -i color=c=gray:s=64x36:r=2:d=$LEN -f lavfi -i anull
 ls -la /w/media'
 
 echo "== running headless Chrome"
+# (VOD_SHOT=<dir>: a screenshot of the stats cut from the streamer's screen, at 2560×1270, there)
+mkdir -p "$WORK/out" && chmod 777 "$WORK/out"
 docker run --rm --cpus 4 --cpu-shares 256 --ipc=host \
-  -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -e BVID=$BVID -e AT=$AT \
+  -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e BVID=$BVID -e AT=$AT -e VOD_SHOT \
   "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/vod/test_vod.py'
+if [ -n "${VOD_SHOT:-}" ]; then cp "$WORK/out/"* "$VOD_SHOT"/ 2>/dev/null || true; fi

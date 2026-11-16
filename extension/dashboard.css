@@ -210,3 +210,11 @@ body.iframe { pointer-events: none; user-select: none; }
 .obtog.on { color: var(--fg); background: rgba(80, 130, 255, .18); border-color: rgba(120, 160, 255, .5); }
 .obtog.on::before { background: currentColor; }
 .obtog:hover { color: var(--fg); }
+
+/* the streamer's screen, cut up (a session with no timing: dashboard.js shotMode): each panel
+   shows its part of it, over the panel's own contents */
+body.shot .panel > canvas.shot { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+body.shot .panel.tower > :not(canvas.shot), body.shot .panel.cond > :not(canvas.shot) { visibility: hidden; }
+body.shot .panel.map > canvas:not(.shot), body.shot .panel.map > .note { visibility: hidden; }
+body.shot .panel { background: #000; }
+body.shot .panel.map > .obtog { z-index: 4; }

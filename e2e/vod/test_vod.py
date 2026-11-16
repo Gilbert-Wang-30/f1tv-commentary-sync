@@ -225,23 +225,34 @@ async def main():
         E.check(ps and ps.get("src") == "vod" and abs(ps["vtime"] - ps["target"]) < 0.6,
                 f"📺 the streamer window plays the replay's picture at the commentary's moment ({json.dumps(ps)[:160]})")
         await page.evaluate(f"() => {E.PANEL}.getElementById('pic').click()")
-        # 📊 Stats with no timing for the session: the streamer's screen (their timing tower and map)
-        # beside F1 TV's player, which takes half the width
+        # 📊 Stats with no timing for the session: the usual layout (the tower at the right, the
+        # session and the map below), each panel showing its part of the streamer's screen
         await page.evaluate(f"() => {E.PANEL}.getElementById('stats').click()")
-        deadline, ss = time.time() + 60, None
+        deadline, got = time.time() + 60, None
         while time.time() < deadline:
             dash = next((f for f in page.frames if "dashboard.html" in f.url), None)
-            scr = next((c for c in (dash.child_frames if dash else []) if "streamer.html" in c.url), None)
-            raw = await scr.evaluate("() => document.documentElement.dataset.state || null") if scr else None
-            ss = json.loads(raw) if raw else None
-            if ss and ss.get("src") == "vod" and ss.get("target") and ss["vtime"] > 1 and abs(ss["vtime"] - ss["target"]) < 0.6:
+            got = await dash.evaluate("""() => {
+              const lit = (id) => { const c = document.querySelector(`#${id} canvas.shot`); if (!c || !c.width) return 0;
+                const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0;
+                for (let i = 0; i < d.length; i += 4 * 97) if (d[i] + d[i + 1] + d[i + 2] > 60) n++; return n; };
+              return { shot: document.body.classList.contains('shot'), layout: __dash.snapshot().layout,
+                tower: lit('tower'), cond: lit('cond'), map: lit('map') }; }""") if dash else None
+            if got and got["shot"] and got["tower"] > 50 and got["map"] > 5 and got["cond"] > 5:
                 break
             await asyncio.sleep(0.5)
         box = await page.evaluate("() => { const r = document.querySelector('div.video-grid').getBoundingClientRect(); return [r.width, innerWidth]; }")
-        if dash:
-            print("   dash:", json.dumps(await dash.evaluate("() => { const s = __dash.snapshot(); const S = __dash.S; return { layout: s.layout, E: s.E, na: s.na, note: s.note, key: S.key, cid: S.cid, server: S.server, myTab: s.myTab, screen: !!document.getElementById('screen') }; }"))[:400])
-        E.check(ss and ss.get("src") == "vod" and abs(ss["vtime"] - ss["target"]) < 0.6 and 0.4 < box[0] / box[1] < 0.6,
-                f"📊 no timing for the session: the stats show the streamer's screen beside F1 TV (player {box[0] / box[1]:.0%} wide)")
+        if os.environ.get("VOD_SHOT"):  # (a look at it, at the size of the author's window)
+            await page.set_viewport_size({"width": 2560, "height": 1270})
+            await asyncio.sleep(4)
+            await page.screenshot(path="/out/stats_cut.png")
+            await sw.evaluate("chrome.storage.local.set({statsMode: 'onboards'})")  # (O: room for onboards)
+            await asyncio.sleep(4)
+            await page.screenshot(path="/out/stats_cut_onboards.png")
+            await sw.evaluate("chrome.storage.local.set({statsMode: 'stats'})")
+            await page.set_viewport_size({"width": 1280, "height": 720})
+            await asyncio.sleep(2)
+        E.check(got and got["shot"] and got["layout"] == "L" and got["tower"] > 50 and got["map"] > 5 and got["cond"] > 5 and box[0] / box[1] > 0.7,
+                f"📊 no timing for the session: the usual stats, each panel cut from the streamer's screen ({json.dumps(got)}, player {box[0] / box[1]:.0%} wide)")
         await page.evaluate(f"() => {E.PANEL}.getElementById('stats').click()")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("cuts") is not None, 120, "the repeats found")
         E.check(st["vod"]["cuts"] >= 7, f"the replay's ~5 s repeats found: {st['vod']['cuts']}")

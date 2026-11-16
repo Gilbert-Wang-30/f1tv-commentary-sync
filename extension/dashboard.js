@@ -240,7 +240,7 @@ function takeState(st) {
       applyLayout();
     }
   }
-  if (screenOn() !== !!$('screen')) applyLayout(); // (no timing there: the streamer's screen; back from it)
+  if (screenOn() !== document.body.classList.contains('shot')) applyLayout(); // (no timing there: the streamer's screen; back from it)
   renderState();
 }
 
@@ -347,50 +347,162 @@ function place(el, box) {
   if (box) Object.assign(el.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
 }
 
-// ---- the streamer's screen: a session with no timing (an old replay, a session the server didn't
-// capture) ---------------------------------------------------------------------------------
-// The streamer's stream is their timing screen (MultiViewer's tower, race control, the track map),
-// so where fone has no timing for a video, the stats show theirs: the streamer window's page
-// (streamer.html, following the commentary's clock: the Bilibili replay's picture, or a server's
-// recording's) beside F1 TV's player, which takes half the width.
+// ---- the streamer's screen, cut up: a session with no timing (an old replay, a session the
+// server didn't capture) ----------------------------------------------------------------------
+// The streamer's stream is their timing screen (MultiViewer: the tower in two columns of ten,
+// race control below it, the session bar on top, the track map at the right), so where fone has
+// no timing the stats keep their own layout and each panel shows its part of that screen, cut
+// from it as it plays: the tower (its two columns one above the other, race control after them
+// where the column has room), the session bar (in two lines), the map. The picture comes from the
+// streamer window's page (streamer.html, following the commentary's clock: the Bilibili replay,
+// or a server's recording), in a frame of its own behind the panels.
+// A part: [x, y, w, h], or bands of slices side by side: {y, h, xs: [[x, w], ...]} (the tower's
+// rows without their gauges and mini-sectors: position and driver, laps and gaps, tyre).
+const SHOT = { W: 1920, H: 1080, // (their layout, at 1920×1080: the 2025 replays, both the same)
+  tower: [[0, 108, 656, 502], [661, 108, 657, 502]],
+  towerSlim: [{ y: 108, h: 502, xs: [[0, 92], [200, 212], [608, 48]] }, { y: 108, h: 502, xs: [[661, 92], [861, 212], [1269, 48]] }],
+  rc: [0, 628, 656, 452],
+  cond: [[0, 0, 400, 50], [405, 0, 370, 50]], map: [1330, 112, 585, 428] };
+// The session bar's text moves with its clock and lap count ("25:20 Lap: 58/58 (Chequered flag)"
+// is wider than "1:40:11 Lap: 14/58"): it's cut after its track-status box (Track Clear, Safety
+// Car, …: the widest run of columns on a coloured ground past the flag) and the weather taken from
+// there to the gap before the icons, looked for every BAR_EVERY ms.
+const BAR_EVERY = 2000;
+function barCuts(src) {
+  const c = shot.bar || (shot.bar = document.createElement('canvas'));
+  c.width = 1000; c.height = 50;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(src.el, 0, 0, (1000 * src.w) / SHOT.W, (50 * src.h) / SHOT.H, 0, 0, 1000, 50);
+  const d = g.getImageData(0, 0, 1000, 50).data, peak = new Float32Array(1000), col = new Uint8Array(1000);
+  for (let y = 0; y < 50; y++) {
+    for (let x = 0; x < 1000; x++) {
+      const i = 4 * (y * 1000 + x), r = d[i], gg = d[i + 1], b = d[i + 2];
+      const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+      peak[x] = Math.max(peak[x], (r + gg + b) / 3);
+      if (y >= 5 && y < 45 && mx - mn >= 15 && mx >= 35) col[x]++;
+    }
+  }
+  let box = null;
+  for (let x = 100, a = -1; x <= 1000; x++) {
+    const on = x < 1000 && col[x] >= 12;
+    if (on && a < 0) a = x;
+    if (!on && a >= 0) { if (x - a >= 40 && (!box || x - a > box[1] - box[0])) box = [a, x]; a = -1; }
+  }
+  if (!box) return null;
+  let w0 = box[1];
+  while (w0 < 1000 && peak[w0] < 60) w0++;
+  let end = Math.min(1000, w0 + 360);
+  for (let x = w0, a = -1; x <= 1000; x++) {
+    const dark = x < 1000 && peak[x] < 60;
+    if (dark && a < 0) a = x;
+    if (!dark && a >= 0) { if (x - a >= 12 && a - w0 > 320) { end = a; break; } a = -1; }
+  }
+  return [[0, 0, box[1] + 3, 50], [w0 - 3, 0, end - w0 + 6, 50]];
+}
+const band = (p) => (Array.isArray(p) ? { y: p[1], h: p[3], xs: [[p[0], p[2]]] } : p);
+const bandW = (b) => b.xs.reduce((t, [, w]) => t + w, 0);
 function screenOn() {
   // (no session for the video, or one the server has no timing for)
   return MODE === 'iframe' && !!S.server && !!S.clock && (!!(S.key && S.na) || (!S.key && !!S.cid && S.cids.has(`${S.server}|${S.cid}`)));
 }
-function screenPlayerBox() {
-  const steps = Math.floor((innerWidth * 0.5) / 16);
-  return { w: 16 * steps, h: 9 * steps };
+const shot = { frame: null, cv: {}, raf: 0 };
+function shotSource() {
+  try {
+    const d = shot.frame?.contentDocument;
+    const v = d?.getElementById('v'), c = d?.getElementById('c');
+    if (v && !v.hidden && v.videoWidth) return { el: v, w: v.videoWidth, h: v.videoHeight };
+    if (c && !c.hidden && c.width > 2) return { el: c, w: c.width, h: c.height };
+  } catch { /* not loaded yet */ }
+  return null;
 }
-function placeScreen() {
-  let f = $('screen');
-  if (!screenOn()) { if (f) f.remove(); return false; }
-  if (!f) {
-    f = document.createElement('iframe');
-    f.id = 'screen';
-    f.title = "The streamer's screen";
-    f.src = 'streamer.html?mode=box';
-    f.style.cssText = 'position:fixed;border:0;background:#000;border-radius:6px;z-index:5';
-    document.body.append(f);
+function shotCanvas(panel) {
+  let c = shot.cv[panel];
+  if (!c) {
+    c = document.createElement('canvas');
+    c.className = 'shot';
+    $(panel).append(c);
+    shot.cv[panel] = c;
   }
-  const r = playerRect() || { x: 0, y: 0, w: innerWidth / 2, h: (innerWidth / 2) * 9 / 16 };
-  const g = Math.round(Math.max(6, Math.min(12, Math.min(innerWidth, innerHeight) * 0.008)));
-  const x = r.x + r.w + g, w = Math.max(0, innerWidth - x - g), h = Math.min(innerHeight - 2 * g, Math.round((w * 9) / 16));
-  Object.assign(f.style, { left: `${x}px`, top: `${r.y}px`, width: `${w}px`, height: `${h}px` });
-  return true;
+  const box = $(panel).getBoundingClientRect(), k = devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(box.width * k)), h = Math.max(1, Math.round(box.height * k));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return c;
+}
+// parts (in SHOT units) one above the other, as large as fits in the canvas, from its top; then
+// `after`'s top as far as there's room under them. `alt`: other parts for the same thing, used
+// instead where they come out larger (the tower slimmed in a narrow column).
+const stackScale = (parts, W, H) => { const bs = parts.map(band); return Math.min(W / Math.max(...bs.map(bandW)), H / bs.reduce((t, b) => t + b.h, 0)); };
+function drawStack(g, src, parts, after, alt) {
+  const fx = src.w / SHOT.W, fy = src.h / SHOT.H, W = g.canvas.width, H = g.canvas.height;
+  if (alt && stackScale(alt, W, H) > 1.15 * stackScale(parts, W, H)) parts = alt;
+  const k = stackScale(parts, W, H);
+  let y = 0;
+  g.clearRect(0, 0, W, H);
+  for (const b of parts.map(band)) {
+    let x = 0;
+    for (const [x0, w0] of b.xs) {
+      g.drawImage(src.el, x0 * fx, b.y * fy, w0 * fx, b.h * fy, x, y, w0 * k, b.h * k);
+      x += w0 * k;
+    }
+    y += b.h * k;
+  }
+  if (after && H - y > 40 * k) {
+    const [x0, y0, w0, h0] = after, kk = Math.min(k, W / w0), hh = Math.min(h0, (H - y - 4) / kk);
+    g.drawImage(src.el, x0 * fx, y0 * fy, w0 * fx, hh * fy, 0, y + 4, w0 * kk, hh * kk);
+  }
+}
+function drawShot() {
+  shot.raf = 0;
+  if (!document.body.classList.contains('shot')) return;
+  shot.raf = requestAnimationFrame(drawShot);
+  const src = shotSource();
+  if (src && performance.now() - (shot.barAt || 0) > BAR_EVERY) {
+    shot.barAt = performance.now();
+    try { shot.cond = barCuts(src) || shot.cond; } catch { /* a frame not drawable yet */ }
+  }
+  for (const [panel, parts, after, alt] of [['tower', SHOT.tower, SHOT.rc, SHOT.towerSlim], ['cond', shot.cond || SHOT.cond], ['map', [SHOT.map]]]) {
+    if ($(panel).hidden) continue;
+    const g = shotCanvas(panel).getContext('2d');
+    if (src) drawStack(g, src, parts, after, alt); else g.clearRect(0, 0, g.canvas.width, g.canvas.height);
+  }
+}
+// The column (tower, session, map one above the other) for the cut-up screen: the session bar at
+// its width on top, the map under a third of the height at the bottom, the tower all the rest
+// (their tower is twenty 50 px rows: it wants the height).
+function shotColumn(L) {
+  const bs = [L.tower, L.cond, L.map];
+  const x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y));
+  const w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+  const g = Math.max(6, Math.round(Math.min(innerWidth, innerHeight) * 0.008));
+  const ch = Math.round(Math.min((w * 100) / 410, h * 0.14)), mh = Math.round(Math.min((w * SHOT.map[3]) / SHOT.map[2], h * 0.3));
+  return { ...L, cond: { x, y, w, h: ch }, tower: { x, y: y + ch + g, w, h: h - ch - mh - 2 * g }, map: { x, y: y + h - mh, w, h: mh } };
+}
+// In or out of it: the streamer's picture loaded (or dropped), the panels' own contents hidden.
+function shotMode(on) {
+  document.body.classList.toggle('shot', on);
+  if (on && !shot.frame) {
+    const f = document.createElement('iframe');
+    f.src = 'streamer.html?mode=box';
+    f.title = "The streamer's screen";
+    // (on screen, under the panels: a picture nobody can see may not be decoded)
+    f.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:270px;border:0;z-index:0;opacity:1;pointer-events:none';
+    document.body.prepend(f);
+    shot.frame = f;
+  } else if (!on && shot.frame) {
+    shot.frame.remove();
+    shot.frame = null;
+    for (const c of Object.values(shot.cv)) c.remove();
+    shot.cv = {};
+  }
+  if (on && !shot.raf) shot.raf = requestAnimationFrame(drawShot);
 }
 
 function applyLayout() {
-  if (placeScreen()) {
-    S.L = { kind: 'screen', tower: null, cond: null, map: null, slots: [] };
-    for (const id of ['tower', 'cond', 'map']) place($(id), null);
-    for (let i = 0; i < D.OB_SLOTS; i++) place($(`slot${i}`), null);
-    document.body.dataset.layout = 'screen';
-    S.ver++;
-    postOnboards();
-    askPlayer();
-    return;
-  }
-  const L = D.layout({ mode: MODE, vw: innerWidth, vh: innerHeight, rect: playerRect(), rows: S.rows, mapAspect: S.aspect });
+  const cut = screenOn();
+  shotMode(cut);
+  let L = D.layout({ mode: MODE, vw: innerWidth, vh: innerHeight, rect: playerRect(), rows: cut ? 20 : S.rows,
+    mapAspect: cut ? SHOT.map[2] / SHOT.map[3] : S.aspect });
+  if (cut && L.kind === 'column' && L.tower && L.cond && L.map) L = shotColumn(L);
   S.L = L;
   place($('tower'), L.tower);
   place($('cond'), L.cond);
@@ -554,7 +666,7 @@ function renderTower() {
 
 // What the tower says when it has no rows to show.
 function renderNotes() {
-  if (screenOn() !== !!$('screen')) applyLayout(); // (the streamer's screen, in or out)
+  if (screenOn() !== document.body.classList.contains('shot')) applyLayout(); // (the streamer's screen, in or out)
   let main = '', sub = '';
   if (!S.clock) {
     main = MODE === 'iframe' ? 'Waiting for the player…' : 'Waiting for F1 TV…';
@@ -1028,7 +1140,7 @@ function askPlayer() {
   btn.hidden = MODE !== 'iframe' || !S.L?.map;
   btn.classList.toggle('on', MODE_ST.mode === 'onboards');
   if (MODE !== 'iframe' || window.parent === window) return;
-  const box = screenOn() ? screenPlayerBox() : MODE_ST.mode === 'onboards'
+  const box = MODE_ST.mode === 'onboards'
     ? D.onboardBox({ vw: innerWidth, vh: innerHeight, rows: S.rows, mapAspect: S.aspect }) : null;
   // in the page's px, should ours differ (as postOnboards); whole 16x9 steps either way
   const m = S.layoutMsg, k = m?.vw > 0 && innerWidth > 0 ? m.vw / innerWidth : 1;
