@@ -62,6 +62,37 @@ test("the overview: two columns of eleven, the map's window right of them", () =
   assert.ok(d.rc && d.rc.y > t.top + t.rows * t.p);
 });
 
+test("a position just gained or lost (the number's box another colour, digits that cut it), and the left column found second", () => {
+  const { img, fill } = canvas(960, 540);
+  tags(fill, 7, 61, 25.2, 15, 11);
+  tags(fill, 340, 61, 25.2, 15, 11);
+  // the left column's digits, wide and grey (not bright): each box cut in two, 6 px apart
+  for (let k = 0; k < 11; k++) fill(12, 61 + k * 25.2 + 2, 6, 11, [110, 110, 110]);
+  // and its top three boxes green and red with a chevron (shorter runs): its chain the weaker one
+  for (const k of [0, 1, 2]) { fill(7, 61 + k * 25.2, 17, 15, [18, 18, 18]); fill(7, 61 + k * 25.2 + 5, 17, 4, k % 2 ? [230, 40, 40] : [60, 200, 70]); }
+  const t = F.detect(img, { cars: 22 }).table;
+  assert.equal(t.cols.length, 2, JSON.stringify(t.cols));
+  assert.ok(Math.abs(t.cols[0].x - 3) < 4 && Math.abs(t.cols[1].x - 336) < 4, JSON.stringify(t.cols));
+  assert.equal(t.rows, 11);
+});
+
+test('a look that finds only some of the columns is the same layout, kept; another one is not', () => {
+  // (the table's ground to x 665, darker beyond, as on their screen)
+  const screen = () => { const c = canvas(960, 540, [10, 10, 10]); c.fill(0, 50, 665, 290, [24, 24, 24]); return c; };
+  const two = screen();
+  tags(two.fill, 7, 61, 25.2, 15, 11);
+  tags(two.fill, 340, 61, 25.2, 15, 11);
+  const a = F.detect(two.img, { cars: 22 });
+  const one = screen();
+  tags(one.fill, 340, 61, 25.2, 15, 11);
+  const b = F.detect(one.img, { cars: 22 });
+  assert.equal(b.table.cols.length, 1);
+  assert.ok(!F.same(b, a) && F.same(b, a, true) && !F.same(a, b, true));
+  const moved = screen();
+  tags(moved.fill, 200, 61, 25.2, 15, 11);
+  assert.ok(!F.same(F.detect(moved.img, { cars: 22 }), a, true));
+});
+
 test('the race tab: one wide table of 22 packed rows, a header line over them', () => {
   const { img, fill } = canvas(960, 540);
   tags(fill, 4, 74, 15.83, 13, 22, { dim: [21], text: 640 });

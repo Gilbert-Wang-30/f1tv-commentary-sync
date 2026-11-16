@@ -161,6 +161,61 @@
     for (const x of rep.cuts || []) if (x.m < m) c -= Math.min(x.d, m - x.m);
     return c;
   }
+  // The position whose content time is c (contentAt's inverse).
+  function atContent(rep, c) {
+    let m = c;
+    for (const x of [...(rep.cuts || [])].sort((a, b) => a.m - b.m)) {
+      if (x.m >= m) break;
+      m += x.d;
+    }
+    return m;
+  }
+
+  // ---- placing by sound over several looks -----------------------------------------------------
+  // A look that isn't sure (F1 TV's sound faint in the stream: the streamer talking over it, a
+  // quiet stretch of the race, F1 TV's Track FX against the feed the streamer passes on) still
+  // has likely places: its strongest few (`weak` and up, `top` of them; the strongest `max` kept).
+  // Each is checked against F1 TV's sound heard since: at least `fresh` s of it after the sound
+  // that found it (the same sound would find the same place again whether or not it's the place),
+  // looked for where that place says it is now (`near` s either side). Found there again (within
+  // `agree` s, `need` high, and `ratio` over the best elsewhere around it: a stretch of the stream
+  // that's like anything has peaks all over it): this moment is there. One checked `drop` times
+  // without is let go.
+  function keepLikely(cands, hits, look, L, { weak = 7, top = 3, max = 8 } = {}) {
+    const got = [];
+    for (const h of [...hits].sort((a, b) => b.score - a.score)) {
+      if (h.score < weak || got.length >= top) break;
+      if (!got.some((o) => o.rep === h.rep && Math.abs(o.m - h.m) < 1)) got.push(h);
+    }
+    for (const h of got) cands.push({ rep: h.rep, m: h.m, score: h.score, look, E: L.E, pa: L.pa, pb: L.pb, run: L.run, fails: 0 });
+    while (cands.length > max) cands.splice(cands.indexOf(cands.reduce((a, b) => (b.score < a.score ? b : a))), 1);
+    return got.length;
+  }
+  // L: this look's sound {q (at sr), pa..pb (the picture's), E (the event at pa), run}; read(rep,
+  // a, len): the replay's sound over a..a+len at sr {m0, y} (or more of it), null if it can't.
+  // {hit: {cand, m (where the fresh sound starts in the replay), E (its event), score, d}, checked}.
+  async function checkLikely(cands, L, read, locate, { sr, near = 3, fresh = 12, agree = 0.3, need = 6.5, ratio = 1.3, drop = 10, pause = null } = {}) {
+    const checked = [];
+    let hit = null;
+    for (const c of [...cands].sort((a, b) => b.score - a.score)) {
+      const f0 = c.run === L.run ? Math.max(L.pa, c.pb) : L.pa;
+      if (L.pb - f0 < fresh) continue;
+      const q = L.q.subarray(Math.round((f0 - L.pa) * sr)), Ef = L.E + (f0 - L.pa);
+      const at = atContent(c.rep, contentAt(c.rep, c.m) + (Ef - c.E)), a = at - near, len = q.length / sr + 2 * near;
+      const w = at - near >= 0 ? await read(c.rep, a, len) : null;
+      const i0 = w ? Math.round((a - w.m0) * sr) : -1, i1 = i0 + Math.round(len * sr);
+      if (!w || i0 < 0 || i1 > w.y.length) continue;
+      const res = locate(q, w.y.subarray(i0, i1), sr);
+      if (pause) await pause();
+      if (!res) continue;
+      const m = a + res.lag / sr, d = m - at;
+      checked.push({ look: c.look, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, d: Math.round(d * 100) / 100 });
+      if (!res.edge && Math.abs(d) <= agree && res.score >= need && res.score >= ratio * res.next) { hit = { cand: c, m, E: Ef, score: res.score, d }; break; }
+      c.fails++;
+    }
+    for (let i = cands.length - 1; i >= 0; i--) if (cands[i].fails >= drop) cands.splice(i, 1);
+    return { hit, checked };
+  }
 
   // An HLS playlist of the replay's sound (fMP4 by byte range: hls.js plays it as it plays a
   // server's), each page from url(i): its init segment, then its segments; pages back to back.
@@ -438,6 +493,6 @@
     return rep;
   }
 
-  root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
-    owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat };
+  root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
+    playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

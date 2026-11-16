@@ -74,14 +74,16 @@
   }
 
   // Neighbouring x with the same chain (the same pitch and phase, runs as tall): one column of
-  // tag-like boxes [xa, xb]. (A tag's digits break its runs at some x: chains a few px apart, or
-  // starting a row later, are still the same column.)
+  // tag-like boxes [xa, xb]. (A tag's digits break its runs at some x: chains up to a third of a
+  // row apart, or starting a row later, are still the same column. A position just gained or lost
+  // turns the number's box green or red with an arrow in it for a while: its digits then cut 5 px
+  // of it at 960×540, and the two halves, each too narrow for a tag, lost the column: 2026-11-16.)
   function groups(chains, tol) {
     const out = [];
     const phase = (y, g) => { const k = (y - g.y) / g.p; return Math.abs(k - Math.round(k)) * g.p; };
     for (const c of chains) {
       let g = null;
-      for (let i = out.length - 1; i >= 0 && c.x - out[i].xb <= 4; i--) {
+      for (let i = out.length - 1; i >= 0 && c.x - out[i].xb <= Math.max(4, 0.34 * c.p); i--) {
         const o = out[i];
         if (Math.abs(c.p - o.p) <= 0.8 && phase(c.y, o) <= 2 * tol && Math.abs(c.h - o.h) <= Math.max(2, 0.3 * o.h)) { g = o; break; }
       }
@@ -156,15 +158,17 @@
     const main = tags.find((g) => g.hits >= 0.8 * most && hues(img, g, g.rows) >= 3);
     if (!main) return null;
     // the overview's other column: tags in the same rows (as tall, the same pitch and phase), well
-    // right of these, in teams' colours
-    const cols = [main], aligned = (g) => { const k = (g.y - main.y) / main.p; return Math.abs(k - Math.round(k)) * main.p <= 2 * tol; };
+    // apart from these (either side: the one found first needn't be the left one), in teams' colours
+    const aligned = (g) => { const k = (g.y - main.y) / main.p; return Math.abs(k - Math.round(k)) * main.p <= 2 * tol; };
+    const cols = [main];
     for (const g of tags) {
-      const last = cols[cols.length - 1];
-      if (g.xa < last.xa + 6 * main.p || g.hits < Math.max(3, 0.45 * main.hits) || g.w < Math.max(3, 0.3 * main.p)) continue;
+      if (g === main || g.hits < Math.max(3, 0.45 * main.hits) || g.w < Math.max(3, 0.3 * main.p)) continue;
+      if (cols.some((c) => Math.abs(g.xa - c.xa) < 6 * main.p)) continue;
       if (Math.abs(g.p - main.p) > 0.8 || Math.abs(g.h - main.h) > Math.max(2, 0.3 * main.h) || !aligned(g)) continue;
       if (hues(img, g, g.rows) < 3) continue;
       cols.push(g);
     }
+    cols.sort((a, b) => a.xa - b.xa);
     const p = main.p, h = main.h;
     // The race tab's rows are packed (a tag fills most of its row); the overview's have room
     // around their tags. (Its second column can be all dimmed: the cars out of qualifying.)
@@ -440,11 +444,13 @@
   }
 
   // Two looks agree (the same table, within a few px): a new layout is taken once it holds.
-  function same(a, b) {
+  // `part`: a's table is b's, or some of b's columns of it (a look that missed one: kept as b).
+  function same(a, b, part = false) {
     if (!a || !b) return false;
     const ta = a.table, tb = b.table, near = (x, y, e) => Math.abs(x - y) <= e;
-    return ta.kind === tb.kind && ta.rows === tb.rows && ta.cols.length === tb.cols.length && near(ta.p, tb.p, 0.6)
-      && near(ta.top, tb.top, 3) && ta.cols.every((c, i) => near(c.x, tb.cols[i].x, 3) && near(c.w, tb.cols[i].w, 0.5 * ta.p));
+    if (ta.kind !== tb.kind || ta.rows !== tb.rows || !near(ta.p, tb.p, 0.6) || !near(ta.top, tb.top, 3)) return false;
+    if (part) return ta.cols.length <= tb.cols.length && ta.cols.every((c) => tb.cols.some((o) => near(c.x, o.x, 3)));
+    return ta.cols.length === tb.cols.length && ta.cols.every((c, i) => near(c.x, tb.cols[i].x, 3) && near(c.w, tb.cols[i].w, 0.5 * ta.p));
   }
 
   root.FoneShot = { brightMask, table, towerParts, rcBox, mapBox, detect, bar, pack, same };

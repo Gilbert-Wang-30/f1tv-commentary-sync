@@ -577,10 +577,21 @@ section):
   sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
   stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
   the delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
-  kept as 16-bit while it looks; after two misses, all of each replay). Taken when sure (score
-  ≥ 9.5 and 1.5× anything else anywhere; ≥ 14 and twice: at once) or when two looks in a row
-  agree on the offset to 0.3 s (each ≥ 7): real sync-by-sound matches scored a median of 14
-  (2026-11-11). The replay is then placed so that the delay reads 50 s (`VOD.D0`, plus the
+  kept as 16-bit while it looks, the matching a stretch at a time so the rest of fone runs
+  between; after five misses, all of each replay, then every eighth look: its stretches past the
+  hour's aren't kept, so the hour's stay). Taken when sure (score ≥ 9.5 and 1.5× anything else
+  anywhere; ≥ 14 and twice: at once): real sync-by-sound matches scored a median of 14
+  (2026-11-11). A look that isn't sure keeps its likeliest places (`FoneVod.keepLikely`: its top
+  three ≥ 7, the eight strongest kept), and each is checked (`FoneVod.checkLikely`) against F1
+  TV's sound heard after it, at least 12 s of it past the sound that found it (that sound would
+  find the same place again, right or not), looked for ±3 s around where the place says it now
+  is: found there again (within 0.3 s, ≥ 6.5) is where this moment is; checked ten times without,
+  let go. Checks run with every 8 s more of F1 TV's sound, between looks too. (The 2026 Italian
+  GP, F1 TV's Track FX against 胡闹P房's replay: the formation lap's look found the place at 11.8
+  but not sure, a broadcast replay of the start or the like scoring 10 elsewhere; the next minute
+  under 7, then 10.9, 13.6, 23.6 at the same place; 6½ min to a place when only two looks in a
+  row agreeing counted, and each look after the fifth fetched all 6 h of the replay again.) The
+  replay is then placed so that the delay reads 50 s (`VOD.D0`, plus the
   stream's nudge bias), `T0 = E + 50 − content(m)`, and sync by sound runs on it as on any replay,
   reading its sound from Bilibili (`vodRead`: segments by one range request, `FoneDemux.mp4Audio`
   to ADTS, decoded at 8 kHz). Where it was put (`T0`, delay) is kept per video and replay
@@ -616,13 +627,18 @@ section):
   `shotlayout.js` (`FoneShot.detect`): every row starts with the driver's tag, a box in the team's
   colour (white and grey for some teams), so columns of tag-tall runs of bright pixels repeating
   at a steady pitch are the table's tag columns (a column of timing pills is all one colour; a
-  tyre's ring or a gauge's arc isn't solid; the mini-sectors' bars are too short); the rows' own
+  tyre's ring or a gauge's arc isn't solid; the mini-sectors' bars are too short; a tag's digits
+  cut it into strips, joined again up to a third of a row apart: a position just gained or lost
+  turns the number's box green or red with an arrow for a while, and its digits then cut 5 px,
+  which lost the left column on the 2026 Italian GP; the other column is looked for either side
+  of the first one found); the rows' own
   ground gives its right edge (it drops to the black or darker grey around the app's panels); the
   season's car count (22 from 2026, 20 before, from the clock) how many rows there are, dimmed
   tags of cars out included; the map's window is the largest connected line drawing right of
   the table in the upper part of the screen (ads there are solid pictures: a drawing filling more
   than half its box isn't the map), padded for the corner numbers. A new layout is taken once two
-  looks agree, a moved map window likewise. Each animation frame `drawShot` draws into canvases
+  looks agree (a look that finds only some of its columns keeps it as it was), a moved map window
+  likewise. Each animation frame `drawShot` draws into canvases
   over the tower, conditions and map panels: the table's rows (both columns one above the other;
   of the variants, the whole row, then without the race tab's rpm/speed/gear/pedals or the
   overview's gauges and mini-sectors, then the least, a narrower one only where it comes out 25%

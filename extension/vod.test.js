@@ -174,6 +174,96 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.ok(Math.max(...all.map((c) => c.a + c.len)) >= 7199);
   });
 
+  await test('content time and back: the repeats left out, and put back', () => {
+    const rep = { cuts: [{ m: 3600, d: 4 }, { m: 1800, d: 4 }] };
+    for (const m of [0, 1799, 1805, 3599, 3605, 9000]) assert.equal(V.atContent(rep, V.contentAt(rep, m)), m);
+    assert.equal(V.atContent(rep, 1800), 1800); // (where the cut is: before it)
+    assert.equal(V.atContent({}, 77), 77);
+  });
+
+  // F1 TV's sound faint in the stream: one look not sure, its likely place found again by the sound
+  // heard after it (and a likely place by chance never is); the matcher's own, at 4 kHz
+  await test('a likely place: found again by the sound heard after it; one by chance, never', async () => {
+    require('./sound.js');
+    const S = globalThis.FoneSound, sr = 4000, r = lcg(5);
+    const g = () => { let s = 0; for (let i = 0; i < 12; i++) s += r(); return s - 6; }; // (~gaussian)
+    // F1 TV's sound (300 s of it, noise with some colour) and the stream: the streamer's own sound
+    // over it, F1 TV's faint in it from replay position 4000 on (the picture at 0)
+    const N = 300 * sr, f1 = new Float32Array(N);
+    let lp = 0;
+    for (let i = 0; i < N; i++) { lp = 0.7 * lp + g(); f1[i] = lp; }
+    const M0 = 3900, rep = { bvid: 'BVw', cuts: [{ m: 3950, d: 5 }] }; // (a repeat before the place: on the content clock)
+    const at0 = 4000, total = 500, y = new Float32Array(total * sr);
+    for (let i = 0; i < y.length; i++) y[i] = 9 * g();
+    for (let i = 0; i < N; i++) {
+      const j = Math.round((at0 - M0) * sr) + i;
+      if (j < y.length) y[j] += 0.28 * f1[i];
+    }
+    const read = async (rp, a, len) => ({ m0: M0, y }); // (all of it)
+    const E0 = 1e9; // the event at the picture's 0
+    // the sound of picture pa..pa+len as a look takes it
+    const look = (pa, len, run) => ({ q: f1.subarray(pa * sr, (pa + len) * sr), pa, pb: pa + len, E: E0 + pa, run });
+    // look 1 (picture 0..30): not sure; its likely place the true one (m 4000), and one by chance
+    const L1 = look(0, 30, 'run1'), hit = S.locate(L1.q, y.subarray((at0 - 20 - M0) * sr, (at0 + 60 - M0) * sr), sr);
+    assert.ok(hit.score > 6 && hit.score < 9.5, `faint: ${hit.score}`); // (not sure by itself: VOD.SCORE 9.5)
+    const cands = [];
+    V.keepLikely(cands, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }, { rep, m: 4210.4, score: 9.1 }, { rep, m: 4211, score: 8 }, { rep, m: 4300, score: 6 }], 1, L1);
+    assert.deepEqual(cands.map((c) => Math.round(c.m)), [4210, 4000]); // (the strongest few, apart, 7 and up)
+    const truth = cands[1];
+    // the same sound again (picture 8..38): nothing fresh enough to check with
+    let ck = await V.checkLikely(cands, look(8, 30, 'run1'), read, S.locate, { sr });
+    assert.equal(ck.hit, null);
+    assert.equal(ck.checked.length, 0);
+    // 40 s on: the sound since found where the true place says (the chance one not)
+    ck = await V.checkLikely(cands, look(40, 30, 'run1'), read, S.locate, { sr });
+    assert.ok(ck.hit && ck.hit.cand === truth, JSON.stringify(ck.checked));
+    assert.ok(Math.abs(ck.hit.m - (at0 + 40)) < 0.01 && Math.abs(ck.hit.E - (E0 + 40)) < 1e-6, `${ck.hit.m}`);
+    assert.ok(ck.checked.length === 2 && ck.checked[0].score < 6.5, JSON.stringify(ck.checked)); // (the chance one, stronger, checked first: not there)
+    console.log('   faint: look 1', hit.score.toFixed(1), '· found again', ck.hit.score.toFixed(1), `(the best elsewhere around it ${ck.checked[1].next})`,
+      '· the chance one', ck.checked[0].score);
+    // the place on the content clock: the repeat before it left out
+    assert.ok(Math.abs(V.contentAt(rep, ck.hit.m) - (at0 + 40 - 5)) < 0.01);
+    // a chance place only: never found again, let go after `drop` checks
+    const only = cands.filter((c) => Math.round(c.m) === 4210);
+    for (let k = 0; k < 4; k++) {
+      ck = await V.checkLikely(only, look(40 + 30 * k, 30, 'run2'), read, S.locate, { sr, drop: 4 });
+      assert.equal(ck.hit, null);
+    }
+    assert.equal(only.length, 0);
+    // places by chance all over the stream, each checked with sound well after it: none found again
+    const wrong = Array.from({ length: 40 }, (_, k) => ({ rep, m: 3905 + k * 7.9 + (k % 3) * 0.37, score: 8 }))
+      .filter((c) => Math.abs(c.m - at0) > 5);
+    let found = 0, top = 0;
+    for (const c of wrong) {
+      const one = [{ ...c, E: E0, pa: 0, pb: 30, run: 'run1', fails: 0 }];
+      ck = await V.checkLikely(one, look(60, 30, 'run1'), read, S.locate, { sr });
+      if (ck.hit) found++;
+      top = Math.max(top, ...ck.checked.map((x) => x.score));
+    }
+    assert.equal(found, 0, `${found} of ${wrong.length} found by chance`);
+    assert.ok(top < 6.5, `the best by chance ${top}`);
+    // a stretch of the stream like this sound at many lags (copies of it a second apart, the one
+    // where a place says a little the strongest): high there, but not standing out: not taken
+    const yc = Float32Array.from(y);
+    for (const [dt, g2] of [[-2, 1], [-1, 1], [0, 1.1], [1, 1], [2, 1]]) {
+      const j0 = Math.round((4120.2 + dt - M0) * sr);
+      for (let i = 0; i < 30 * sr; i++) yc[j0 + i] += 0.35 * g2 * f1[40 * sr + i];
+    }
+    const fake = [{ rep, m: 4080.2, score: 8, E: E0, pa: 0, pb: 30, run: 'run1', fails: 0 }];
+    ck = await V.checkLikely(fake, look(40, 30, 'run1'), async () => ({ m0: M0, y: yc }), S.locate, { sr });
+    const fk = ck.checked[0];
+    assert.ok(ck.hit === null && fk.score >= 6.5 && Math.abs(fk.d) < 0.05 && fk.score < 1.3 * fk.next, JSON.stringify(ck.checked));
+    // a seek (another run of F1 TV's sound): all of it fresh
+    const c2 = [];
+    V.keepLikely(c2, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }], 1, L1);
+    ck = await V.checkLikely(c2, look(150, 20, 'run3'), read, S.locate, { sr });
+    assert.ok(ck.hit && Math.abs(ck.hit.m - (at0 + 150)) < 0.01, JSON.stringify(ck.checked));
+    // too many: the weakest let go
+    const c3 = [];
+    for (let k = 0; k < 5; k++) V.keepLikely(c3, [{ rep, m: 100 * k, score: 7 + k }, { rep, m: 100 * k + 50, score: 12 - k }], k, L1, { max: 4 });
+    assert.deepEqual(c3.map((c) => c.score).sort((a, b) => a - b), [10, 11, 11, 12]);
+  });
+
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
     const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
       + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';

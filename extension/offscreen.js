@@ -1416,10 +1416,10 @@ function sndSteer(t, v) {
 // live in, so where this moment is in it is found by sound: the newest VOD.WIN s of F1 TV's sound
 // heard, which the streamer passes through, looked for over that hour plus the streamer's delay in
 // each replay that may hold it (VOD.CHUNK s at a time, VOD.PAR at once, at 4 kHz, nearest the
-// likeliest place first; what's fetched kept as 16-bit while it looks); after two misses, all of
-// each replay. A sure match (VOD.SCORE, VOD.RATIO over anything else), or two looks in a row that
-// agree on where (VOD.AGREE s, each at least VOD.WEAK), puts the replay on the wall clock so that the delay reads VOD.D0 as on a
-// recording's, and sync by sound keeps it there as on any replay. Where it was put is kept for
+// likeliest place first; what's fetched kept as 16-bit while it looks); after VOD.FULL misses, all
+// of each replay now and then. A sure match (VOD.SCORE, VOD.RATIO over anything else), or a likely
+// place found again by the sound heard after it, puts the replay on the wall clock so that the
+// delay reads VOD.D0 as on a recording's, and sync by sound keeps it there as on any replay. Where it was put is kept for
 // this video and replay, and the replay's ~5 s repeats (FoneVod.findCuts) for the replay. Sync by
 // sound not confirming it in VOD.CONFIRM looks: looked for again, playing on meanwhile (then every
 // VOD.AGAIN s while it still doesn't). Off the end of one replay (the streamer restarted): the
@@ -1427,9 +1427,14 @@ function sndSteer(t, v) {
 // (real matches, 2026-11-11, 4 kHz: a median 14, a tenth under 8.1; the runner-up 4-7 over ±25 s)
 // (WIN..WIN_MAX s of F1 TV's sound, a look every STEP s more of it; the replay fetched and decoded
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
-const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14, WEAK: 7, AGREE: 0.3, CONFIRM: 8,
-  AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60 };
+const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
+  WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60 };
 // (AHEAD: repeats looked for this far ahead of what plays, SCAN s of the replay a look)
+// (a look that isn't sure keeps its likeliest places, FoneVod.keepLikely: each checked against
+// the F1 TV sound heard after it, VOD.FRESH s at least, VOD.VERIFY at where it says, as F1 TV
+// plays on. Real matches, 2026-11-16, Track FX against 胡闹P房's 2026 Italian GP replay: 11.8
+// at the formation lap, under 7 for a minute, then 10.9, 13.6, 23.6, all at the same place; the
+// best elsewhere 6-7 over the hour, 9-10 over all 6 h of it)
 function vodWanted(tl) {
   const c = S.content;
   if (!S.room || !c || c.p0 == null || !['preroll', 'multiviewer'].includes(S.clock) || !S.clockFinal) return false;
@@ -1446,7 +1451,7 @@ function vodListenText(sn) {
 }
 async function vodBegin(gen) {
   const V = S.vod = { state: 'finding', text: `Looking for ${vodWho()}'s Bilibili replay of this session…`, reps: [], cur: null,
-    tries: 0, chunks: new Map(), busy: false, lastTryAt: null, at: now() };
+    tries: 0, checks: 0, cands: [], chunks: new Map(), busy: false, lastTryAt: null, at: now() };
   try {
     const room = /(\d+)\/?$/.exec(S.room)?.[1];
     if (!room) throw new Error('no Bilibili room');
@@ -1565,7 +1570,7 @@ function vodFailed(url) {
 }
 function vodPlace(V, r, T0, delay, how) {
   r.T0 = T0;
-  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map() });
+  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [] });
   vodSay(V, 'placed', '');
   vodApply(V);
   // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
@@ -1592,31 +1597,52 @@ function vodKept(V) {
   return best;
 }
 // A stretch of the plan, fetched, decoded and kept (16-bit, 4 kHz: the match doesn't care for the
-// scale) while it looks: the same promise for the look and the fetch ahead.
-function vodChunk(V, ch) {
-  const key = `${ch.rep.bvid}/${ch.a}/${ch.len}`;
+// scale) while it looks: the same promise for the look and the fetch ahead. `keep` false (a look
+// over all of a replay, past the hour's): not kept, so the hour's stay.
+const vodChunkKey = (ch) => `${ch.rep.bvid}/${ch.a}/${ch.len}`;
+function vodChunk(V, ch, keep = true) {
+  const key = vodChunkKey(ch);
   let got = V.chunks.get(key);
-  if (!got) {
-    got = vodRead(ch.rep, ch.a, ch.len).then((rd) => {
-      if (!rd) return null;
-      const y = FoneSound.decimate(rd.y, VOD.F);
-      let mx = 1e-9;
-      for (let i = 0; i < y.length; i++) mx = Math.max(mx, Math.abs(y[i]));
-      const y16 = new Int16Array(y.length);
-      for (let i = 0; i < y.length; i++) y16[i] = Math.round((y[i] / mx) * 32767);
-      return { m0: rd.m0, y: y16 };
-    });
-    V.chunks.set(key, got);
-    got.catch(() => V.chunks.delete(key));
-    while (V.chunks.size > VOD.KEEP) V.chunks.delete(V.chunks.keys().next().value); // (~2 MB each)
+  if (got) {
+    V.chunks.delete(key);
+    V.chunks.set(key, got); // (the newest used: the last let go)
+    return got;
   }
+  got = vodRead(ch.rep, ch.a, ch.len).then((rd) => {
+    if (!rd) return null;
+    const y = FoneSound.decimate(rd.y, VOD.F);
+    let mx = 1e-9;
+    for (let i = 0; i < y.length; i++) mx = Math.max(mx, Math.abs(y[i]));
+    const y16 = new Int16Array(y.length);
+    for (let i = 0; i < y.length; i++) y16[i] = Math.round((y[i] / mx) * 32767);
+    return { rep: ch.rep, m0: rd.m0, y: y16 };
+  });
+  if (!keep) return got;
+  V.chunks.set(key, got);
+  got.then((v) => { got.val = v; }, () => { if (V.chunks.get(key) === got) V.chunks.delete(key); });
+  while (V.chunks.size > VOD.KEEP) V.chunks.delete(V.chunks.keys().next().value); // (~2 MB each)
   return got;
 }
+// Replay r's sound over a..a+len at the look's rate ({m0, y}, maybe more of it): from a stretch
+// kept for the looks if one holds it, else fetched.
+async function vodWindow(V, r, a, len) {
+  const sr = SND.SR / VOD.F;
+  for (const p of V.chunks.values()) {
+    const c = p.val;
+    if (c && c.rep === r && c.m0 <= a && c.m0 + c.y.length / sr >= a + len) return c;
+  }
+  const rd = await vodRead(r, a, len);
+  return rd ? { m0: rd.m0, y: FoneSound.decimate(rd.y, VOD.F) } : null;
+}
+// (a look's matching, a stretch at a time, lets the rest of fone run between: ~0.25 s each)
+const vodBreath = () => new Promise((r) => setTimeout(r, 0));
+// A look over all of each replay, not just the hour its title gives: VOD.FULL looks in, then every VOD.FULL_EVERY.
+const vodFull = (tries) => tries >= VOD.FULL && (tries - VOD.FULL) % VOD.FULL_EVERY === 0;
 // While it listens for F1 TV's sound: the plan for the picture now fetched ahead (nearest first).
 function vodPrefetch(V, gen, E) {
   if (V.fetching || V.fetchedFor === V.tries) return;
   V.fetching = true;
-  const plan = FoneVod.searchPlan(V.reps, E, { full: V.tries >= VOD.FULL, chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0 });
+  const plan = FoneVod.searchPlan(V.reps, E, { chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0 }); // (the hour's)
   let k = 0;
   const worker = async () => { while (k < plan.length && S.vod === V && gen === S.gen) await vodChunk(V, plan[k++]).catch(() => null); };
   Promise.all(Array.from({ length: VOD.PAR }, worker)).finally(() => { V.fetching = false; V.fetchedFor = V.tries; });
@@ -1632,26 +1658,60 @@ function vodQuery(V) {
   if (FoneSound.rms(x) < 1e-4) return { why: vodListenText({ state: 'quiet' }) };
   return { x, pa: run.p0 + (run.x.length - n) / SND.SR, run };
 }
-// One look: that sound looked for in the replays. True: placed.
-async function vodSearch(V, gen, Q) {
-  const sn = S.snd, { x, pa } = Q;
+// Not found yet: what the panel says while it listens on.
+function vodMissText(V) {
+  const n = V.cands.length;
+  return `Not found in ${vodWho()}'s Bilibili replay yet: listening on${n ? ` (${n === 1 ? 'a likely place' : `${n} likely places`} checked as F1 TV plays on)` : ''}`
+    + `${vodFull(V.tries) ? ' (all of it next)' : ''}`;
+}
+// One look: that sound looked for in the replays; first where earlier looks said it likely is
+// (`scan` false: only there). True: placed.
+async function vodSearch(V, gen, Q, scan = true) {
+  const { x, pa } = Q;
   V.seen = { r: Q.run, n: Q.run.n };
   const E = C.eventTime(S.clock, S.content, pa, null, now(), { manualBase: S.manualBase });
-  const plan = FoneVod.searchPlan(V.reps, E, { full: V.tries >= VOD.FULL, chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0 });
-  V.tries++;
   const placed = V.state === 'placed';
-  if (!placed) vodSay(V, 'searching', `Looking for this moment in ${vodWho()}'s Bilibili replay…`);
   const sr = SND.SR / VOD.F, q = FoneSound.decimate(x, VOD.F), hits = [];
+  const L = { E, pa, pb: pa + x.length / SND.SR, run: Q.run, q };
+  const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100;
+  if (!placed && scan) vodSay(V, 'searching', `Looking for this moment in ${vodWho()}'s Bilibili replay…`);
+  let checked = [];
+  if (!placed && V.cands.length) {
+    V.checks++;
+    const ck = await FoneVod.checkLikely(V.cands, L, (r, a, len) => vodWindow(V, r, a, len).catch(() => null), FoneSound.locate,
+      { sr, near: VOD.NEAR, fresh: VOD.FRESH, agree: VOD.AGREE, need: VOD.VERIFY, pause: vodBreath });
+    if (gen !== S.gen || S.vod !== V) return false;
+    checked = ck.checked;
+    const h = ck.hit;
+    if (h) {
+      // F1 TV's sound heard since found again where the likely place said: this moment is there
+      diag('vod', { again: { bvid: h.cand.rep.bvid, m: r2(h.m), score: r1(h.score), d: r2(h.d), from: h.cand.look, then: r1(h.cand.score) },
+        look: V.tries, pa: r1(pa), checked });
+      vodPlace(V, h.cand.rep, h.E + VOD.D0 - FoneVod.contentAt(h.cand.rep, h.m), VOD.D0, 'sound');
+      return true;
+    }
+    if (!scan && checked.length) diag('vod', { check: V.checks, pa: r1(pa), checked, cands: V.cands.length });
+  }
+  if (!scan) {
+    if (!placed && /^Not found/.test(V.text || '')) V.text = vodMissText(V);
+    return false;
+  }
+  const full = vodFull(V.tries), opts = { chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0 };
+  const plan = FoneVod.searchPlan(V.reps, E, { ...opts, full });
+  const hour = full ? new Set(FoneVod.searchPlan(V.reps, E, opts).map(vodChunkKey)) : null;
+  V.tries++;
   let k = 0, done = 0, stop = false, err = null;
   const rivalOf = (h) => Math.max(h.next, 0, ...hits.filter((o) => o !== h && (o.rep !== h.rep || Math.abs(o.m - h.m) > 1)).map((o) => o.score));
   const worker = async () => {
     while (!stop && k < plan.length) {
       const ch = plan[k++];
-      const got = await vodChunk(V, ch).catch((e) => { err = e; return null; });
+      const got = await vodChunk(V, ch, !hour || hour.has(vodChunkKey(ch))).catch((e) => { err = e; return null; });
       if (gen !== S.gen || S.vod !== V) { stop = true; return; }
       if (!got) continue;
       const res = FoneSound.locate(q, got.y, sr);
       done++;
+      await vodBreath();
+      if (gen !== S.gen || S.vod !== V) { stop = true; return; }
       if (!placed) V.text = `Looking for this moment in ${vodWho()}'s Bilibili replay… ${Math.round((100 * done) / plan.length)}%`;
       if (!res || res.edge) continue;
       const h = { rep: ch.rep, m: got.m0 + res.lag / sr, score: res.score, next: res.next };
@@ -1663,17 +1723,12 @@ async function vodSearch(V, gen, Q) {
   if (gen !== S.gen || S.vod !== V) return false;
   hits.sort((a, b) => b.score - a.score);
   const best = hits[0], rival = best ? rivalOf(best) : 0;
-  const r1 = (v) => Math.round(v * 10) / 10;
-  diag('vod', { look: V.tries, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
-    best: best ? { bvid: best.rep.bvid, m: Math.round(best.m * 100) / 100, score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
-    prev: V.prevBest ? r1(V.prevBest.off) : null });
-  // (two looks in a row putting F1 TV's sound at the same place for the picture: as good as a sure one)
-  const prev = V.prevBest, off = best ? best.m - pa : null;
-  V.prevBest = best && best.score >= VOD.WEAK && best.score >= 1.2 * rival ? { rep: best.rep, off, score: best.score } : null;
-  const agree = !!(prev && V.prevBest && prev.rep === best.rep && Math.abs(prev.off - off) <= VOD.AGREE);
+  diag('vod', { look: V.tries, full, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
+    best: best ? { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
+    more: hits.slice(1, 3).map((h) => [r2(h.m), r1(h.score)]), checked, cands: V.cands.length });
   // (placed already, and sync by sound not confirming it: moved only by a match far above all else)
   const sure = placed ? !!best && best.score >= VOD.SURE && best.score >= 2 * rival
-    : !!best && ((best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival) || agree);
+    : !!best && best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival;
   if (sure) {
     // F1 TV's sound at picture pa is at best.m in the replay: put there with the delay at VOD.D0
     // (and the nudge on top of the sound, as sync by sound keeps it)
@@ -1682,14 +1737,16 @@ async function vodSearch(V, gen, Q) {
     return true;
   }
   if (!placed) {
-    vodSay(V, 'listening', err && !hits.length ? `${vodWho()}'s Bilibili replay: ${err.message || err} (trying again)`
-      : `Not found in ${vodWho()}'s Bilibili replay yet: listening on${V.tries >= 2 ? ' (the whole replay next)' : ''}`);
+    // not sure: its likeliest places kept, checked against the sound F1 TV plays on with
+    FoneVod.keepLikely(V.cands, hits, V.tries, L, { weak: VOD.WEAK, top: 3, max: VOD.CANDS });
+    vodSay(V, 'listening', err && !hits.length ? `${vodWho()}'s Bilibili replay: ${err.message || err} (trying again)` : vodMissText(V));
   }
   return false;
 }
 // Each tick with a Bilibili replay: a look when one is due (VOD.RETRY s after the last, as soon as
-// there's F1 TV's sound to look for), and, placed, again when sync by sound hasn't confirmed it
-// in VOD.CONFIRM looks of its own while hearing F1 TV (playing on meanwhile).
+// there's F1 TV's sound to look for; between, the likely places checked with each VOD.STEP s more
+// of it), and, placed, again when sync by sound hasn't confirmed it in VOD.CONFIRM looks of its
+// own while hearing F1 TV (playing on meanwhile).
 function vodTick(t, v) {
   const V = S.vod, sn = S.snd;
   // repeats ahead of the moment playing (from where it plays, after a seek)
@@ -1705,19 +1762,21 @@ function vodTick(t, v) {
   const since = V.lastTryAt == null ? Infinity : t - V.lastTryAt;
   // (listening: a look whenever there's STEP s more of F1 TV's sound; after a whole plan missed, RETRY s on)
   const due = V.state === 'listening' && (V.tries < VOD.FULL || since >= VOD.RETRY);
+  const check = V.state === 'listening' && !due && V.cands.length > 0;
   if (V.state === 'listening') {
     const vn = C.videoNow(v, t);
     vodPrefetch(V, S.gen, C.eventTime(S.clock, S.content, vn.p, null, t, { manualBase: S.manualBase }));
   }
   const unsure = V.state === 'placed' && sn.target == null && (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM
     && sn.state === 'listening' && since >= (V.rechecks ? VOD.AGAIN : 60);
-  if (!due && !unsure) return;
+  if (!due && !unsure && !check) return;
   const Q = vodQuery(V);
   if (!Q.x) { if (Q.why && V.state === 'listening' && (V.tries === 0 || !/^Not found/.test(V.text || ''))) V.text = Q.why; return; }
   V.busy = true;
   if (unsure) { V.rechecks++; diag('vod', { recheck: V.rechecks }); }
-  vodSearch(V, S.gen, Q).catch((e) => { if (V.state !== 'placed') vodSay(V, 'listening', `${vodWho()}'s Bilibili replay: ${e.message || e}`); })
-    .finally(() => { V.busy = false; V.lastTryAt = now(); if (V.state === 'searching') V.state = 'listening'; });
+  const scan = due || unsure;
+  vodSearch(V, S.gen, Q, scan).catch((e) => { if (V.state !== 'placed') vodSay(V, 'listening', `${vodWho()}'s Bilibili replay: ${e.message || e}`); })
+    .finally(() => { V.busy = false; if (scan) V.lastTryAt = now(); if (V.state === 'searching') V.state = 'listening'; });
 }
 // Off the end (or before the start) of the replay playing: the streamer's next (or previous) one.
 function vodNeighbour(state) {
@@ -1729,7 +1788,7 @@ function vodSwitch(r) {
   const V = S.vod, k = FoneVod.store.get(vodKey(r));
   diag('vod', { switch: r.bvid, kept: !!k });
   if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept');
-  Object.assign(V, { tries: 0, lastTryAt: null, seen: null, prevBest: null });
+  Object.assign(V, { tries: 0, lastTryAt: null, seen: null, cands: [] });
   vodSay(V, 'listening', vodListenText(S.snd));
 }
 // The replay's own danmaku (the live chat on it) from `from` to `to` on its wall clock (the 弹幕
@@ -1765,7 +1824,7 @@ function vodBrief() {
   if (!V) return null;
   const r = V.cur;
   return { state: V.state, text: V.text || null, bvid: r?.bvid ?? null, title: r?.live ?? null, how: V.how ?? null, tries: V.tries,
-    reps: V.reps.length, cuts: r ? (r.cutsDone ? r.cuts.length : null) : null };
+    likely: V.state === 'placed' ? 0 : V.cands.length, reps: V.reps.length, cuts: r ? (r.cutsDone ? r.cuts.length : null) : null };
 }
 
 // ---- team radio, filled in ----------------------------------------------------------

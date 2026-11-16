@@ -538,8 +538,11 @@
       if (s.server) rows.push(['server', `${s.server} (${s.direct ? 'replays, stats, sponsor clips' : 'stats'})`]);
     } else if (s.vod) { // the streamer's Bilibili replay (nothing on the server covers this session)
       const v = s.vod;
+      // (looking: how many looks so far, and the likely places they found being checked as F1 TV plays on)
+      const looking = (v.state === 'listening' || v.state === 'searching') && v.tries > 0
+        ? `looking for this moment: ${v.tries} look${v.tries > 1 ? 's' : ''}${v.likely ? `, ${v.likely === 1 ? 'a likely place' : `${v.likely} likely places`} being checked` : ''}` : null;
       rows.push(['recording', `Bilibili 直播回放${v.bvid ? ` ${v.bvid}` : ''}${v.title ? ` · ${v.title}` : ''}`
-        + ` · ${{ placed: v.how === 'kept' ? 'where it was last time' : 'found by sound', finding: 'looking it up', listening: 'listening for F1 TV', searching: 'looking for this moment', none: 'none for this session', error: 'failed' }[v.state] || v.state}`
+        + ` · ${looking || { placed: v.how === 'kept' ? 'where it was last time' : 'found by sound', finding: 'looking it up', listening: 'listening for F1 TV', searching: 'looking for this moment', none: 'none for this session', error: 'failed' }[v.state] || v.state}`
         + `${v.cuts != null ? ` · ${v.cuts} repeats cut` : ''}`]);
       rows.push(['server', `${s.server || '–'} (nothing recorded for this session)`]);
     } else {
