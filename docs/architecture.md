@@ -569,11 +569,19 @@ section):
   plays the replay's own picture (720p H.264, `FoneVod.loadVideo`, the same byte-range playlist,
   hls.js in `streamer.js`) at the commentary's `m`: their screen has their timing tower and map,
   which fone has no other source for so old (F1's archive refuses).
-- **Stats without timing.** The dashboard, for a video with no timing session or one the server
-  has no timing for (`available: false`), shows the streamer's screen instead (their stream is
-  their timing screen: MultiViewer's tower, race control, the map): `streamer.html?mode=box` in
-  an iframe of its own beside F1 TV's player, which it asks for at half the width (layout.js's
-  'player' command). The engine sends the dashboard its clock for such videos too.
+- **Stats without timing.** For a video with no timing session, or one the server has no timing
+  for (`available: false`), the dashboard keeps its own layout and cuts the streamer's screen into
+  it (their stream is their timing screen: MultiViewer's tower in two columns of ten, race control
+  under it, the session bar on top, the map at the right; the same on the 2025 replays checked).
+  `streamer.html?mode=box` plays it in a frame of the dashboard's own (under F1 TV's player box,
+  on screen so it's decoded); each animation frame `drawShot` draws the parts (`SHOT`, in
+  1920×1080 units) into canvases over the tower, conditions and map panels: the tower's two columns
+  one above the other (slimmed to position, laps and gaps, tyre where that comes out larger), race
+  control under them where the column has room; the session bar in two lines, cut after its
+  track-status box (found every 2 s: the widest run of columns on a coloured ground; its text moves
+  with the clock and lap count) and the weather to the gap before the icons; the map. In the
+  column arrangement the tower takes all but the bar and a third of the height for the map. The
+  engine sends the dashboard its clock for such videos too.
 - **Its danmaku.** The live chat Bilibili put on the replay (`x/v1/dm/list.so?oid=<cid>`, XML,
   each `<d p="progress,mode,size,colour,…,uid hash,…">`, `FoneVod.parseDanmaku`), each put on the
   replay's wall clock by its page and progress (`vodDanmaku`): the 弹幕 overlay asks the engine
