@@ -3,17 +3,30 @@
 Chrome reaches it through --host-resolver-rules (and --ignore-certificate-errors), under the
 real names, so the extension's own code runs unchanged:
 
-  api.live.bilibili.com   room 5555 live, 6666 off air: get_info, Master/info, getRoomPlayInfo
+  api.live.bilibili.com   room 5555 live (off air: showing replays, 轮播), 6666 off air: get_info, Master/info, getRoomPlayInfo
   cn-test-01.bilivideo.com  that room's HTTP-FLV, refused (403) without Bilibili's Referer/Origin
   hls.test                live HLS: /live/ 2 s MPEG-TS segments; /master.m3u8 YouTube's shape
                           (video variants, the audio a rendition of its own: /fmp4/, fMP4)
   f1tv.formula1.com       F1 TV's content API: every video is LIVE
+  fone.test               a fone server, as much of one as the engine asks live when it plays the
+                          stream itself: its channels are rooms 5555's and 6666's (/api/danmaku/status), its
+                          timeline one growing recording since an hour before the start (no
+                          playlist: nothing to play) and the sponsor clips found (/_ctl/ad?in=s or
+                          ?at=wall, &d=s: one more, on air s from now or at that wall time; the
+                          analysis /_ctl/ads_lag?s= behind the recording, files' adsAnalyzedTo)
 
 The streams are recordings (/media/live.flv, /media/hls/, /media/fmp4/) played as if live:
 position pos(t) = t - T0 + 30 s, playlists a sliding window of 6. A new FLV connection gets the
 last 2 s at once (a CDN's GOP cache), then each tag when its time comes, its timestamps
 starting at 0 as Bilibili's do (so a reconnect is placed by arrival). /_ctl/kill drops every
-FLV connection; /_ctl/stats says what was sent.
+FLV connection; /_ctl/stats says what was sent; /_ctl/offline and /_ctl/online take room 5555 off
+air and back; /_ctl/refuse and /_ctl/accept have its CDN refuse the stream (403) and give it again;
+/_ctl/on6666 puts room 6666 on air (the same stream); /_ctl/fone_end ends the mock server's live
+recording (its timeline no longer live), /_ctl/fone_live starts it again; /_ctl/fone_cut?len=s: the
+streamer reconnects, the recording going on in a new file s later (the server's m runs on across
+files without the time between them), or, negative, s earlier (overlapping: the server clips the
+new file's first -s s, which have m but no piece).
+
 """
 
 import json
@@ -33,6 +46,8 @@ T0 = time.time()
 LEAD = 30.0  # s into the stream at start
 BURST = 2.0  # s sent at once on connect
 BILI_REF = "https://live.bilibili.com/"
+API_DELAY = 0.3  # s per Bilibili API answer: a reconnect re-resolves the room, as over the internet
+PIECE_W = T0 - 3600  # the mock server's recording: m 0 at this wall time, up to 3 s ago
 
 
 def pos(t=None):
@@ -63,9 +78,30 @@ FLV_HEAD, FLV_HDRS, FLV_TAGS = read_flv(f"{MEDIA}/live.flv")
 HLS_SEGS = {d: set(os.listdir(f"{MEDIA}/{d}")) for d in ("hls", "fmp4")}
 SEG = 2.0
 
-STATE = {"flv": [], "kills": 0, "refused": 0, "hls_playlists": 0, "hls_segments": 0, "offline": False}
+STATE = {"flv": [], "kills": 0, "refused": 0, "hls_playlists": 0, "hls_segments": 0, "hls_ad": None, "hls_ad_fetched": 0, "offline": False, "refuse": False,
+         "ads": [], "ads_lag": 0.0, "fone_timelines": 0, "diag": [], "on6666": False, "fone_end": None, "fone_cuts": []}
+FONE_CH = "测试解说"
+FONE_CH2 = "测试频道"
 LOCK = threading.Lock()
-KILL = threading.Event()
+
+
+def fone_spans(upto):
+    """The mock server's recording as (w, m, d) per file, up to wall time upto: one file per
+    fone_cut, m running on across them as the server's does (no room for a gap; an overlap's
+    first seconds clipped: m but no piece)."""
+    spans, w, m = [], PIECE_W, 0.0
+    for c in STATE["fone_cuts"]:
+        if upto <= c["at"]:
+            break
+        spans.append((w, m, c["at"] - w))
+        m += c["at"] - w
+        if c["len"] < 0:
+            m, w = m - c["len"], c["at"]
+        else:
+            w = c["at"] + c["len"]
+    if upto > w:
+        spans.append((w, m, upto - w))
+    return spans
 
 
 def json_body(h, obj, status=200):
@@ -89,7 +125,9 @@ class H(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             if u.path.startswith("/_ctl/"):
-                return self.ctl(u.path[6:])
+                return self.ctl(u.path[6:], q)
+            if host == "fone.test":
+                return self.fone(u.path)
             if host == "api.live.bilibili.com":
                 return self.bili(u.path, q)
             if host == "cn-test-01.bilivideo.com":
@@ -103,29 +141,95 @@ class H(BaseHTTPRequestHandler):
             return
         json_body(self, {"error": f"no mock for {host}{u.path}"}, 404)
 
-    def ctl(self, what):
-        if what == "offline":  # room 5555's streamer goes off air: its FLV ends and refuses
+    def do_POST(self):
+        host = (self.headers.get("host") or "").split(":")[0]
+        body = self.rfile.read(int(self.headers.get("content-length") or 0))
+        if host == "fone.test" and self.path == "/api/diag":  # the engine's log: its switches kept
             with LOCK:
-                STATE["offline"] = True
+                STATE["diag"] += [e for e in json.loads(body).get("events", []) if e.get("type") == "direct"]
+            return json_body(self, {"ok": True})
+        json_body(self, {"error": f"no mock for POST {host}{self.path}"}, 404)
+
+    def fone(self, path):
+        if path == "/api/health":
+            return json_body(self, {"ok": True, "files": 1})
+        if path == "/api/channels":
+            return json_body(self, [{"name": FONE_CH, "files": 1, "live": True}, {"name": FONE_CH2, "files": 1, "live": True}])
+        if path == "/api/danmaku/status":
+            return json_body(self, {"rooms": {"5555": {"channel": FONE_CH, "live": True}, "6666": {"channel": FONE_CH2, "live": True}}})
+        if path.startswith("/api/f1tv/"):
+            return json_body(self, {"contentId": path.rsplit("/", 1)[-1], "title": "Test Grand Prix - Race", "subtype": "LIVE",
+                                    "p0": None, "anchor": None})
+        if path.startswith("/api/sync/"):
+            return json_body(self, {"delay": 23, "source": "default"})
+        if path == "/api/timeline":
+            with LOCK:
+                STATE["fone_timelines"] += 1
+                ads, end, lag = list(STATE["ads"]), STATE["fone_end"], STATE["ads_lag"]
+            upto = (end or time.time()) - 3
+            spans = fone_spans(upto)
+            return json_body(self, {"live": end is None, "complete": False, "playlist": None,
+                                    "pieces": [{"w": w, "m": m, "d": d, "f": f} for f, (w, m, d) in enumerate(spans)],
+                                    "files": [{"id": f"rec{f}", "name": f"recording {f}", "inPlaylist": True, "growing": f == len(spans) - 1,
+                                               "wallStart": w, "wallEnd": w + d, "duration": d, "offset": m,
+                                               "adsAnalyzedTo": d if f < len(spans) - 1 else max(0, upto - lag - w)}
+                                              for f, (w, m, d) in enumerate(spans)],
+                                    "mutes": [{"w": a["w"], "d": a["d"], "m": a["w"] - PIECE_W, "name": "测试广告"} for a in ads]})
+        return json_body(self, {"error": f"no mock for fone.test{path}"}, 404)
+
+    def ctl(self, what, q):
+        if what == "hls_ad":  # Twitch's stitched ad: the next n segments of /live/ (a discontinuity each side)
+            k = int(pos() // SEG)
+            with LOCK:
+                STATE["hls_ad"] = (k, k + int(q.get("n", 3)))
+            return json_body(self, {"ok": True, "from": k})
+        if what == "on6666":
+            with LOCK:
+                STATE["on6666"] = True
+            return json_body(self, {"ok": True})
+        if what == "fone_cut":
+            with LOCK:
+                STATE["fone_cuts"].append({"at": time.time() - 3, "len": float(q.get("len", 15))})
+            return json_body(self, {"ok": True})
+        if what in ("fone_end", "fone_live"):
+            with LOCK:
+                STATE["fone_end"] = time.time() if what == "fone_end" else None
+            return json_body(self, {"ok": True})
+        if what in ("online", "accept"):
+            with LOCK:
+                STATE["offline" if what == "online" else "refuse"] = False
+            return json_body(self, {"ok": True})
+        if what == "ad":
+            w = float(q["at"]) if "at" in q else time.time() + float(q.get("in", 0))
+            with LOCK:
+                STATE["ads"].append({"w": w, "d": float(q.get("d", 6))})
+            return json_body(self, {"ok": True, "w": w})
+        if what == "ads_lag":
+            with LOCK:
+                STATE["ads_lag"] = float(q.get("s", 0))
+            return json_body(self, {"ok": True})
+        if what in ("offline", "refuse"):  # room 5555's streamer goes off air / its CDN refuses: its FLV ends
+            with LOCK:
+                STATE[what] = True
             what = "kill"
         if what == "kill":
             with LOCK:
                 STATE["kills"] += 1
-            KILL.set()
-            time.sleep(0.3)
-            KILL.clear()
             return json_body(self, {"ok": True})
         with LOCK:
-            return json_body(self, {**STATE, "pos": pos(), "t": time.time()})
+            return json_body(self, {**STATE, "pos": pos(), "t": time.time(), "piece_w": PIECE_W,
+                                    "pieces": [{"w": w, "m": m, "d": d} for w, m, d in fone_spans(time.time() + 3600)]})
 
     def bili(self, path, q):
+        time.sleep(API_DELAY)
         room = q.get("room_id") or q.get("id")
-        live = room in ("5555", "105555") and not STATE["offline"]
+        live = (room in ("5555", "105555") and not STATE["offline"]) or (room == "6666" and STATE["on6666"])
         if path == "/room/v1/Room/get_info":
             if room not in ("5555", "105555", "6666"):
                 return json_body(self, {"code": 1, "msg": "房间不存在", "data": None})
-            return json_body(self, {"code": 0, "data": {"room_id": int(room), "uid": 4242 if live else 4343,
-                                                         "live_status": 1 if live else 0, "title": "测试 F1 解说直播"}})
+            # (room 5555 off air shows replays, 轮播: live_status 2, as Bilibili rooms do)
+            return json_body(self, {"code": 0, "data": {"room_id": int(room), "uid": 4242 if live else 4343, "title": "测试 F1 解说直播",
+                                                         "live_status": 1 if live else 2 if room in ("5555", "105555") else 0}})
         if path == "/live_user/v1/Master/info":
             return json_body(self, {"code": 0, "data": {"info": {"uname": "测试解说" if q.get("uid") == "4242" else "下播了"}}})
         if path == "/xlive/web-room/v2/index/getRoomPlayInfo":
@@ -139,6 +243,8 @@ class H(BaseHTTPRequestHandler):
     def flv(self):
         if STATE["offline"]:
             return json_body(self, {"error": "off air"}, 404)
+        if STATE["refuse"]:
+            return json_body(self, {"error": "refused"}, 403)
         if self.headers.get("referer") != BILI_REF or self.headers.get("origin") != BILI_REF.rstrip("/"):
             with LOCK:
                 STATE["refused"] += 1
@@ -153,8 +259,9 @@ class H(BaseHTTPRequestHandler):
         conn = {"first": base / 1000, "at": time.time(), "last": None, "open": True}
         with LOCK:
             STATE["flv"].append(conn)
+            kills = STATE["kills"]  # a kill ends the connections open then, not the next one
         try:
-            while i < len(FLV_TAGS) and not KILL.is_set():
+            while i < len(FLV_TAGS) and STATE["kills"] == kills:
                 ts, raw = FLV_TAGS[i]
                 wait = ts / 1000 - pos()
                 if wait > 0:
@@ -184,13 +291,25 @@ class H(BaseHTTPRequestHandler):
                 if d == "fmp4":
                     lines.append('#EXT-X-MAP:URI="init.mp4"')
                 suffix = "m4s" if d == "fmp4" else "ts"
+                ad = STATE["hls_ad"] if d == "live" else None
                 for k in range(first, newest + 1):
+                    if ad and ad[0] <= k < ad[1]:  # (as Twitch marks its stitched ads)
+                        if k == ad[0]:
+                            lines += ["#EXT-X-DISCONTINUITY", f'#EXT-X-DATERANGE:ID="stitched-ad-{k}",CLASS="twitch-stitched-ad",START-DATE="2026-10-26T00:00:00.000Z",DURATION={SEG * (ad[1] - ad[0]):.3f}']
+                        lines += [f"#EXTINF:{SEG:.3f},Amazon|1", f"ad_{k:05d}.ts"]
+                        continue
+                    if ad and k == ad[1]:
+                        lines.append("#EXT-X-DISCONTINUITY")
                     lines += [f"#EXTINF:{SEG:.3f},live", f"seg_{k:05d}.{suffix}"]
                 with LOCK:
                     STATE["hls_playlists"] += 1
                 return self.send_bytes(("\n".join(lines) + "\n").encode(), "application/vnd.apple.mpegurl")
             if path.startswith(f"/{d}/"):
                 name = path.rsplit("/", 1)[-1]
+                if name.startswith("ad_"):  # (an ad: fone shouldn't fetch it)
+                    with LOCK:
+                        STATE["hls_ad_fetched"] += 1
+                    name = "seg_00000.ts"
                 k = int(name[4:9]) if name.startswith("seg_") else -1
                 if name in HLS_SEGS[ext] and (name == "init.mp4" or 0 <= k <= newest):
                     with LOCK:

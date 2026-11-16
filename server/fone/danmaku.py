@@ -41,7 +41,7 @@ from .config import OFF, Config
 
 log = logging.getLogger("fone.danmaku")
 
-KEEP_DAYS = 30  # items
+KEEP_DAYS = int(os.environ.get("FONE_DANMAKU_KEEP_DAYS", "30"))  # items (the e2e keeps its old fixture)
 KEEP_RAW_DAYS = 7  # capture files (indexed by then)
 SPAN_GAP = 75.0  # s without a line (heartbeats every 30 s): the capture wasn't listening
 SPAN_SLACK = (5.0, 35.0)  # around a span, still covered: archive items there are the capture's

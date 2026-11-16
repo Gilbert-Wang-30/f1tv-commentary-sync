@@ -44,6 +44,31 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+// The PC's clock against the server's (kept by NTP). Live, F1 TV's clock on the picture is
+// compared with the time now, so a PC clock a second off would put the stream recorded here a
+// second off (the user's Windows clock ran ~1.1 s slow, 2026-10-25, by when its diagnostics
+// reached the server). Measured over /api/health (its `now`): the quickest of a few round trips,
+// again every 10 min; none without a server.
+const SKEW = { EVERY: 600, TRIES: 3, MAX_RTT: 0.5 };
+async function refreshSkew(gen) {
+  S.skewAt = now();
+  let best = null;
+  for (let i = 0; i < SKEW.TRIES; i++) {
+    try {
+      const t0 = now(), r = await api('/api/health'), t1 = now();
+      if (gen !== S.gen) return;
+      if (Number.isFinite(r?.now) && t1 - t0 < SKEW.MAX_RTT && !(best && best.rtt <= t1 - t0)) best = { rtt: t1 - t0, skew: r.now - (t0 + t1) / 2 };
+    } catch { /* again next time */ }
+  }
+  if (!best) return;
+  if (S.skew == null || Math.abs(best.skew - S.skew) > 0.1) diag('skew', { skew: Math.round(best.skew * 1000) / 1000, rtt: Math.round(best.rtt * 1000) });
+  S.skew = best.skew;
+}
+// the time now by the server's clock (this PC's, without one); and a wall time of the stream
+// recorded here (this PC's clock: when it came in) on the server's, as a server's recording's are
+const skewNow = () => (S.base ? S.skew ?? 0 : 0);
+const trueNow = (t) => t + skewNow();
+
 // ---- attach / detach -----------------------------------------------------------
 
 function detach() {
@@ -53,12 +78,17 @@ function detach() {
   if (S.hls) { S.hls.destroy(); S.hls = null; }
   if (S.lplayer) { S.lplayer.destroy(); S.lplayer = null; } // the recorder itself goes on (LINGER)
   S.local = null;
+  S.vod = null; // (a Bilibili replay playing)
+  if (S.vodBlob) { URL.revokeObjectURL(S.vodBlob); S.vodBlob = null; }
   S.base = null; // picked again on attach (the settings may list another, or none)
   audio.pause();
   audio.removeAttribute('src');
-  Object.assign(S, { liveLock: null, minBehind: undefined, synced: false, dashDelay: null, dashDelayAt: 0, dashAt: 0, lbuf: null, contentBusy: false,
+  Object.assign(S, { liveLock: null, minBehind: undefined, minLagW: undefined, synced: false, dashDelay: null, dashDelayAt: 0, dashAt: 0, lbuf: null, contentBusy: false,
     key: null, content: null, clock: null, clockFinal: false, delay: null, timeline: null, playlist: null,
-    error: null, lastTarget: null, manualBase: null, steer: C.newSteer(), resync: true, nominal: null });
+    error: null, lastTarget: null, manualBase: null, steer: C.newSteer(), resync: true, nominal: null,
+    direct: null, room: null, directErrAt: null, directBack: false, directOff: false, offArmed: false, offAt: null, recheckAt: 0, serverSync: null, serverTl: null, adSeenAt: null, carry: null, serverMutes: null, mutesAt: 0, mutesBusy: false,
+    edgeStepAt: null, edgeMissAt: null, edgeSeenAt: null, flBest: undefined, upAges: [], upU: null, screen: null, clockAt: null,
+    snd: null, vhist: [] });
 }
 
 async function attach(msg, key) {
@@ -66,17 +96,24 @@ async function attach(msg, key) {
   const gen = S.gen;
   const local = msg.settings.source === 'local';
   Object.assign(S, { key, tab: msg.tab, cid: msg.cid, channel: msg.channel || null, servers: msg.settings.servers || [],
-    source: local ? 'local' : 'server', stream: local ? String(msg.settings.stream || '').trim() : null });
+    source: local ? 'local' : 'server', stream: local ? String(msg.settings.stream || '').trim() : null,
+    soundOn: msg.settings.soundSync !== false, vhist: [] });
   try {
     if (local) return await attachLocal(msg, gen);
     const base = await pickServer(S.servers);
     if (gen !== S.gen) return;
     S.base = base;
+    if (S.skew == null || now() - (S.skewAt ?? 0) > SKEW.EVERY) refreshSkew(gen);
     S.channels = await api('/api/channels');
     if (!S.channel) S.channel = S.channels[0]?.name ?? null;
     if (!S.channel) throw new Error('No recordings found on the server yet');
+    S.bufferMin = msg.settings.bufferMin;
+    S.room = await directStream(S.channel); // (its live page, ↗; and live straight from it)
+    S.direct = msg.settings.liveDirect === false ? null : S.room;
+    if (gen !== S.gen) return;
     await loadContent(gen);
     if (gen !== S.gen) return;
+    if (S.soundOn && !S.local) sndStart(); // (the server's recording: its sound decoded here too)
     await refreshTimeline(gen);
   } catch (e) {
     if (gen === S.gen) S.error = e.message || String(e);
@@ -96,6 +133,7 @@ async function attachLocal(msg, gen) {
   S.channels = [];
   S.lplayer = FoneLocalPlayer.create(audio, () => FoneRecorder.buffer(S.stream));
   S.resync = true;
+  if (S.soundOn) sndStart();
   wantRecording();
   const base = S.servers.length ? await pickServer(S.servers).catch(() => null) : null;
   if (gen !== S.gen) return;
@@ -106,9 +144,12 @@ async function attachLocal(msg, gen) {
 }
 
 // The stream is recorded while the video is live, or may be (the player hasn't said yet): not
-// on a replay, which it can't play with (it would only cost the stream's bandwidth).
+// on a replay, which it can't play with (it would only cost the stream's bandwidth). With a
+// server: while live plays from the stream, and while F1 TV is rewound into the server's
+// recording from it (for the way back).
 function wantRecording() {
-  if (S.local && (!S.clockFinal || S.clock === 'edge')) FoneRecorder.want(S.stream, S.bufferMin);
+  const url = S.local ? S.stream : S.directBack ? S.direct : null;
+  if (url && (!S.clockFinal || S.clock === 'edge')) FoneRecorder.want(url, S.bufferMin);
 }
 
 function refreshLocal(gen) {
@@ -116,13 +157,15 @@ function refreshLocal(gen) {
   if (gen !== S.gen || !S.local) return;
   const B = FoneRecorder.buffer(S.stream);
   // a fresh buffer (the recorder had stopped, or the stream changed): its positions are new ones
-  if (B !== S.lbuf) { S.lbuf = B; S.liveLock = null; S.resync = true; }
+  if (B !== S.lbuf) { S.lbuf = B; S.liveLock = null; S.resync = true; if (S.snd) sndReset('a new recording'); }
   S.timeline = B ? FoneLocal.timeline(B, now()) : null;
   const rs = FoneRecorder.status();
   if (rs.url === S.stream) {
-    S.channel = rs.name || rs.label;
+    if (S.source === 'local') S.channel = rs.name || rs.label; // (with a server: its channel's name stays)
     if (rs.state === 'recording') S.error = null; // (an interrupted play() left in it, say)
   }
+  if (S.source === 'server' && directGivenUp(rs)) return goServer(gen, false, `the stream: ${rs.err || rs.text || rs.state}`);
+  if (S.source === 'server' && S.base && !S.mutesBusy && now() - (S.mutesAt || 0) > MUTES_EVERY) refreshServerMutes(gen);
   if (S.content && !S.clockFinal) decideClock(gen).catch(() => {});
   else if (S.content && now() - S.contentAt > 600 && !S.contentBusy) {
     S.contentBusy = true;
@@ -130,6 +173,258 @@ function refreshLocal(gen) {
     loadContent(gen).catch(() => {}).finally(() => { S.contentBusy = false; });
   }
   S.timelineTimer = setTimeout(() => refreshLocal(gen), 500);
+}
+
+// ---- with a server, live: the commentary straight from the stream ---------------------------
+// A fone server's recording of a live stream grows a recorder keyframe group at a time (4-6 s
+// every ~5 s, measured 2026-10-23 on 胡闹P房's room), so the commentary must stay ~7 s behind it
+// and its late groups held F1 TV back. The same stream pulled into the browser arrives
+// continuously (as the Bilibili web player gets it): live, the engine plays that instead, recorded
+// here as without a server, and the server goes on giving everything else (the content, the
+// stats, the danmaku, the diagnostics, the sponsor clips it found). The channel's Bilibili room is
+// the one the server listens to for its danmaku.
+const DIRECT_GIVEUP = 20; // s of the stream not coming in here (from 2 s after its last audio) before the server's recording plays instead
+const DIRECT_BACK = 10; // s: rewound into the server's recording, back once F1 TV is this far inside the stream's
+const MUTES_EVERY = 1.5; // s between looks at the server's sponsor clips, live from the stream (they're known late)
+async function directStream(channel) {
+  try {
+    const st = await api('/api/danmaku/status');
+    const room = Object.entries(st.rooms || {}).find(([, r]) => r?.channel === channel)?.[0];
+    return room && /^\d+$/.test(room) ? `https://live.bilibili.com/${room}` : null;
+  } catch {
+    return null; // a server without the danmaku service: the server's recording, as before
+  }
+}
+
+// With a server, a stream this browser can't get (its CDN refusing, say, or its API, or a
+// connection gone quiet) isn't worth more than the server's recording of it: back to that until
+// the engine attaches again (another video or tab, a settings change). True once given up
+// (S.direct cleared). Off air isn't failing: the server's recording is off air too.
+function directGivenUp(rs) {
+  if (!S.direct || rs.url !== S.direct) return false;
+  const t = now(), quiet = !(rs.lastAt > t - 2);
+  S.directErrAt = rs.state === 'offline' || rs.state === 'idle' || !quiet ? null : S.directErrAt ?? t;
+  if (S.directErrAt == null || t - S.directErrAt < DIRECT_GIVEUP || rs.lastAt > t - DIRECT_GIVEUP) return false;
+  diag('direct', { on: false, gaveUp: rs.err || rs.text || rs.state });
+  Object.assign(S, { direct: null, directBack: false, directErrAt: null });
+  return true;
+}
+
+function goDirect(gen) {
+  if (S.local || !S.direct || gen !== S.gen) return;
+  // back from a rewind: the server's lock, if carried there, is the exact moment (one made from
+  // the server's edge, say by Re-sync, isn't: the stream locks from its own then, unless rewound)
+  const carry = carryLock(S.directBack && !!S.liveLock?.carried) ?? (S.directBack && S.carry?.cid === S.cid ? S.carry : null);
+  if (S.hls) { S.hls.destroy(); S.hls = null; }
+  audio.removeAttribute('src');
+  S.serverSync = { sync: S.sync, delay: S.delay, delaySource: S.delaySource }; // the server's recording's, for the way back
+  Object.assign(S, { local: true, stream: S.direct, directBack: false, carry,
+    playlist: null, liveLock: null, resync: true, lbuf: null, timeline: null });
+  S.lplayer = FoneLocalPlayer.create(audio, () => FoneRecorder.buffer(S.stream));
+  const sync = localSync();
+  Object.assign(S, { sync, delay: sync.delay, delaySource: sync.source });
+  wantRecording();
+  diag('direct', { on: true, carry: !!carry });
+  if (S.soundOn) sndStart();
+  refreshLocal(gen);
+}
+
+// Back to the server's recording: the video is no longer live (a replay plays from it), the
+// stream can't be had here, or (`back`) F1 TV was rewound past what this browser has recorded,
+// and then the stream goes on being recorded and the commentary goes back to it once F1 TV is
+// back within it (backInDirect).
+function goServer(gen, back = false, why = null) {
+  if (!S.local || S.source !== 'server' || gen !== S.gen) return;
+  // (still live: the moment carries over, rewound; a clock change starts a new timeline)
+  const carry = S.clock === 'edge' ? carryLock(back) : null;
+  clearTimeout(S.timelineTimer);
+  if (S.lplayer) { S.lplayer.destroy(); S.lplayer = null; } // the recorder stops by itself, once unwanted
+  audio.pause();
+  audio.removeAttribute('src');
+  // still live: the server's recording's own delay (a new clock's is set already, decideClockOnce)
+  if (S.clock === 'edge' && S.serverSync) Object.assign(S, S.serverSync);
+  Object.assign(S, { local: null, stream: null, directBack: back, carry, liveLock: null, resync: true, lbuf: null, timeline: null, playlist: null });
+  diag('direct', { on: false, why, carry: !!carry });
+  if (S.soundOn) sndStart(); else S.snd = null; // (the server's recording now: its own place, listened for again)
+  refreshTimeline(gen);
+}
+
+// A switch between the server's recording and the stream recorded here while F1 TV is rewound:
+// the moment playing (its wall time) carries over, so the commentary neither jumps nor loses the
+// rewind (a lock from the edge knows a rewind only to within F1 TV's edge steps). At the live
+// edge the new source locks from its own edge, at its own delay; `force`: whatever F1 TV's
+// distance from its edge (a rewind's round trip, where the lock is the exact moment throughout).
+function carryLock(force = false) {
+  const L = S.liveLock, v = S.video;
+  if (!L || L.cid !== S.cid || !v) return null;
+  const t = now(), vn = C.videoNow(v, t);
+  if (clockLost(t, vn)) return null; // (its moment can't be put on the picture now)
+  if (!force && rewoundBy(t, vn) < 2 * EDGE_STEP) return null;
+  const w = lockWall(L, vn);
+  // (carried in the server's clock: the stream recorded here's walls are this PC's)
+  return w == null ? null : { cid: S.cid, w: S.local ? w + skewNow() : w, p: vn.p, u: f1Clock(vn) };
+}
+
+// A live lock: the commentary at m0 + (p - p0), linear in F1 TV's position. On a server's
+// recording that holds within one file, but its m runs on across files without the time between
+// them (a streamer's reconnect: a gap; an overlap, clipped), so the lock also keeps its wall time
+// (w0 at p0) and its file (f). The linear m stands while it's in that file, or past its end with
+// that file still the newest (waiting at the live edge); anywhere else (another file, a clipped
+// overlap, past a newer file's end) the moment is placed by its wall time: a gap is a gap
+// (silence, F1 TV not held), the commentary in step with the picture after it. Within its file an
+// edge lock's wall time follows the server's mapping as it firms up (a carried one's is the
+// picture's own, from this browser's recording). Null in a gap (L.gap: how long until the audio).
+// A lock whose moment came from a wall time (`wall`: carried, or placed across files) keeps
+// that wall time instead, its m following the file's mapping when that moves (0.3 s or more).
+function lockM(L, vn) {
+  const m = L.m0 + (vn.p - L.p0);
+  L.gap = null;
+  if (S.local || L.w0 == null) return m;
+  const pcs = S.timeline?.pieces;
+  if (!pcs?.length) return m;
+  const pc = pcs.find((x) => m >= x.m && m < x.m + x.d), last = pcs[pcs.length - 1];
+  const w = L.w0 + (vn.p - L.p0);
+  if (pc ? pc.f === L.f : m >= last.m + last.d && last.f === L.f) {
+    if (!pc) return m;
+    const mw = pc.m + (w - pc.w);
+    if (!L.wall) L.w0 = pc.w + (m - pc.m) - (vn.p - L.p0);
+    else if (Math.abs(mw - m) >= 0.3) { Object.assign(L, { m0: mw, p0: vn.p, u0: f1Clock(vn), w0: w }); return mw; }
+    return m;
+  }
+  const at = C.mapWall(pcs, w);
+  if (at.state === 'gap') { L.gap = at.wait; return null; }
+  const placed = at.state === 'ok' ? { m: at.m, f: pcs[at.piece].f }
+    : at.state === 'after' ? { m: last.m + (w - last.w), f: last.f }
+      : { m: pcs[0].m - (pcs[0].w - w), f: pcs[0].f }; // (before the recording: rewound before it)
+  // (a file-set change that lands it back in its own file keeps its kind: lockM's in-file rule)
+  const same = L.f === -1 && L.fid != null && S.timeline.files?.[placed.f]?.id === L.fid;
+  Object.assign(L, { m0: placed.m, p0: vn.p, u0: f1Clock(vn), w0: w, f: placed.f, wall: L.wall || !same, fid: null });
+  return placed.m;
+}
+
+// The wall time of the moment a live lock plays (lockM's, also in a gap).
+function lockWall(L, vn) {
+  return !S.local && L.w0 != null ? L.w0 + (vn.p - L.p0) : wallAt(L.m0 + (vn.p - L.p0));
+}
+
+// A new lock at m0 now: on a server's recording, with its wall time (`w0` given, else m0's, from
+// the next piece if m0 has none: a clipped overlap) and the file that wall time falls in (lockM).
+// (`u0`: F1 TV's own clock at p0, when its player gives it: the lock keeps to that picture when
+// its content position is re-based, the 'video' message. Wherever p0 moves, u0 moves with it.)
+function newLock(m0, vn, t, extra) {
+  const L = { cid: S.cid, m0, p0: vn.p, at: t, u0: f1Clock(vn), ...extra };
+  if (!S.local) {
+    const pcs = S.timeline?.pieces || [], nx = pcs.find((x) => x.m > m0);
+    L.w0 = extra?.w0 ?? wallAt(m0) ?? (nx ? nx.w - (nx.m - m0) : null);
+    const at = L.w0 != null && pcs.length ? C.mapWall(pcs, L.w0) : null;
+    const pc = at?.state === 'ok' ? pcs[at.piece] : at?.state === 'gap' ? pcs.find((x) => x.w > L.w0)
+      : at?.state === 'before' ? pcs[0] : pcs[pcs.length - 1];
+    L.f = pc?.f ?? null;
+    if (extra?.w0 != null && at?.state === 'ok') L.m0 = at.m; // (a wall time given decides the moment)
+  }
+  return (S.liveLock = L);
+}
+
+// The wall time at which commentary position m was live, on the timeline playing. The stream
+// recorded here is one timeline, its wall clock linear in m (before what's kept too, where a
+// rewind goes); a server's recording past its newest audio (live) likewise.
+function wallAt(m) {
+  const pcs = S.timeline?.pieces;
+  if (!pcs?.length) return null;
+  if (S.local) return pcs[0].w + (m - pcs[0].m);
+  const last = pcs[pcs.length - 1];
+  return C.wallOf(pcs, m) ?? (m >= last.m + last.d ? last.w + (m - last.m) : m < pcs[0].m ? pcs[0].w + (m - pcs[0].m) : null);
+}
+
+// The other way round: the position of wall time w on the timeline playing, also where it has no
+// audio (before the recording, after it, in a gap between two files: the server's m has no room
+// for a gap, so there as the server's own live lock would place it).
+function momentAt(w) {
+  const pcs = S.timeline?.pieces;
+  if (!pcs?.length) return null;
+  if (S.local) return pcs[0].m + (w - pcs[0].w);
+  const at = C.mapWall(pcs, w), last = pcs[pcs.length - 1];
+  if (at.state === 'ok') return at.m;
+  if (at.state === 'before') return pcs[0].m - at.wait;
+  if (at.state === 'after') return last.m + (w - last.w);
+  const next = pcs.find((pc) => pc.w > w);
+  return next ? next.m - (next.w - w) : null;
+}
+
+// Rewound into the server's recording from the stream (goServer `back`): F1 TV is back within
+// what this browser has recorded (Go live, or a seek forward), DIRECT_BACK s inside it at wall
+// time w, and the stream is still coming in.
+function backInDirect(t, w) {
+  const rs = FoneRecorder.status();
+  if (w == null || rs.url !== S.direct || localIdle(rs, t) || !(rs.lastAt > t - 3)) return false;
+  const B = FoneRecorder.buffer(S.direct);
+  const first = B && FoneLocal.timeline(B, t).pieces[0];
+  return !!first && w > first.w + DIRECT_BACK;
+}
+
+// The sponsor clips the server found, by wall time (the stream recorded here has no playlist
+// positions of the server's), over what the buffer keeps. The server knows of a clip only a few
+// seconds into it (its recording's lumps, then 2-3 s of the clip to recognise it), when the
+// stream recorded here plays it already: its first seconds are heard.
+async function refreshServerMutes(gen) {
+  S.mutesAt = now();
+  S.mutesBusy = true;
+  try {
+    const t = now();
+    const from = Math.floor(t - 60 * (S.bufferMin || 15) - 60), to = Math.ceil(t + 60);
+    const tl = await api(`/api/timeline?channel=${encodeURIComponent(S.channel)}&from=${from}&to=${to}`);
+    if (gen === S.gen) { S.serverMutes = tl.mutes || []; S.serverTl = tl; }
+    // the server's recording growing while this browser's recorder says off air: ask it again now
+    // rather than at its next 30 s check
+    const rs = FoneRecorder.status(), last = tl.pieces?.[tl.pieces.length - 1];
+    if (gen === S.gen && rs.url === S.direct && rs.state === 'offline' && tl.live && last && last.w + last.d > trueNow(now()) - 15
+      && now() - S.recheckAt > 10) {
+      S.recheckAt = now();
+      FoneRecorder.recheck(S.direct);
+    }
+  } catch { /* keep the last */ } finally {
+    if (gen === S.gen) S.mutesBusy = false;
+  }
+}
+
+// The sponsor clip (if any) at commentary position m, to mute it. A break is several clips back
+// to back, and live the server recognises each one on its own, AD.RECOG s into it once its audio
+// has reached the recording: right after one clip's end, the next isn't known yet. So the mute
+// holds past a clip's end until the server's analysis (files' adsAnalyzedTo) is AD.RECOG s past
+// it, when the next clip would have been recognised (at most AD.HOLD s). Live from the stream
+// recorded here, the match is by wall time, padded by AD.PAD s (the two clocks' arrival times differ).
+const AD = { RECOG: 3, HOLD: 12, PAD: 1, FADE: 1.2 };
+function adAt(m) {
+  const tl = S.local ? S.serverTl : S.timeline;
+  if (!tl?.mutes?.length) return null;
+  // the moment on the server's timeline (the stream recorded here: by its wall time)
+  let sm = m, w = null;
+  if (S.local) {
+    w = wallAt(m);
+    if (w == null) return null;
+    w += skewNow(); // (the server's clock, its mutes')
+    const hit = tl.mutes.find((x) => w >= x.w - AD.PAD && w < x.w + x.d + AD.PAD);
+    if (hit) return hit;
+    const at = C.mapWall(tl.pieces, w), last = tl.pieces[tl.pieces.length - 1];
+    sm = at.state === 'ok' ? at.m : at.state === 'after' && last ? last.m + last.d + at.past : null;
+    if (sm == null) return null;
+  } else {
+    const hit = tl.mutes.find((x) => m >= x.m && m < x.m + x.d);
+    if (hit) return hit;
+  }
+  // just past a clip: held while the server can't yet know whether another follows
+  return tl.mutes.find((x) => sm >= x.m + x.d && sm < x.m + x.d + AD.HOLD && analyzedAt(tl, x.m + x.d) < x.m + x.d + AD.RECOG) || null;
+}
+// How far the server's sponsor-clip analysis has got, on its timeline's m, in the file holding m.
+// (on into the next file while one is analysed to its end: a clip ending a file's last seconds)
+function analyzedAt(tl, m) {
+  const fs = (tl.files || []).filter((f) => f.inPlaylist && f.offset != null).sort((a, b) => a.offset - b.offset);
+  let i = fs.findIndex((x) => m >= x.offset && m < x.offset + x.duration);
+  if (i < 0) i = fs.length - 1;
+  let f = fs[i];
+  if (f?.adsAnalyzedTo == null) return -Infinity;
+  while (f.adsAnalyzedTo >= f.duration - 0.01 && fs[i + 1]?.adsAnalyzedTo != null) f = fs[++i];
+  return f.offset + f.adsAnalyzedTo;
 }
 
 // F1 TV's own description of the video (anonymous, as the server's f1.py reads it): only what
@@ -146,12 +441,28 @@ async function f1Content(cid) {
   }
 }
 
-// The delay set for this stream last time (live, edge to edge), kept in this browser.
-const localDelayKey = () => `delay|${FoneStreams.parse(S.stream).key}`;
-function localSync() {
+// The delay set for this stream last time (live, edge to edge), kept in this browser. Otherwise
+// the default: nearer the edge for the platforms that give HTTP-FLV (it arrives continuously) than
+// for HLS, which arrives a segment at a time.
+const FLV_PLATFORMS = new Set(['bilibili', 'douyin', 'huya']);
+const defaultDelayOf = (stream) => (!stream ? C.SERVER_LIVE_DELAY : FLV_PLATFORMS.has(FoneStreams.parse(stream).platform) ? C.LOCAL_EDGE_DELAY : C.LIVE_EDGE_DELAY);
+const liveDefaultDelay = () => defaultDelayOf(S.local && S.stream);
+// How far behind its edge the commentary aims to be, live (Go live's aim; auto-hold lets F1 TV go
+// again near it): HTTP-FLV pulled here, which comes in continuously, LOCAL_ALLOW; HLS here and a
+// server's recording, a segment or a keyframe group at a time, LIVE_EDGE_LAG; or the delay set's
+// lag (where F1 TV usually starts) if that's nearer. `stream`: the stream recorded here (its own
+// slack), else a server's recording.
+const LOCAL_ALLOW = 3;
+const allowOf = (delay, stream) => Math.max((stream ? 1 : 2.5) + 1,
+  Math.min(stream && FLV_PLATFORMS.has(FoneStreams.parse(stream).platform) ? LOCAL_ALLOW : C.LIVE_EDGE_LAG,
+    C.DEFAULT_LIVE_LATENCY - Math.max(delay ?? 0, defaultDelayOf(stream))));
+const liveAllow = () => allowOf(S.delay, S.local && S.stream);
+const localDelayKey = (stream = S.stream) => `delay|${FoneStreams.parse(stream).key}`;
+function localSync(stream = S.stream) {
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(localDelayKey()) || 'null'); } catch { /* none */ }
-  return Number.isFinite(saved?.delay) ? { delay: saved.delay, source: 'stream' } : { delay: C.LIVE_EDGE_DELAY, source: 'live' };
+  try { saved = JSON.parse(localStorage.getItem(localDelayKey(stream)) || 'null'); } catch { /* none */ }
+  // (saved before 0.3.8, v unset: against a live latency of 30 s, now 32: the same lag there)
+  return Number.isFinite(saved?.delay) ? { delay: saved.delay + (saved.v >= 2 ? 0 : 2), source: 'stream' } : { delay: defaultDelayOf(stream), source: 'live' };
 }
 
 async function loadContent(gen) {
@@ -173,24 +484,41 @@ async function decideClock(gen) {
   try { await decideClockOnce(gen); } finally { S.deciding = false; }
 }
 
+// The server's delay for this video on `clock`. Live delays set since 0.3.8 are kept as clock
+// 'edge2'; one set before ('edge': against a 30 s latency and the server's edge, which ran ~4 s
+// stale) is read on the new scale (the default went 23 -> 21 the same way).
+async function serverSync(clock) {
+  const q = (c) => api(`/api/sync/${S.cid}?channel=${encodeURIComponent(S.channel)}&clock=${c}`);
+  if (clock !== 'edge') return q(clock);
+  const now2 = await q('edge2');
+  if (now2.source === 'content') return now2;
+  const old = await q('edge').catch(() => null);
+  return old?.source === 'content' ? { ...old, delay: old.delay - 2 } : now2;
+}
+
 async function decideClockOnce(gen) {
   const v = S.video;
   const clock = C.chooseClock(S.content, v, now());
   if (clock !== S.clock) {
-    const sync = S.source === 'local' ? localSync() : await api(`/api/sync/${S.cid}?channel=${encodeURIComponent(S.channel)}&clock=${clock}`);
+    const sync = S.source === 'local' ? localSync() : await serverSync(clock);
     if (gen !== S.gen) return;
     S.clock = clock;
+    if (S.snd) sndReset('another clock'); // (its place was the old clock's)
+    vodStop(); // (a Bilibili replay was put on the old clock: found again on this one)
     S.sync = sync;
     S.delay = sync.source === 'measured' ? measuredDelay(sync) : sync.delay;
     S.delaySource = sync.source;
-    if (clock === 'edge' && sync.source !== 'content' && sync.source !== 'stream') {
+    if (clock === 'edge' && !['content', 'stream', 'live'].includes(sync.source)) {
       // Replay calibrations measure lag behind real events; live works edge to edge.
-      S.delay = C.LIVE_EDGE_DELAY;
+      // ('live': the stream recorded here's own live default, already.)
+      S.delay = C.SERVER_LIVE_DELAY;
       S.delaySource = 'live';
     }
     if (clock === 'edge' && S.source !== 'local') refreshDashDelay(gen);
     S.manualBase = null;
     S.resync = true;
+    if (clock === 'edge' && S.direct && !S.local) goDirect(gen); // live: the stream itself, fresher
+    else if (clock !== 'edge' && S.local && S.source === 'server') goServer(gen); // a replay: the server's
   }
   // Final once the player has told us enough: a UTC position, a replay, or a live
   // edge. Never from the label fallback (it can't tell live edges). An item F1 TV lists as
@@ -226,16 +554,34 @@ function timelineWindow() {
   return [t - 30 * 3600, t + 3600];
 }
 
+const VOD_ON = Symbol('a Bilibili replay'); // (refreshTimeline: the server's timeline set aside)
 async function refreshTimeline(gen) {
+  if (S.local) return; // the stream recorded here: refreshLocal's loop (its timer is S.timelineTimer too)
   clearTimeout(S.timelineTimer);
   try {
     // Live sessions get upgraded to the exact anchor once MultiViewer publishes it.
     if (S.content && S.content.anchor !== 'multiviewer' && now() - S.contentAt > 600) await loadContent(gen);
     else if (S.content && !S.clockFinal) await decideClock(gen);
+    if (S.local) return; // gone live from the stream itself (refreshLocal's loop now)
+    if (S.directBack) directGivenUp(FoneRecorder.status()); // (rewound into this recording: the way back)
     const [from, to] = timelineWindow();
     const tl = await api(`/api/timeline?channel=${encodeURIComponent(S.channel)}&from=${from}&to=${to}`);
-    if (gen !== S.gen) return;
+    if (gen !== S.gen || S.local) return;
     tl.receivedAt = now();
+    // nothing of the server's covers this replay: the streamer's Bilibili replay of it (looked
+    // for again a minute after a failure); the server's timeline stays out of it until it does
+    if (S.vod && !vodWanted(tl)) vodStop();
+    else if (S.vod || vodWanted(tl)) {
+      if (!S.vod || (S.vod.state === 'error' && now() - (S.vod.failedAt ?? 0) > 60)) vodBegin(gen);
+      if (!S.timeline || !S.timeline.vod) { S.timeline = tl; S.playlist = null; }
+      S.error = null;
+      throw VOD_ON;
+    }
+    // the file set changed (a backfill import joined, an old file left the window): positions and
+    // files' offsets may have moved under the lock; it's placed again by its wall time (lockM)
+    if (S.liveLock?.w0 != null && S.playlist && tl.playlist !== S.playlist) {
+      Object.assign(S.liveLock, { fid: S.timeline?.files?.[S.liveLock.f]?.id ?? null, f: -1 });
+    }
     S.timeline = tl;
     S.error = null;
     if (S.clock === 'manual' && S.manualBase == null && tl.pieces.length) {
@@ -245,15 +591,16 @@ async function refreshTimeline(gen) {
     }
     if (tl.playlist !== S.playlist) loadPlaylist(tl.playlist);
   } catch (e) {
-    if (gen === S.gen) S.error = e.message || String(e);
+    if (gen === S.gen && e !== VOD_ON) S.error = e.message || String(e);
   }
-  if (gen === S.gen) {
+  if (gen === S.gen && !S.local) {
     const live = S.timeline && (S.timeline.live || !S.timeline.complete);
-    S.timelineTimer = setTimeout(() => refreshTimeline(gen), live || !S.clockFinal ? 3000 : 60000);
+    // often while anything is live (the video too: the streamer going live shows up in seconds)
+    S.timelineTimer = setTimeout(() => refreshTimeline(gen), live || !S.clockFinal || S.clock === 'edge' ? 3000 : 60000);
   }
 }
 
-function loadPlaylist(path) {
+function loadPlaylist(path, src = path && S.base + path) {
   S.playlist = path;
   if (S.hls) { S.hls.destroy(); S.hls = null; }
   if (!path) return;
@@ -267,6 +614,7 @@ function loadPlaylist(path) {
     manifestLoadingMaxRetry: 6,
     levelLoadingMaxRetry: 6,
     fragLoadingMaxRetry: 6,
+    xhrSetup: vodXhrSetup, // (a Bilibili replay's requests: to its signed URLs)
   });
   hls.on(Hls.Events.ERROR, (_, data) => {
     const t = now();
@@ -274,12 +622,13 @@ function loadPlaylist(path) {
       DG.hlsAt.set(data.details, t);
       diag('hls', { kind: data.type, details: data.details, fatal: !!data.fatal, at: Math.round(audio.currentTime * 10) / 10 });
     }
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) vodFailed(data.frag?.url || data.context?.url); // (the next mirror)
     if (!data.fatal) return;
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
     else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-    else setTimeout(() => { if (S.hls === hls) loadPlaylist(path); }, 2000);
+    else setTimeout(() => { if (S.hls === hls) loadPlaylist(path, src); }, 2000);
   });
-  hls.loadSource(S.base + path);
+  hls.loadSource(src);
   hls.attachMedia(audio);
   S.hls = hls;
   S.resync = true;
@@ -322,7 +671,9 @@ function preSeek(m) {
 const ranges = (tr) => Array.from({ length: tr.length }, (_, i) => [tr.start(i), tr.end(i)]);
 
 // See FoneCore.steer: the audio runs free and is only corrected when it is really off.
-function drive(target, rate, src) {
+// (`slew`: sync by sound's eased correction, the target moving that much faster or slower than
+// the picture: the audio follows at that speed, resampled, no seek; sndSteer)
+function drive(target, rate, src, slew = 0) {
   const nominal = C.nominalRate(rate);
   // rate is the speed someone chose (FoneCore.chosenRate), never F1 TV's trim; following a
   // change of it is counted apart from the corrections. It reaches us a few hundred ms after
@@ -330,10 +681,12 @@ function drive(target, rate, src) {
   // 0.3 s), so re-lock right away: one seek at the button press beats trailing by ~0.25 s.
   const speedChange = S.nominal != null && nominal !== S.nominal;
   S.nominal = nominal;
-  const { st, rate: r, seek } = C.steer(S.steer, {
+  const k0 = S.steer?.k || 0;
+  let { st, rate: r, seek } = C.steer(S.steer, {
     t: performance.now() / 1000,
     m: target,
     rate: nominal,
+    slew,
     audio: audio.currentTime,
     paused: audio.paused,
     seeking: audio.seeking || (!audio.paused && audio.readyState < 3),
@@ -358,11 +711,11 @@ function drive(target, rate, src) {
       target: Math.round(target * 100) / 100, rate: nominal, src, ahead: audioAhead() });
     audio.currentTime = seek;
     countFix('seeks');
+    if (slew && S.snd) { S.snd.v = 0; r = nominal; } // (sync by sound's easing: back to 1x under cover of the seek)
   }
-  if (audio.playbackRate !== r) {
-    audio.playbackRate = r;
-    if (!speedChange) countFix('rates');
-  }
+  if (audio.playbackRate !== r) audio.playbackRate = r;
+  // (the steering's own corrections: not the easing's speed, which moves every tick)
+  if (!speedChange && (st.k || 0) !== k0) countFix('rates');
   if (audio.paused) audio.play().catch((e) => { S.error = `audio: ${e.message}`; });
 }
 
@@ -388,13 +741,15 @@ function fixStats() {
 // seeked, at speed); at `at` (unix s), advancing at `rate` while `run`.
 function danmakuClock() {
   const pieces = S.timeline?.pieces;
-  const w = pieces ? C.wallOf(pieces, audio.currentTime) : null;
-  if (w == null) return null;
+  const w0 = pieces ? C.wallOf(pieces, audio.currentTime) : null;
+  if (w0 == null) return null;
+  const w = w0 + (S.local ? skewNow() : 0); // (the stream recorded here: its arrivals, on this PC's clock)
   return { w, at: Date.now() / 1000, rate: audio.playbackRate, run: !audio.paused && !audio.seeking && audio.readyState >= 3 };
 }
 
 function report(st) {
   st.dm = danmakuClock();
+  pictureClock(st);
   const tw = now();
   if (st.state !== S.lastState) diag('state', { from: S.lastState, to: st.state, text: st.text });
   if (tw - DG.snapAt >= DIAG.SNAP) { DG.snapAt = tw; diagSnap(st); }
@@ -404,6 +759,45 @@ function report(st) {
   S.lastState = st.state;
   S.lastReport = t;
   chrome.runtime.sendMessage({ target: 'background', type: 'status', tab: S.tab, status: st }).catch(() => {});
+}
+
+// ---- the streamer window (streamer.js: a box over F1 TV, or a window of its own) -------------
+// It asks on BroadcastChannel 'fone-clock' (hello, every 2 s while open) and gets the commentary's
+// clock with every tick (10 a second): the moment playing and on which timeline. The stream
+// recorded here: m, its video coming from the recorder on 'fone-video' on the same axis. A
+// server's recording: the file and the position in it (its video handoff, /api/video).
+// `playing`: moving at `rate`; m null: no commentary to show a picture for (state, text say why).
+const picCh = (() => { try { return new BroadcastChannel('fone-clock'); } catch { return null; } })();
+let picAt = 0;
+if (picCh) picCh.onmessage = (e) => {
+  if (e.data?.type !== 'hello') return;
+  picAt = now();
+  if (!S.local) return;
+  if (e.data.avc) FoneRecorder.preferAvc();
+  FoneRecorder.wantPicture(!!e.data.fresh, e.data.since ?? null);
+};
+// Its requests to the server's video handoff (it can't make them itself, from F1 TV's https page):
+// that server's /api/video only.
+const picFetch = (() => { try { return new BroadcastChannel('fone-fetch'); } catch { return null; } })();
+if (picFetch) picFetch.onmessage = async (e) => {
+  const q = e.data;
+  if (q?.type !== 'get') return;
+  const answer = (o) => picFetch.postMessage({ type: 'got', id: q.id, ...o });
+  if (!S.base || typeof q.url !== 'string' || !q.url.startsWith(`${S.base}/api/video/`)) return answer({ ok: false, status: 0, error: 'not the server' });
+  try {
+    const r = await fetch(q.url, { signal: AbortSignal.timeout(20000) });
+    answer({ ok: r.ok, status: r.status, body: q.text ? await r.text() : await r.arrayBuffer() });
+  } catch (err) {
+    answer({ ok: false, status: 0, error: err.message || String(err) });
+  }
+};
+
+function pictureClock(st) {
+  if (!picCh || now() - picAt > 10) return;
+  const o = { type: 'clock', at: now(), state: st.state, text: st.text, channel: S.channel, m: null };
+  const pic = st.state === 'sync' || st.state === 'syncing' || st.state === 'paused' || st.state === 'buffering' ? S.pic : null;
+  if (pic) Object.assign(o, pic);
+  picCh.postMessage(o);
 }
 
 function fileTitle(idx) {
@@ -416,52 +810,1041 @@ function fileTitle(idx) {
 // commentary position is m0 + (p - p0): it moves only when you seek F1 TV or nudge.
 // No per-tick re-derivation from F1 TV's live edge (it advances in segment-sized steps)
 // or from the server's wall-clock mapping (delivery jitter) — those made it chase.
-const LIVE = { LAG_DEFAULT: C.DEFAULT_LIVE_LATENCY - C.LIVE_EDGE_DELAY, IN: 0.4, OUT: 1.0 };
+const LIVE = { IN: 0.4, OUT: 1.0 };
 const EDGE_STEP = 6; // s: F1 TV's live edge advances in 5.76 s steps
 const LOCAL_IDLE = 30; // s without audio from the stream recorded here before it counts as stopped
+// The lead (how much commentary exists past the playhead, auto-hold's measure) leaves this much
+// for audio that's not playable yet: a server's 2 s segments and 3 s timeline refresh; the stream
+// recorded here, its 0.5 s chunks.
+const slack = () => (S.local ? 1 : 2.5);
 
 function commentaryEdge(t) {
   if (S.local) { // the stream recorded here: its live edge, but never past what can be played yet
     const B = FoneRecorder.buffer(S.stream);
     const e = B && FoneLocal.liveEdge(B, t), end = B && FoneLocal.playableEnd(B);
-    return e == null || end == null ? null : Math.min(e, end + 0.25);
+    // (a reconnect waiting to be placed, localcore's SETTLE: its audio is in hand, at the edge)
+    return e == null || end == null ? null : B.pend ? e : Math.min(e, end + 0.25);
   }
   const tl = S.timeline;
-  if (!tl?.live) return null;
+  if (!serverLive()) return null;
   const last = tl.pieces[tl.pieces.length - 1];
   if (!last) return null;
   return last.m + last.d + Math.min(3, t - tl.receivedAt); // grows in real time between refreshes
 }
 
+// A server's recording counts as live while its file grows (up to FONE_GROWING_IDLE_SECONDS
+// after the streamer stopped); not while this browser's recorder of the same stream (rewound
+// into the server's recording from it, or off air when the page opened) says it's off air.
+function serverLive() {
+  const tl = S.timeline;
+  if (!tl) return false;
+  if (!S.directBack) return !!tl.live;
+  // Off air from the recorder's answer (offAt: the stream's last audio here) until the server has
+  // audio that began after it and is still coming in (the streamer back: this browser's re-check
+  // may be 30 s off; the stopped file's last lumps, or a false start, don't count).
+  const rs = FoneRecorder.status(), t = now(), last = tl.pieces?.[tl.pieces.length - 1];
+  if (rs.url === S.direct) {
+    if (rs.state === 'offline' && !S.offArmed) Object.assign(S, { offArmed: true, directOff: true, offAt: rs.lastAt ?? t });
+    else if (rs.state === 'recording') S.offArmed = false;
+  }
+  // (this browser recording the stream again: the way back to it is backInDirect's; the server's
+  // stopped file, still in its idle, isn't live for that)
+  const fresh = !!last && last.w + last.d > S.offAt + skewNow() + 2 && last.w + last.d > trueNow(t) - 15;
+  if (S.offArmed) S.directOff = !fresh;
+  else if (S.directOff && fresh) S.directOff = false;
+  return !!tl.live && !S.directOff;
+}
+
+// F1 TV's own clock on the picture playing (live, from its player: utc0 + p), or null.
+const f1Clock = (vn) => (S.video?.utc0 != null ? S.video.utc0 + vn.p : null);
+
+// How far F1 TV is behind where it played most live this session: by its own clock when its
+// player gives it (how far behind that clock it plays, flBest at its most live), else by wall time
+// (its content position runs with the clock while it plays, minLagW). Anything behind its best is
+// a rewind, a pause or a stall. (Its reported edge isn't the measure: it steps by 5.76 s, a little
+// late each time, and drifts by a few seconds between double steps.) Learned while live.
+function learnLive(t, vn) {
+  if (vn.seekEnd == null) return;
+  const lag = t - vn.p, behind = Math.max(0, vn.seekEnd - vn.p);
+  S.minLagW = Math.min(S.minLagW ?? lag, lag);
+  S.minBehind = Math.min(S.minBehind ?? behind, behind);
+  const c = f1Clock(vn);
+  if (c != null) {
+    S.flBest = Math.min(S.flBest ?? Infinity, trueNow(t) - c);
+    // (the same, on the timeline playing now and by this PC's clock: for when the clock goes)
+    S.minLagW = S.flBest + S.video.utc0 - (trueNow(t) - t);
+  }
+}
+function rewoundBy(t, vn) {
+  if (vn.seekEnd == null) return 0;
+  const c = f1Clock(vn);
+  if (c != null && S.flBest != null) return Math.max(0, trueNow(t) - c - S.flBest);
+  return S.minLagW == null ? 0 : Math.max(0, t - vn.p - S.minLagW);
+}
+
+// F1 TV's live latency: how far behind live its picture is, by its own clock against the time now
+// (where its player starts a live stream that's 31-34 s, a different place each load, and every
+// pause or rewind adds to it). Without its clock, as if it had started at the usual place.
+function f1Lat(t, vn) {
+  const c = f1Clock(vn);
+  return c != null ? trueNow(t) - c : C.DEFAULT_LIVE_LATENCY + rewoundBy(t, vn);
+}
+
+// F1 TV's clock gone a moment from a lock that keeps to it (its player rebuilding, its timeline
+// maybe re-based: its position can't be put on the picture until the clock is proven again): the
+// commentary waits rather than following a position that may be minutes off, up to CLOCK_GRACE s.
+const CLOCK_GRACE = 3;
+const clockLost = (t, vn) => S.clock === 'edge' && S.liveLock?.cid === S.cid && S.liveLock.u0 != null
+  && f1Clock(vn) == null && S.clockAt != null && t - S.clockAt < CLOCK_GRACE;
+
 function liveTarget(t, vn) {
   const L = S.liveLock;
-  // F1 TV's natural distance behind its own edge (its target latency); anything beyond
-  // that is you having rewound. Learned as the smallest distance seen this session, from
-  // the edges the player reports (none: taken to be at its edge, rewound by nothing). The
-  // player reports that edge in 5.76 s steps (so 'behind' saws by that much): only a
-  // distance clearly past one step counts as rewound.
-  const behind = vn.seekEnd != null ? Math.max(0, vn.seekEnd - vn.p) : null;
-  if (behind != null) S.minBehind = Math.min(S.minBehind ?? behind, behind);
+  if (L) L.gap = null; // (only lockM, this tick, says it's in a gap)
+  // F1 TV's most live position this session (learnLive): anything behind it is you having
+  // rewound (none known: at it, rewound by nothing)
+  learnLive(t, vn);
   // the stream recorded here: its edge as judged by the freshest arrivals so far
   const B = S.local && FoneRecorder.buffer(S.stream);
+  // the lock made as if the edge were now (no live edge then): an edge lock once there is one,
+  // unless it's playing an older file than the newest (F1 TV rewound into what was recorded)
+  if (L?.noEdge && L.cid === S.cid && !L.relock && !B && commentaryEdge(t) != null) {
+    const pcs = S.timeline.pieces, last = pcs[pcs.length - 1], at = C.mapWall(pcs, lockWall(L, vn));
+    if (!(at.state === 'ok' && last && pcs[at.piece].f !== last.f)) L.relock = true;
+  }
   if (L && L.cid === S.cid && !(L.relock)) {
     // Recorded here, the edge firms up over the first minute: HLS segments arrive in steps and
     // the first playlist can't say how long its newest one has been out, so the freshest
     // arrival keeps improving for a while. Keep the commentary as far behind the edge as was
     // chosen: follow the edge forward then (never back: an arrival only ever shows it fresher).
-    if (B && L.edgeRef != null && t - L.at < 90) {
+    if (B && L.edgeRef != null && t - L.at < 90 && S.snd?.target == null) { // (by sound: the sound says)
       const e = FoneLocal.liveEdge(B, t) - t;
       if (e > L.edgeRef + 0.1) { L.m0 += e - L.edgeRef; L.edgeRef = e; }
     }
-    return L.m0 + (vn.p - L.p0);
+    return lockM(L, vn);
+  }
+  // a switch of source while rewound (carryLock): the same moment on the new timeline
+  const K = S.carry;
+  S.carry = null;
+  const mk = K && K.cid === S.cid ? momentAt(S.local ? K.w - skewNow() : K.w) : null;
+  if (mk != null) {
+    const m0 = mk + (vn.p - K.p);
+    return lockM(newLock(m0, vn, t, { edgeRef: B ? FoneLocal.liveEdge(B, t) - t : null, carried: true, wall: true, w0: K.w + (vn.p - K.p) }), vn);
   }
   const edge = B ? FoneLocal.liveEdge(B, t) : commentaryEdge(t);
-  if (edge == null) return null; // commentary not live: caller falls back to the wall mapping
-  const lag = C.DEFAULT_LIVE_LATENCY - S.delay; // delay ↔ seconds behind the commentary edge
-  const rewound = behind == null ? 0 : Math.max(0, behind - S.minBehind - EDGE_STEP);
-  const m0 = edge - lag - rewound;
-  S.liveLock = { cid: S.cid, m0, p0: vn.p, at: t, edgeRef: B ? edge - t : null };
-  return m0;
+  // How far behind its edge the commentary goes: F1 TV's latency less the delay (F1 TV further
+  // behind live, by where its player started it, a pause or a rewind: the commentary as much)
+  const lag = f1Lat(t, vn) - S.delay;
+  if (edge == null) {
+    // A server's recording that isn't live (the streamer off air, F1 TV still live): one lock as
+    // if its edge were now, by wall time (F1 TV's edge steps would saw a mapping made every tick);
+    // a reconnect, or rewinding into what it recorded, is placed by it. Else none: the caller
+    // falls back to the wall mapping.
+    if (B || !S.timeline?.pieces?.length) return null;
+    const w = trueNow(t) - lag, m0 = momentAt(w);
+    return m0 == null ? null : lockM(newLock(m0, vn, t, { wall: true, w0: w, noEdge: true }), vn);
+  }
+  // The stream recorded here: behind its edge (as fresh as its freshest arrivals, which it
+  // follows). A server's recording: behind the time now, by wall time (its edge is only as fresh
+  // as the recorder's last keyframe group, 0-8 s old by when the lock is made; m0 may be in an
+  // older file's tail while the newest is shorter than the lag).
+  if (B) return lockM(newLock(edge - lag, vn, t, { edgeRef: edge - t }), vn);
+  const w = trueNow(t) - lag; // (the server's clock: F1 TV's on the picture + the delay)
+  return lockM(newLock(momentAt(w) ?? edge - lag, vn, t, { w0: w }), vn);
+}
+
+// ---- Go live -------------------------------------------------------------------------
+// F1 TV's LIVE badge, the panel's Go live, L: F1 TV to the most recent moment it can play, and the
+// commentary with it as far as the commentary can keep up. F1 TV's most recent, by its own clock:
+// where its reported live edge is at its freshest (the edge steps by 5.76 s, each step a little
+// later than the last until a double step catches up; 2026-10-25 its picture there was ~30 s
+// behind that clock, 31-34 s where the player starts). A seek goes no further than the edge
+// reported now (Player.seek stops there, and F1 TV plays on past it between steps), so what's out
+// of reach now is `more`: content.js asks again once the edge has stepped on. Without its clock:
+// GOLIVE.F1 s behind the edge it will report just before its next step, or back to where it played
+// most live (a pause, a rewind), whichever is further. The commentary goes as close to its edge
+// as liveAllow (where auto-hold doesn't hold): behind that (held, stalled, paused, rewound) a jump
+// forward; ahead of it (just held) a step back, instead of waiting paused for it to catch up. The
+// stream recorded here that stopped coming in has no edge: F1 TV's own alone.
+const GOLIVE = { F1: 1.5, MIN: 0.4, CHASE: 0.6, UP_WINDOW: 180 };
+
+// The freshest F1 TV's reported live edge has been of late, by its own clock: how far behind that
+// clock its picture is at the edge (the 'video' message keeps one per step), or null.
+function upFreshest(t) {
+  const xs = (S.upAges || []).filter(([at]) => t - at < GOLIVE.UP_WINDOW).map(([, a]) => a).sort((a, b) => a - b);
+  return xs.length ? xs[Math.min(1, xs.length - 1)] : null; // (the second freshest: one lucky report isn't where a seek lands)
+}
+
+// How long since F1 TV's reported live edge last stepped forward ('video' reports): a whole step
+// when it doesn't step (it moves on with every report), none when that isn't known yet.
+function edgePhase(t) {
+  // (modulo F1 TV's step only past a step missed in the report that carried a seek: its steps
+  // otherwise come every ~5.86 s, a little late, and a modulo would read 'just stepped')
+  if (S.edgeStepAt != null && t - S.edgeStepAt < 3 * EDGE_STEP) {
+    const x = t - S.edgeStepAt;
+    if (S.edgeMissAt != null && S.edgeMissAt > S.edgeStepAt) return x % 5.76;
+    return x > EDGE_STEP + 0.5 ? Math.min(EDGE_STEP, x - 5.86) : Math.min(EDGE_STEP, x); // (overdue: a reload skipped)
+  }
+  const stepless = S.edgeSeenAt != null && t - S.edgeSeenAt > 3 * EDGE_STEP && (S.edgeStepAt == null || t - S.edgeStepAt > 3 * EDGE_STEP);
+  return stepless ? EDGE_STEP : 0;
+}
+
+// The stream recorded here stopped coming in: off air, failing, or nothing for LOCAL_IDLE s.
+const localIdle = (rec, t) => rec.state === 'offline' || rec.state === 'error' || (rec.lastAt != null && t - rec.lastAt > LOCAL_IDLE);
+
+// `held`: auto-hold has F1 TV paused (content.js). `chase`: one of the asks after the first (logged
+// only when they move F1 TV), `pMax` the furthest F1 TV has been since it began: back a second or
+// more from there (a rewind or seek of yours; ours only ever go forward) and it's over (`took`).
+function goLive(held = false, chase = false, pMax = null) {
+  const v = S.video;
+  const L = S.liveLock?.cid === S.cid ? S.liveLock : null;
+  // (rewound into a server's recording whose timeline isn't in: the moment carried there)
+  const K = !L && !S.local && S.directBack && S.carry?.cid === S.cid ? S.carry : null;
+  if (!v || S.clock !== 'edge' || (!L && !K)) return { handled: false };
+  const t = now(), vn = C.videoNow(v, t);
+  if (chase && Number.isFinite(pMax) && vn.p < pMax - 1) return { handled: true, by: 0, more: 0, took: true, limit: 'f1' };
+  // (F1 TV's clock gone a moment: where the commentary is can't be told from its position now)
+  if (clockLost(t, vn)) return { handled: true, by: 0, more: 0, wait: true, limit: 'f1' };
+  const w = L ? lockWall(L, vn) : K.w + (vn.p - K.p); // the moment playing, by wall time (across a server's files too)
+  const edge = S.local && localIdle(FoneRecorder.status(), t) ? null : commentaryEdge(t);
+  const ew = edge != null ? wallAt(edge) : null;
+  // (the stream recorded here: its aim is behind its live edge, as its lock's is, not behind what
+  // can be played yet, which trails it by a segment on HLS: 2-6 s)
+  const B = S.local && edge != null ? FoneRecorder.buffer(S.stream) : null;
+  const le = B ? FoneLocal.liveEdge(B, t) : null;
+  const ewAim = le != null ? wallAt(le) : ew;
+  // F1 TV: how far it is behind its most recent (by its clock, else by its reported edge and its
+  // own best this session), and how far a seek can take it now
+  const c = f1Clock(vn), fl = c != null ? trueNow(t) - c : null, up = c != null ? upFreshest(t) : null;
+  const reach = vn.seekEnd != null ? vn.seekEnd - vn.p : null;
+  const dF = fl != null && up != null ? Math.max(0, fl - up)
+    : reach != null ? Math.max(reach - GOLIVE.F1 - (EDGE_STEP - edgePhase(t)), rewoundBy(t, vn), 0) : null;
+  // The commentary: as near its edge as liveAllow; a server's recording, as near the time now as
+  // its lock goes (its edge is only as fresh as its last keyframe group: 0-8 s stale)
+  let dC = w == null || ew == null ? null : !S.local && L ? trueNow(t) - C.SERVER_LIVE_LAG - w : ewAim - liveAllow() - w;
+  // rewound into the server's recording from the stream: the way back is to the stream's edge
+  // (its wall time is now), at the stream's own allowance
+  const rs = !S.local && S.directBack ? FoneRecorder.status() : null;
+  if (w != null && rs && rs.url === S.direct && !localIdle(rs, t) && rs.lastAt > t - 3) dC = trueNow(t) - allowOf(localSync(S.direct).delay, S.direct) - w;
+  let want = Math.min(dF ?? Infinity, dC ?? Infinity);
+  if (!Number.isFinite(want)) return { handled: false };
+  // Back only for the commentary's sake when it needs it: auto-hold holding F1 TV, or about to (a
+  // lead under a second, by its edge now). F1 TV merely nearer live than the commentary's aim
+  // plays on there.
+  const lead = ew != null && w != null ? ew - w - slack() : null;
+  if (want < 0 && !held && !(lead != null && lead < 1)) want = 0;
+  // forward no further than the edge F1 TV reports now (back, always)
+  let by = want > 0 && reach != null ? Math.min(want, Math.max(0, reach)) : want;
+  if (Math.abs(by) < GOLIVE.MIN) by = 0;
+  // (the rest after its edge steps on: worth a chase from GOLIVE.CHASE)
+  const more = want > 0 && want - by >= (chase ? GOLIVE.MIN : GOLIVE.CHASE) ? want - by : 0;
+  const r = (x) => (x == null ? null : Math.round(x * 100) / 100);
+  if (!chase || by) diag('golive', { by: r(by), more: r(more), dF: r(dF), dC: r(dC), fl: r(fl), up: r(up), reach: r(reach), p: r(vn.p), held, chase });
+  const limit = dC != null && (dF == null || dC < dF) && !(want === 0 && (dF ?? 0) < GOLIVE.MIN) ? 'commentary' : 'f1';
+  return { handled: true, by: r(by), more: r(more), limit };
+}
+
+// ---- sync by sound -------------------------------------------------------------------
+// The streamer passes F1 TV's own sound through (its track sound, or the international feed's)
+// under their voice, so where that sound sits in their stream says, to the sample, which moment of
+// the stream goes with which picture: no delay to tune by ear, and it follows the streamer's own
+// latency as it moves (their player stalling; 2026-11-01 it moved 4.4 s over one race). F1 TV's
+// sound comes from audiotap.js (heard at wall times, put on F1 TV's position by the video reports);
+// the stream's is decoded from what this browser records (live from the stream). Every SND.EVERY s
+// the newest SND.WIN s of F1 TV's sound is looked for in the stream (FoneSound.locate): widely
+// (±SND.WIDE s) until it's found, every SND.REWIDE s, and after two looks that missed (the
+// streamer's latency stepped further than a close look sees); otherwise close by (±SND.NEAR s).
+// A match counts when it's sure (score) and agrees with another of the last few (SND.AGREE s);
+// then the commentary is brought there without a seek: its speed eased off 1× and back, no faster
+// than SND.AMAX a second, to SND.VMAX at most, slowing so as to stop just there (0.6 s takes under
+// a minute, 3 s about three; the pitch moves a third of a semitone at most). Jumped there instead:
+// the first time it's found more than SND.JUMP s off (the delay it started from was a guess), and
+// a step of more than SND.JUMP_LATER s (minutes of easing, out of sync all along). No sure match
+// for SND.LOST s: lost, the delay holds and it listens again. A nudge of yours on top of where the
+// sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
+const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
+  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0 };
+// (a Bilibili replay's own: the streamer's setup then may not be theirs now)
+const sndBiasKey = () => `soundBias|${S.timeline?.vod ? `vod:${S.timeline.vod}` : S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
+// (and whether its stream has been heard to carry F1 TV's sound: F1 TV's own ducked from the start)
+const sndCarriesKey = () => sndBiasKey().replace('soundBias|', 'soundCarries|');
+// (the stream recorded here: its nudge bias read back)
+function sndStart() {
+  let bias = 0, carries = false;
+  try { bias = Number(JSON.parse(localStorage.getItem(sndBiasKey()) || 'null')?.bias) || 0; } catch { /* none */ }
+  try { carries = localStorage.getItem(sndCarriesKey()) != null; } catch { /* none */ }
+  S.snd = { bias, carries };
+  sndReset('start');
+}
+// (a speed still easing carries over: it's let down gently, sndSteer)
+function sndReset(why) {
+  const bias = S.snd?.bias ?? 0, v = S.snd?.v ?? 0, carries = !!S.snd?.carries;
+  S.snd = { runs: [], est: [], target: null, v, at: null, lock: S.liveLock, measAt: 0, wideAt: 0, miss: 0, accepted: 0, okAt: null,
+    heardAt: null, seen: null, busy: false, startedAt: now(), bias, carries, state: 'listening', last: null, why: why || null };
+}
+// The video reports kept a while: where F1 TV's picture was at a wall time.
+function vAt(w) {
+  const h = S.vhist || [];
+  for (let i = h.length - 1; i >= 0; i--) {
+    const a = h[i];
+    if (a.at > w) continue;
+    const b = h[i + 1];
+    if (a.paused || a.seeking || a.waiting || Math.abs((a.rate || 1) - 1) > 0.001) return null;
+    if (b) { // (both ends playing on, nothing between them but time)
+      if (b.paused || b.seeking || b.waiting || Math.abs((b.p - a.p) - (b.at - a.at)) > 0.08) return null;
+    } else if (w - a.at > 1.5) return null;
+    // (between two reports, at the pace the picture really went: F1 TV trims its player's speed by
+    // a few % for seconds at a time to keep its sound and picture together)
+    return b ? a.p + (w - a.at) * ((b.p - a.p) / (b.at - a.at)) : a.p + (w - a.at);
+  }
+  return null;
+}
+// F1 TV's sound as heard: put on F1 TV's position, joined into runs that follow on. A run's place
+// is the average of where its pieces put it (each piece's, from the reports, is a few ms off). A
+// piece that jumps (F1 TV's sound skipping or repeating a little, SND.SPLICE s and more, up to
+// SND.BREAK) is spliced in where it belongs: what was skipped as silence, what came again cut;
+// the run goes on (a break costs SND.WIN s of listening before the next look).
+function sndHeard(msg) {
+  const sn = S.snd;
+  if (!sn || msg.sr !== SND.SR) return;
+  for (const c of msg.chunks || []) {
+    const p0 = vAt(c.w);
+    if (p0 == null) continue;
+    const bin = atob(c.b64), pcm = new Int16Array(bin.length >> 1);
+    for (let i = 0; i < pcm.length; i++) pcm[i] = (bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)) << 16 >> 16;
+    let x = Float32Array.from(pcm, (v) => v / 32768);
+    // F1 TV's sound as its player played it, sped up or slowed by those trims: put back on the
+    // picture's own time (resampled to the stretch of picture it went with), so a run's samples
+    // are the picture's time at SND.SR, whatever the trims did
+    const p1 = vAt(c.w + x.length / SND.SR);
+    if (p1 != null) {
+      const ratio = (p1 - p0) / (x.length / SND.SR);
+      if (ratio > 0.85 && ratio < 1.15 && Math.abs(ratio - 1) > 0.002) {
+        const m = Math.max(1, Math.round(x.length * ratio)), y = new Float32Array(m), k = (x.length - 1) / Math.max(1, m - 1);
+        for (let i = 0; i < m; i++) { const j = i * k, j0 = Math.floor(j), f = j - j0; y[i] = x[j0] * (1 - f) + (x[Math.min(x.length - 1, j0 + 1)] * f); }
+        x = y;
+      }
+    }
+    const runs = sn.runs, r = runs[runs.length - 1];
+    const d = r ? p0 - (r.p0 + r.x.length / SND.SR) : null; // (> 0: this piece starts after the run's end)
+    if (r && Math.abs(d) < SND.BREAK) {
+      const jump = Math.abs(d) >= SND.SPLICE;
+      // (a jump: the run's end moved to where this piece starts, padded or cut)
+      const keep = jump && d < 0 ? Math.max(0, r.x.length - Math.round(-d * SND.SR)) : r.x.length;
+      const pad = jump && d > 0 ? Math.round(d * SND.SR) : 0;
+      const y = new Float32Array(keep + pad + x.length);
+      y.set(r.x.subarray(0, keep)); y.set(x, keep + pad);
+      const was = jump ? 0 : -d; // (how far this piece puts the run's end from where it was)
+      r.x = y.length > SND.KEEP * SND.SR ? y.subarray(y.length - SND.KEEP * SND.SR) : y;
+      r.n += x.length;
+      if (jump) { r.pieces = 1; sn.splices = (sn.splices || 0) + 1; sn.gap = Math.round(d * 1000); }
+      r.p0 = p0 + x.length / SND.SR - r.x.length / SND.SR + was * (1 - 1 / Math.min(r.pieces = (r.pieces || 1) + 1, 10));
+    } else {
+      if (r) { sn.breaks = (sn.breaks || 0) + 1; sn.gap = Math.round(d * 1000); } // (ms, for the status)
+      runs.push({ p0, x, n: x.length, pieces: 1 });
+    }
+    while (runs.length > 4) runs.shift();
+    sn.heardAt = now();
+  }
+}
+// The stream's sound from m to m + d, as recorded here: decoded (the stored AAC frames as an
+// ADTS file), 8 kHz mono; {m0: where it starts, y}. (Where it starts read before the decode: the
+// recorder drops old chunks from the front of the same list meanwhile.)
+async function streamSound(B, m, d) {
+  const cs = B.chunks, i0 = Math.max(0, FoneLocal.chunkAt(B, m)), out = [];
+  if (!cs.length || !cs[i0]) return null;
+  const m0 = cs[i0].m;
+  let len = 0;
+  for (let i = i0; i < cs.length && cs[i].m < m + d; i++) { out.push(cs[i].data); len += cs[i].data.length; }
+  if (!out.length) return null;
+  const bytes = new Uint8Array(len);
+  let k = 0;
+  for (const b of out) { bytes.set(b, k); k += b.length; }
+  const ab = await new OfflineAudioContext(1, 1, SND.SR).decodeAudioData(bytes.buffer);
+  const y = new Float32Array(ab.length);
+  for (let c = 0; c < ab.numberOfChannels; c++) { const ch = ab.getChannelData(c); for (let i = 0; i < y.length; i++) y[i] += ch[i] / ab.numberOfChannels; }
+  return { m0: m0 + SND.DECODE_LAG, y };
+}
+// A server's recording's sound from m to m + d (its HLS segments, as hls.js plays them, on its
+// media time): fetched (the last few kept), the AAC frames out of the MPEG-TS, decoded the same way.
+// Each segment's frames go where hls.js plays that segment (its start): a hole before it filled
+// with silent frames, an overlap with the one before skipped, so what follows isn't shifted.
+const SEGS = new Map(); // url -> Promise<ADTS frames [{data, samples, rate}]>
+async function serverSound(frags, m, d) {
+  const sel = frags.filter((f) => f.start + f.duration > m && f.start < m + d);
+  if (!sel.length) return null;
+  const parts = [];
+  let at = null, m0 = null;
+  for (const f of sel) {
+    let got = SEGS.get(f.url);
+    if (!got) {
+      got = fetch(f.url, { signal: AbortSignal.timeout(15000) })
+        .then((r) => { if (!r.ok) throw new Error(`segment: HTTP ${r.status}`); return r.arrayBuffer(); })
+        .then((ab) => FoneDemux.tsAudio(new Uint8Array(ab)).frames.map((x) => ({ data: x.data, samples: x.samples, rate: x.rate })));
+      SEGS.set(f.url, got);
+      got.catch(() => SEGS.delete(f.url));
+      while (SEGS.size > 24) SEGS.delete(SEGS.keys().next().value);
+    }
+    const fr = await got;
+    if (!fr.length) continue;
+    const dur = fr[0].samples / fr[0].rate;
+    if (at == null) { at = f.start; m0 = f.start; }
+    const n = Math.round((f.start - at) / dur);
+    let k = 0;
+    if (n > 0) { // (a hole: silence up to this segment's start, 30 s at most)
+      const h = FoneDemux.adtsAt(fr[0].data, 0), sil = h ? FoneDemux.silentFrame(h) : null;
+      if (!sil || n * dur > 30) { if (parts.length) break; at = f.start; m0 = f.start; } else { for (let i = 0; i < n; i++) parts.push(sil); at += n * dur; }
+    } else if (n < 0) k = Math.min(fr.length, -n); // (an overlap: what's there already)
+    for (; k < fr.length; k++) { parts.push(fr[k].data); at += fr[k].samples / fr[k].rate; }
+  }
+  if (!parts.length) return null;
+  const ab = await new OfflineAudioContext(1, 1, SND.SR).decodeAudioData(FoneDemux.concat(...parts).buffer);
+  const y = new Float32Array(ab.length);
+  for (let c = 0; c < ab.numberOfChannels; c++) { const ch = ab.getChannelData(c); for (let i = 0; i < y.length; i++) y[i] += ch[i] / ab.numberOfChannels; }
+  return { m0: m0 + SND.DECODE_LAG, y };
+}
+// What the stream's sound can be read from: the stream recorded here, or the server's recording
+// playing ({first, end} of what's there on the m axis, read(m, d)).
+function sndSource() {
+  if (S.local) {
+    const B = FoneRecorder.buffer(S.stream);
+    const end = B ? FoneLocal.playableEnd(B) : null, first = B?.chunks[0]?.m;
+    return end == null || first == null ? null : { first, end, read: (m, d) => streamSound(B, m, d) };
+  }
+  if (S.timeline?.vod && S.vod?.cur) { // (a Bilibili replay: read from Bilibili)
+    const r = S.vod.cur;
+    return { first: 0, end: r.total, read: (m, d) => vodRead(r, m, d) };
+  }
+  const lv = S.hls?.levels?.[S.hls.currentLevel >= 0 ? S.hls.currentLevel : 0];
+  const fr = lv?.details?.fragments;
+  if (!fr?.length) return null;
+  const last = fr[fr.length - 1];
+  return { first: fr[0].start, end: last.start + last.duration, read: (m, d) => serverSound(fr, m, d) };
+}
+// Where the commentary sits against the picture: the stream's moment for picture p is p + cur
+// (live: the lock's; a replay: the delay's mapping this tick, S.sndRef); err, how far the place the
+// sound gave (sn.target: an offset on the lock live, a delay on a replay's clock) is from it.
+function sndPlace() {
+  const sn = S.snd, L = S.liveLock;
+  if (S.clock === 'edge') {
+    if (!L || !S.local) return null; // (live from a server's recording: not yet; its lock is re-placed by wall time)
+    const cur = L.m0 - L.p0;
+    return { live: true, cur, err: sn?.target != null ? sn.target - cur : 0 };
+  }
+  if (!S.sndRef || S.delay == null) return null;
+  return { live: false, cur: S.sndRef.m - S.sndRef.p, err: sn?.target != null ? sn.target - S.delay : 0 };
+}
+// A replay's clock: the commentary's moment for picture p at a delay (null outside the recording).
+const mAtDelay = (p, delay) => momentAt(C.eventTime(S.clock, S.content, p, null, now(), { manualBase: S.manualBase }) + delay);
+// One look: the newest stretch of F1 TV's sound (older, when the newest would be looked for past
+// what's recorded yet), found in the stream around where the sound was last (or the lock has it).
+async function sndMeasure(t, vn) {
+  // (15 s looks till it's found, quicker to a first lock; 25 s once locked: stronger matches)
+  const WIN = S.snd?.target == null ? 15 : SND.WIN;
+  const sn = S.snd, L = S.liveLock, pl = sndPlace(), src = sndSource();
+  const r = sn.runs[sn.runs.length - 1];
+  // (sn.why: what the last look came to, for the status and the diag)
+  if (S.clock === 'edge' && !S.local) { sn.why = "live from the server's recording: not yet"; return; }
+  if (!pl || !src || !r || r.x.length < WIN * SND.SR) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
+  if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
+  sn.seen = { r, n: r.n };
+  const wide = sn.target == null || t - sn.wideAt > SND.REWIDE || sn.miss >= SND.MISSES, R = wide ? SND.WIDE : SND.NEAR;
+  // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
+  // a replay, the delay's mapping at p: it changes at the server's file boundaries)
+  const cAt = (p) => {
+    if (pl.live) return pl.cur + pl.err - sn.bias;
+    const m = mAtDelay(p, (sn.target ?? S.delay) - sn.bias);
+    return m == null ? null : m - p;
+  };
+  const { end, first } = src;
+  const pNew0 = r.p0 + r.x.length / SND.SR - WIN, c = cAt(pNew0);
+  if (c == null) { sn.why = 'not recorded there'; return; }
+  // The newest stretch of F1 TV's sound; after a look that missed, every other look an older one
+  // (as old as the run allows), so the look reaches R s past where it was within what's recorded:
+  // the streamer's latency grown by more than the commentary's lead puts the newest out of reach.
+  // (Not a silent one: F1 TV's sound may have started after the copy did.)
+  const pEnd = r.p0 + r.x.length / SND.SR, pNew = pEnd - WIN;
+  const stretch = (p) => { const i = Math.round((p - r.p0) * SND.SR); return r.x.subarray(i, i + WIN * SND.SR); };
+  let pa = pNew, x = stretch(pNew);
+  const pOld = Math.max(r.p0, Math.min(pNew, end - c - WIN - R));
+  // (also when the newest one's window would be cut short by what's recorded: no look, no miss)
+  if ((sn.miss % 2 === 1 || end - (pNew + c - R) < WIN + 2) && pOld < pNew - 1) {
+    const xo = stretch(pOld);
+    if (FoneSound.rms(xo) >= 1e-4) { pa = pOld; x = xo; }
+  }
+  // (F1 TV silent: muted in its own player, or nothing on its sound)
+  if (FoneSound.rms(x) < 1e-4) { sn.state = 'quiet'; sn.why = 'F1 TV silent'; return; }
+  const ca = cAt(pa);
+  if (ca == null) { sn.why = 'not recorded there'; return; }
+  const lo = Math.max(first, pa + ca - R), hi = Math.min(end, pa + ca + WIN + R);
+  if (!(hi - lo >= WIN + 2)) { sn.why = 'not recorded there'; return; }
+  sn.busy = true;
+  try {
+    const PL = S.playlist, got = await src.read(lo, hi - lo);
+    if (!got || S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while decoding'; return; }
+    const f = wide ? 2 : 1, sr = SND.SR / f;
+    const y = FoneSound.decimate(got.y, f), xx = FoneSound.decimate(x, f);
+    const res = FoneSound.locate(xx, y, sr);
+    if (!res) { sn.why = 'no match computed'; return; }
+    if (wide) sn.wideAt = t;
+    const off = got.m0 + res.lag / sr - pa; // where F1 TV's sound for picture p is in the stream: p + off
+    // What it says, in the place's own terms: live, that offset on the lock; a replay, the delay
+    // that maps picture pa onto the moment found (read at pa: whatever plays now, wherever)
+    let val = off;
+    if (!pl.live) {
+      const w = C.wallOf(S.timeline?.pieces, pa + off);
+      val = w == null ? null : w - C.eventTime(S.clock, S.content, pa, null, t, { manualBase: S.manualBase });
+    }
+    const sure = val != null && res.score >= SND.SCORE && res.score >= SND.NEXT * res.next && !res.edge;
+    sn.last = { at: t, off, val, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, sure, wide };
+    const r2 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
+    diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, wide, c: r2(ca) });
+    sn.state = sn.target != null ? 'locked' : 'listening';
+    if (!sure) { sn.miss++; sn.why = 'not sure'; return; }
+    // (found well away from where it was: look widely again till that's confirmed)
+    sn.miss = sn.target != null && Math.abs(val + sn.bias - sn.target) > 1 ? SND.MISSES : 0;
+    sn.est = [...sn.est.filter((e) => t - e.at < 180), { at: t, val }].slice(-4);
+    const agree = sn.est.filter((e) => Math.abs(e.val - val) <= SND.AGREE);
+    if (agree.length < 2) { sn.why = 'waiting for a second match'; return; }
+    sn.miss = 0;
+    sn.why = 'matched';
+    const o = agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
+    const now_ = sndPlace(); // (where it sits now: an easing may have moved it meanwhile)
+    if (!now_) return;
+    // (live: an offset on the lock, from where the lock is; a replay: the delay that puts it there)
+    const want = o + sn.bias, err = now_.live ? want - now_.cur : want - S.delay;
+    const fresh = sn.target == null;
+    sn.target = want;
+    sn.state = 'locked';
+    sn.okAt = t;
+    if (!sn.carries) { sn.carries = true; try { localStorage.setItem(sndCarriesKey(), String(Date.now())); } catch { /* private mode */ } }
+    // found the first time far off (the delay was a guess), or a step too big to ease: there at once
+    if (Math.abs(err) > (fresh ? SND.JUMP : SND.JUMP_LATER)) {
+      shiftCommentary(err, true);
+      diag('sound', { jump: r2(err) });
+    }
+    sn.accepted++;
+    // the delay that puts it there (what relocks use, and the panel shows), kept: for the stream
+    // recorded here, or the server's for this video (and the channel's live, as a nudge is)
+    const B = S.local ? FoneRecorder.buffer(S.stream) : null, edge = B ? FoneLocal.liveEdge(B, t) : null;
+    if (now_.live && edge != null) S.delay = Math.round((f1Lat(t, vn) - (edge - (vn.p + want))) * 100) / 100;
+    S.delaySource = 'sound';
+    if (t - (sn.savedAt || 0) > 120) {
+      sn.savedAt = t;
+      if (S.local) {
+        try { localStorage.setItem(localDelayKey(), JSON.stringify({ delay: S.delay, at: Date.now(), v: 2, by: 'sound' })); } catch { /* private mode */ }
+      } else if (S.timeline?.vod) vodSave(sn.target); // (a Bilibili replay: kept here, for this video)
+      else saveServerDelay(sn.target); // (a replay: the delay it's easing to)
+    }
+  } catch (e) {
+    sn.why = `failed: ${String(e?.message || e).slice(0, 80)}`;
+    diag('sound', { err: String(e?.message || e).slice(0, 120) });
+  } finally {
+    sn.busy = false;
+  }
+}
+// How it stands, each tick: F1 TV's sound not reaching fone (deaf), or no sure match for a while
+// (lost: no target, so no easing, nudges plain again; the delay the last match set holds).
+function sndCheck(t, v) {
+  const sn = S.snd;
+  if (!sn) return;
+  // (time F1 TV isn't playing at 1× doesn't count: nothing is heard or looked for then)
+  if (v.paused || v.seeking || v.waiting || Math.abs((v.rate || 1) - 1) > 0.001) { sn.stillAt ??= t; return; }
+  if (sn.stillAt != null) {
+    const d = t - sn.stillAt;
+    sn.stillAt = null;
+    if (sn.okAt != null) sn.okAt += d;
+    if (sn.heardAt != null) sn.heardAt += d; else sn.startedAt += d;
+  }
+  const deaf = t - (sn.heardAt ?? sn.startedAt) > SND.DEAF;
+  if (deaf) sn.state = 'deaf';
+  else if (sn.state === 'deaf') sn.state = sn.target != null ? 'locked' : 'listening';
+  if (sn.target != null && t - sn.okAt > SND.LOST) {
+    Object.assign(sn, { target: null, est: [], miss: 0, state: deaf ? 'deaf' : 'lost' });
+    diag('sound', { lost: true });
+  }
+}
+// The commentary moved by d s on the lock (live) or the delay (a replay's clock): `seek`, at once
+// (the steering seeks), else as part of an eased correction (the speed carries it).
+function shiftCommentary(d, seek) {
+  if (S.clock === 'edge' && S.liveLock) {
+    S.liveLock.m0 += d;
+    if (S.liveLock.w0 != null) S.liveLock.w0 += d;
+  } else if (S.delay != null) S.delay += d;
+  if (S.carry) S.carry.w += d;
+  if (seek) S.resync = true;
+}
+// Each tick: the eased correction's speed (0 when there's none, or the picture isn't playing). A
+// seek (a re-sync, a nudge, a jump: drive) or a new lock takes the speed back to 1× under cover of
+// it; a correction cut short (lost, reset) is let down at SND.AMAX, not dropped (that's heard).
+function sndSteer(t, v) {
+  const sn = S.snd, L = S.liveLock, pl = sndPlace();
+  const dt = sn?.at != null ? Math.min(0.5, Math.max(0, t - sn.at)) : 0;
+  if (sn) sn.at = t;
+  if (!sn || !pl || v.paused || v.seeking || v.waiting || Math.abs((v.rate || 1) - 1) > 0.001 || (pl.live && sn.lock !== L)) {
+    if (sn) { sn.v = 0; sn.lock = L; }
+    return 0;
+  }
+  // (the speed that still stops in time: v² = 2·AMAX·distance)
+  const err = sn.target != null ? pl.err : 0;
+  const want = sn.target != null ? Math.sign(err) * Math.min(SND.VMAX, Math.sqrt(2 * SND.AMAX * Math.abs(err))) : 0;
+  sn.v += Math.max(-SND.AMAX * dt, Math.min(SND.AMAX * dt, want - sn.v));
+  if (Math.abs(err) < 0.005 && Math.abs(sn.v) < 0.002) sn.v = 0;
+  if (sn.v) shiftCommentary(sn.v * dt, false);
+  return sn.v;
+}
+
+// ---- the streamer's Bilibili replays: replays no recording covers ---------------------------
+// A fone server keeps its recordings for weeks; the streamer's Bilibili replays (直播回放) stay up
+// for years. A replay the server has nothing for plays the replay of the channel's Bilibili room
+// that holds it (vod.js), streamed from Bilibili. Its title says only which hour the streamer went
+// live in, so where this moment is in it is found by sound: the newest VOD.WIN s of F1 TV's sound
+// heard, which the streamer passes through, looked for over that hour plus the streamer's delay in
+// each replay that may hold it (VOD.CHUNK s at a time, VOD.PAR at once, at 4 kHz, nearest the
+// likeliest place first; what's fetched kept as 16-bit while it looks); after two misses, all of
+// each replay. A sure match (VOD.SCORE, VOD.RATIO over anything else), or two looks in a row that
+// agree on where (VOD.AGREE s, each at least VOD.WEAK), puts the replay on the wall clock so that the delay reads VOD.D0 as on a
+// recording's, and sync by sound keeps it there as on any replay. Where it was put is kept for
+// this video and replay, and the replay's ~5 s repeats (FoneVod.findCuts) for the replay. Sync by
+// sound not confirming it in VOD.CONFIRM looks: looked for again, playing on meanwhile (then every
+// VOD.AGAIN s while it still doesn't). Off the end of one replay (the streamer restarted): the
+// next, found the same way.
+// (real matches, 2026-11-11, 4 kHz: a median 14, a tenth under 8.1; the runner-up 4-7 over ±25 s)
+const VOD = { WIN: 25, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14, WEAK: 7, AGREE: 0.3, CONFIRM: 8,
+  AGAIN: 600, URL: 'https://vod.fone.invalid/' };
+function vodWanted(tl) {
+  const c = S.content;
+  if (!S.room || !c || c.p0 == null || !['preroll', 'multiviewer'].includes(S.clock) || !S.clockFinal) return false;
+  const E0 = c.p0, E1 = c.p0 + (c.duration || 4 * 3600);
+  return !(tl?.pieces || []).some((pc) => pc.w < E1 + 600 && pc.w + pc.d > E0);
+}
+const vodSay = (V, state, text) => { V.state = state; V.text = text; };
+const vodWho = () => S.channel || 'the streamer';
+function vodListenText(sn) {
+  if (!sn) return `No recording covers this session: turn on Sync by sound and fone finds this moment in ${vodWho()}'s Bilibili replay`;
+  if (sn.state === 'quiet') return `F1 TV is silent: turn its sound on, and fone finds this moment in ${vodWho()}'s Bilibili replay`;
+  if (sn.state === 'deaf') return `F1 TV's sound isn't reaching fone (reload the page?): it finds this moment in ${vodWho()}'s replay by it`;
+  return `Listening to F1 TV to find this moment in ${vodWho()}'s Bilibili replay…`;
+}
+async function vodBegin(gen) {
+  const V = S.vod = { state: 'finding', text: `Looking for ${vodWho()}'s Bilibili replay of this session…`, reps: [], cur: null,
+    tries: 0, chunks: new Map(), busy: false, lastTryAt: null, at: now() };
+  try {
+    const room = /(\d+)\/?$/.exec(S.room)?.[1];
+    if (!room) throw new Error('no Bilibili room');
+    const who = await FoneVod.owner(room);
+    const c = S.content, E0 = c.p0, E1 = c.p0 + (c.duration || 4 * 3600);
+    const list = await FoneVod.replays(who, E0 - 86400);
+    if (gen !== S.gen || S.vod !== V) return;
+    const cands = FoneVod.candidates(list, E0, E1);
+    diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length });
+    if (!cands.length) return vodSay(V, 'none', `No recording covers this session, nor any Bilibili replay of ${vodWho()}'s`);
+    for (const r of cands) await FoneVod.load(r);
+    if (gen !== S.gen || S.vod !== V) return;
+    V.reps = cands;
+    vodCuts(V, gen);
+    const kept = vodKept(V);
+    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept');
+    vodSay(V, 'listening', vodListenText(S.snd));
+  } catch (e) {
+    if (S.vod !== V) return;
+    vodSay(V, 'error', `${vodWho()}'s Bilibili replay: ${e.message || e}`);
+    V.failedAt = now();
+    diag('vod', { err: String(e?.message || e).slice(0, 160) });
+  }
+}
+function vodStop() {
+  if (!S.vod) return;
+  S.vod = null;
+  if (S.timeline?.vod) { S.timeline = null; S.playlist = null; if (S.hls) { S.hls.destroy(); S.hls = null; } }
+  if (S.vodBlob) { URL.revokeObjectURL(S.vodBlob); S.vodBlob = null; }
+}
+// Page i of replay r's AAC frames from t0 to t1 s (whole segments, by one range request).
+async function vodFrames(r, i, t0, t1) {
+  const pg = r.pages[i], a0 = Math.max(0, t0);
+  const [k0, k1] = FoneVod.segRange(pg.segs, a0, Math.max(0, t1 - a0));
+  if (k1 <= k0) return [];
+  const b = await FoneVod.range(pg, pg.segs[k0].off, pg.segs[k1 - 1].off + pg.segs[k1 - 1].len - 1, r);
+  return FoneDemux.mp4Audio(b, pg.initInfo).frames;
+}
+// Replay r's sound from m to m + d (within the page holding m), decoded 8 kHz mono: {m0, y}.
+async function vodRead(r, m, d) {
+  let off = 0, i = 0;
+  while (i < r.pages.length - 1 && m >= off + r.pages[i].dur) off += r.pages[i++].dur;
+  const fr = await vodFrames(r, i, m - off, Math.min(r.pages[i].dur, m + d - off));
+  if (!fr.length) return null;
+  const ab = await new OfflineAudioContext(1, 1, SND.SR).decodeAudioData(FoneDemux.concat(...fr.map((f) => f.data)).buffer);
+  const y = new Float32Array(ab.length);
+  for (let c = 0; c < ab.numberOfChannels; c++) { const ch = ab.getChannelData(c); for (let k = 0; k < y.length; k++) y[k] += ch[k] / ab.numberOfChannels; }
+  return { m0: off + fr[0].t + SND.DECODE_LAG, y };
+}
+// The replays' ~5 s repeats, found once (kept by replay), in the background: the one playing is
+// put on its timeline again with the moment playing where it was.
+async function vodCuts(V, gen) {
+  for (const r of V.reps) {
+    if (r.cutsDone) continue;
+    try {
+      r.cuts = await FoneVod.findCuts(r, (i, t0, t1) => vodFrames(r, i, t0, t1));
+      r.cutsDone = true;
+      FoneVod.store.set(`vodCuts|${r.bvid}`, { cuts: r.cuts, at: Date.now() });
+      diag('vod', { cuts: r.bvid, n: r.cuts.length, assumed: r.cuts.filter((c) => c.assumed).length });
+    } catch (e) {
+      diag('vod', { cutsErr: String(e?.message || e).slice(0, 120) });
+      return;
+    }
+    if (gen !== S.gen || S.vod !== V) return;
+    if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
+  }
+}
+// The replay playing as the timeline (as a server's /api/timeline gives one) and its playlist.
+// `keep`: the replay's repeats changed: the moment playing keeps its wall time.
+function vodApply(V, keep = false) {
+  const r = V.cur;
+  if (keep && S.timeline?.vod === r.bvid && S.lastTarget != null) {
+    const w = C.wallOf(S.timeline.pieces, S.lastTarget), w2 = C.wallOf(FoneVod.timeline(r, r.T0).pieces, S.lastTarget);
+    if (w != null && w2 != null) r.T0 += w - w2;
+  }
+  const tl = FoneVod.timeline(r, r.T0);
+  S.timeline = { ...tl, live: false, complete: true, edge: null, mutes: [], vod: r.bvid, playlist: `vod:${r.bvid}`, receivedAt: now() };
+  if (S.playlist !== S.timeline.playlist) {
+    if (S.vodBlob) URL.revokeObjectURL(S.vodBlob);
+    S.vodBlob = URL.createObjectURL(new Blob([FoneVod.playlist(r, (i) => `${VOD.URL}${r.bvid}/${i}`)], { type: 'application/vnd.apple.mpegurl' }));
+    loadPlaylist(S.timeline.playlist, S.vodBlob);
+  }
+}
+// hls.js's requests for the replay: to the page's URL now (signed for a while, the mirror that works).
+async function vodXhrSetup(xhr, url) {
+  if (!url.startsWith(VOD.URL)) return;
+  const [bvid, i] = url.slice(VOD.URL.length).split('/');
+  const r = S.vod?.reps.find((x) => x.bvid === bvid), pg = r?.pages[+i];
+  if (pg) xhr.open('GET', await FoneVod.urlOf(r, pg), true);
+}
+function vodFailed(url) {
+  if (!url?.startsWith(VOD.URL)) return;
+  const [bvid, i] = url.slice(VOD.URL.length).split('/');
+  const pg = S.vod?.reps.find((x) => x.bvid === bvid)?.pages[+i];
+  if (pg) FoneVod.failed(pg);
+}
+function vodPlace(V, r, T0, delay, how) {
+  r.T0 = T0;
+  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map() });
+  vodSay(V, 'placed', '');
+  vodApply(V);
+  // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
+  if (S.snd) S.snd.bias = Number(FoneVod.store.get(sndBiasKey())?.bias) || 0;
+  S.delay = Math.round((how === 'sound' ? delay + (S.snd?.bias || 0) : delay) * 1000) / 1000;
+  S.delaySource = 'sound';
+  S.resync = true;
+  vodSave();
+  diag('vod', { place: how, bvid: r.bvid, T0: Math.round(T0 * 10) / 10, delay: S.delay });
+}
+const vodKey = (r) => `vodPlace|${S.cid}|${r.bvid}`;
+// Where the replay playing was put (and the delay on it), for this video: sync by sound's, a nudge's.
+function vodSave(delay = S.delay) {
+  const V = S.vod, r = V?.cur;
+  if (!r || V.state !== 'placed' || delay == null) return;
+  FoneVod.store.set(vodKey(r), { T0: r.T0, delay: Math.round(delay * 1000) / 1000, at: Date.now() });
+}
+function vodKept(V) {
+  let best = null;
+  for (const r of V.reps) {
+    const k = FoneVod.store.get(vodKey(r));
+    if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay) && !(best && best.at > k.at)) best = { rep: r, ...k };
+  }
+  return best;
+}
+// What to look for: the newest VOD.WIN s of F1 TV's sound heard, new since the last look, not
+// silent ({x, pa: the picture it starts at, run}); null, and why for the panel, while there's none.
+function vodQuery(V) {
+  const sn = S.snd, run = sn?.runs[sn.runs.length - 1], n = VOD.WIN * SND.SR;
+  if (!run || run.x.length < n || (V.seen?.r === run && V.seen.n === run.n)) return { why: vodListenText(sn) };
+  const x = run.x.subarray(run.x.length - n);
+  if (FoneSound.rms(x) < 1e-4) return { why: vodListenText({ state: 'quiet' }) };
+  return { x, pa: run.p0 + (run.x.length - n) / SND.SR, run };
+}
+// One look: that sound looked for in the replays. True: placed.
+async function vodSearch(V, gen, Q) {
+  const sn = S.snd, { x, pa } = Q;
+  V.seen = { r: Q.run, n: Q.run.n };
+  const E = C.eventTime(S.clock, S.content, pa, null, now(), { manualBase: S.manualBase });
+  const plan = FoneVod.searchPlan(V.reps, E, { full: V.tries >= 2, chunk: VOD.CHUNK, win: VOD.WIN, guess: VOD.D0 });
+  V.tries++;
+  const placed = V.state === 'placed';
+  if (!placed) vodSay(V, 'searching', `Looking for this moment in ${vodWho()}'s Bilibili replay…`);
+  const sr = SND.SR / VOD.F, q = FoneSound.decimate(x, VOD.F), hits = [];
+  let k = 0, done = 0, stop = false, err = null;
+  const rivalOf = (h) => Math.max(h.next, 0, ...hits.filter((o) => o !== h && (o.rep !== h.rep || Math.abs(o.m - h.m) > 1)).map((o) => o.score));
+  const worker = async () => {
+    while (!stop && k < plan.length) {
+      const ch = plan[k++], key = `${ch.rep.bvid}/${ch.a}/${ch.len}`;
+      let got = V.chunks.get(key);
+      if (!got) {
+        const rd = await vodRead(ch.rep, ch.a, ch.len).catch((e) => { err = e; return null; });
+        if (gen !== S.gen || S.vod !== V) { stop = true; return; }
+        if (!rd) continue;
+        // (kept as 16-bit: the match doesn't care for the scale)
+        const y = FoneSound.decimate(rd.y, VOD.F);
+        let mx = 1e-9;
+        for (let i = 0; i < y.length; i++) mx = Math.max(mx, Math.abs(y[i]));
+        const y16 = new Int16Array(y.length);
+        for (let i = 0; i < y.length; i++) y16[i] = Math.round((y[i] / mx) * 32767);
+        got = { m0: rd.m0, y: y16 };
+        V.chunks.set(key, got);
+      }
+      const res = FoneSound.locate(q, got.y, sr);
+      done++;
+      if (!placed) V.text = `Looking for this moment in ${vodWho()}'s Bilibili replay… ${Math.round((100 * done) / plan.length)}%`;
+      if (!res || res.edge) continue;
+      const h = { rep: ch.rep, m: got.m0 + res.lag / sr, score: res.score, next: res.next };
+      hits.push(h);
+      if (h.score >= VOD.SURE && h.score >= 2 * rivalOf(h)) stop = true; // (sure at once: far above all else)
+    }
+  };
+  await Promise.all(Array.from({ length: VOD.PAR }, worker));
+  if (gen !== S.gen || S.vod !== V) return false;
+  hits.sort((a, b) => b.score - a.score);
+  const best = hits[0], rival = best ? rivalOf(best) : 0;
+  const r1 = (v) => Math.round(v * 10) / 10;
+  diag('vod', { look: V.tries, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
+    best: best ? { bvid: best.rep.bvid, m: Math.round(best.m * 100) / 100, score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
+    prev: V.prevBest ? r1(V.prevBest.off) : null });
+  // (two looks in a row putting F1 TV's sound at the same place for the picture: as good as a sure one)
+  const prev = V.prevBest, off = best ? best.m - pa : null;
+  V.prevBest = best && best.score >= VOD.WEAK && best.score >= 1.2 * rival ? { rep: best.rep, off, score: best.score } : null;
+  const agree = !!(prev && V.prevBest && prev.rep === best.rep && Math.abs(prev.off - off) <= VOD.AGREE);
+  // (placed already, and sync by sound not confirming it: moved only by a match far above all else)
+  const sure = placed ? !!best && best.score >= VOD.SURE && best.score >= 2 * rival
+    : !!best && ((best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival) || agree);
+  if (sure) {
+    // F1 TV's sound at picture pa is at best.m in the replay: put there with the delay at VOD.D0
+    // (and the nudge on top of the sound, as sync by sound keeps it)
+    const T0 = E + VOD.D0 - FoneVod.contentAt(best.rep, best.m), delay = VOD.D0;
+    if (!(placed && V.cur === best.rep && Math.abs(T0 - best.rep.T0) < 1)) vodPlace(V, best.rep, T0, delay, 'sound');
+    return true;
+  }
+  if (!placed) {
+    vodSay(V, 'listening', err && !hits.length ? `${vodWho()}'s Bilibili replay: ${err.message || err} (trying again)`
+      : `Not found in ${vodWho()}'s Bilibili replay yet: listening on${V.tries >= 2 ? ' (the whole replay next)' : ''}`);
+  }
+  return false;
+}
+// Each tick with a Bilibili replay: a look when one is due (VOD.RETRY s after the last, as soon as
+// there's F1 TV's sound to look for), and, placed, again when sync by sound hasn't confirmed it
+// in VOD.CONFIRM looks of its own while hearing F1 TV (playing on meanwhile).
+function vodTick(t, v) {
+  const V = S.vod, sn = S.snd;
+  if (!V || V.busy || !sn || v.paused || v.seeking || v.waiting) return;
+  const since = V.lastTryAt == null ? Infinity : t - V.lastTryAt;
+  const due = V.state === 'listening' && since >= VOD.RETRY;
+  const unsure = V.state === 'placed' && sn.target == null && (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM
+    && sn.state === 'listening' && since >= (V.rechecks ? VOD.AGAIN : 60);
+  if (!due && !unsure) return;
+  const Q = vodQuery(V);
+  if (!Q.x) { if (V.state === 'listening' && (V.tries === 0 || !/^Not found/.test(V.text || ''))) V.text = Q.why; return; }
+  V.busy = true;
+  if (unsure) { V.rechecks++; diag('vod', { recheck: V.rechecks }); }
+  vodSearch(V, S.gen, Q).catch((e) => { if (V.state !== 'placed') vodSay(V, 'listening', `${vodWho()}'s Bilibili replay: ${e.message || e}`); })
+    .finally(() => { V.busy = false; V.lastTryAt = now(); if (V.state === 'searching') V.state = 'listening'; });
+}
+// Off the end (or before the start) of the replay playing: the streamer's next (or previous) one.
+function vodNeighbour(state) {
+  const V = S.vod, i = V?.reps.indexOf(V.cur);
+  if (!V || i < 0) return null;
+  return state === 'after' ? V.reps[i + 1] || null : state === 'before' ? V.reps[i - 1] || null : null;
+}
+function vodSwitch(r) {
+  const V = S.vod, k = FoneVod.store.get(vodKey(r));
+  diag('vod', { switch: r.bvid, kept: !!k });
+  if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept');
+  Object.assign(V, { tries: 0, lastTryAt: null, seen: null, prevBest: null });
+  vodSay(V, 'listening', vodListenText(S.snd));
+}
+// The replay's own danmaku (the live chat on it) from `from` to `to` on its wall clock (the 弹幕
+// overlay's: danmakuClock's, the audio playing): {items (as /api/danmaku's), live: false}.
+async function vodDanmaku(from, to) {
+  const V = S.vod, r = V?.cur;
+  if (!r || V.state !== 'placed' || S.timeline?.vod !== r.bvid) return { items: [], live: false };
+  if (!r.dm) { r.dm = Promise.all(r.pages.map((pg) => FoneVod.danmaku(pg.cid))); r.dm.catch(() => { r.dm = null; }); }
+  const pages = await r.dm, pcs = S.timeline.pieces, items = [];
+  let off = 0;
+  pages.forEach((list, i) => {
+    for (const d of list) {
+      const w = C.wallOf(pcs, off + d.p);
+      if (w != null && w >= from && w < to) items.push({ t: Math.round(w * 1000) / 1000, x: d.x, m: d.m, s: d.s, c: d.c, u: d.u });
+    }
+    off += r.pages[i].dur;
+  });
+  return { items, live: false };
+}
+// For the panel and the diagnostics.
+function vodBrief() {
+  const V = S.vod;
+  if (!V) return null;
+  const r = V.cur;
+  return { state: V.state, text: V.text || null, bvid: r?.bvid ?? null, title: r?.live ?? null, how: V.how ?? null, tries: V.tries,
+    reps: V.reps.length, cuts: r ? (r.cutsDone ? r.cuts.length : null) : null };
+}
+
+// ---- team radio, filled in ----------------------------------------------------------
+// F1 TV's Track FX plays the team-radio sting but not the message since about 2026-11-03. The
+// session's messages (OpenF1's copy of F1 live timing's TeamRadio: mp3s named after the moment
+// they were recorded) are fetched as F1 TV gets near them; the sting is listened for in F1 TV's
+// own sound (the copy sync by sound keeps, on the picture's time: teamradio.js); a message whose
+// time fits plays STING_TO_SPEECH s after it, its speech there (the quiet opening each file has
+// skipped), following the picture: pauses, seeks, speed. Which message: the one whose time, with
+// what the matches so far say the clock is off by (TR.C: a replay's start is an estimate), is
+// nearest. Only with Track FX (English Int. has the radio itself).
+const TR = { FETCH: 120, WINDOW: 25, WINDOW_CAL: 5, VOL: 1, KEEP: 40 };
+async function trLoad(t) {
+  const c = S.content, R = S.tr;
+  if (!c?.sessionKey || R.loading || t - (R.loadedAt || 0) < (S.clock === 'edge' ? 60 : 3600)) return;
+  R.loading = true;
+  try {
+    const get = (u) => fetch(u, { signal: AbortSignal.timeout(15000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+    if (R.gmt == null) R.gmt = (await get(`https://api.openf1.org/v1/sessions?session_key=${c.sessionKey}`))?.[0]?.gmt_offset ?? '0';
+    const list = await get(`https://api.openf1.org/v1/team_radio?session_key=${c.sessionKey}`);
+    if (S.tr !== R) return;
+    for (const m of list || []) {
+      if (!m?.recording_url || R.clips.some((x) => x.url === m.recording_url)) continue;
+      const T = FoneRadio.fileTime(m.recording_url, R.gmt);
+      if (T != null) R.clips.push({ url: m.recording_url, T, num: m.driver_number, name: m.recording_url.split('/').pop(), state: 'new' });
+    }
+    R.clips.sort((a, b) => a.T - b.T);
+    R.loadedAt = t;
+    R.err = null;
+  } catch (e) {
+    R.err = `messages: ${String(e?.message || e).slice(0, 60)}`;
+    R.loadedAt = t - 3540; // (again in a minute)
+  } finally { R.loading = false; }
+}
+// A message fetched and looked at: where its speech starts (null: none, the opening alone).
+function trFetch(x) {
+  if (x.state === 'new') x.loading = trFetch1(x);
+  return x.loading;
+}
+async function trFetch1(x) {
+  x.state = 'fetching';
+  try {
+    const r = await fetch(x.url, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const ab = await new OfflineAudioContext(1, 1, SND.SR).decodeAudioData(await blob.arrayBuffer());
+    const y = ab.getChannelData(0);
+    x.onset = FoneRadio.speechOnset(y, ab.sampleRate);
+    x.dur = ab.duration;
+    x.src = URL.createObjectURL(blob);
+    x.state = x.onset == null ? 'empty' : 'ready';
+  } catch (e) {
+    x.state = 'failed';
+    x.err = String(e?.message || e).slice(0, 60);
+  }
+}
+// The time on F1 TV's picture at position p (F1 TV's own clock live; a replay's anchor else).
+function trE(p) {
+  if (S.clock === 'edge') return S.video?.utc0 != null ? S.video.utc0 + p : null;
+  return S.content ? C.eventTime(S.clock, S.content, p, null, now(), { manualBase: S.manualBase }) : null;
+}
+// Stings in what's been heard since the last look (the newest run), each matched to a message.
+function trListen(t) {
+  const R = S.tr, sn = S.snd, r = sn?.runs?.[sn.runs.length - 1];
+  if (!r) return;
+  const end = r.p0 + r.x.length / SND.SR, from = Math.max(r.p0, R.heardTo ?? -Infinity, end - 20);
+  if (end - from < 0.6) return;
+  const i0 = Math.max(0, Math.round((from - 0.15 - r.p0) * SND.SR));
+  const found = FoneRadio.stings(r.x.subarray(i0), (from - r.p0) - i0 / SND.SR);
+  R.heardTo = end - 0.35; // (the pattern's whole length after its start, and a frame)
+  for (const g of found) {
+    const ps = r.p0 + i0 / SND.SR + g.t;
+    if (R.stings.some((q) => Math.abs(q.p - ps) < 1)) continue;
+    R.stings.push({ p: ps, at: t, score: Math.round(g.score * 100) / 100 });
+    while (R.stings.length > 20) R.stings.shift();
+    trMatch(ps, g.score, t);
+  }
+}
+function trMatch(ps, score, t) {
+  const R = S.tr, E = trE(ps);
+  if (E == null) return;
+  const speech = E + FoneRadio.STING_TO_SPEECH; // (when its speech is due, on the picture's clock)
+  const cal = R.cal.length >= 2, win = cal ? TR.WINDOW_CAL : TR.WINDOW;
+  let best = null;
+  for (const x of R.clips) {
+    if (x.state === 'empty' || x.state === 'failed' || x.state === 'playing') continue; // (played: again, rewound)
+    const d = speech - (x.T + (x.onset ?? 3)) - (cal ? R.C : 0);
+    if (Math.abs(d) <= win && (!best || Math.abs(d) < Math.abs(best.d))) best = { x, d };
+  }
+  diag('tr', { sting: Math.round(ps * 100) / 100, score: Math.round(score * 100) / 100, E: Math.round(E * 10) / 10, clip: best?.x.name ?? null, d: best ? Math.round(best.d * 100) / 100 : null });
+  if (!best) { R.last = { at: t, what: 'a sting, no message near it' }; return; }
+  const x = best.x;
+  if (R.playing?.x === x) { // (started ahead, by the clock: put where the sting says, if it's off)
+    const pOn = ps + FoneRadio.STING_TO_SPEECH, pl = R.playing, want = pOn - (x.onset - pl.t0);
+    if (Math.abs(want - pl.pStart) > 0.25) pl.pStart = want;
+  }
+  if (x.onset != null) {
+    R.cal.push(speech - (x.T + x.onset));
+    if (R.cal.length > 7) R.cal.shift();
+    R.C = [...R.cal].sort((a, b) => a - b)[R.cal.length >> 1];
+  }
+  if (R.playing?.x !== x) trPlay(x, ps + FoneRadio.STING_TO_SPEECH);
+}
+// Play a message with its speech at picture position pOn (from just before it: the opening skipped).
+async function trPlay(x, pOn) {
+  const R = S.tr;
+  await trFetch(x);
+  if (S.tr !== R || (x.state !== 'ready' && x.state !== 'played')) return;
+  if (R.playing) trStop();
+  const el = new Audio(x.src);
+  el.preservesPitch = true;
+  const t0 = Math.max(0, x.onset - 0.3); // (mp3 time to start from: just before the speech)
+  R.playing = { x, el, pStart: pOn - (x.onset - t0), t0, began: null };
+  diag('tr', { play: x.name, pOn: Math.round(pOn * 100) / 100, p: Math.round((S.sndRef?.p ?? 0) * 100) / 100, onset: Math.round(x.onset * 100) / 100 });
+  x.state = 'playing';
+  R.last = { at: now(), what: `${x.name.split('_')[0]}` };
+}
+function trStop() {
+  const R = S.tr, pl = R?.playing;
+  if (!pl) return;
+  try { pl.el.pause(); pl.el.removeAttribute('src'); pl.el.load(); } catch { /* gone */ }
+  pl.x.state = 'played';
+  R.playing = null;
+}
+// Each tick: the messages near the picture fetched, the sting listened for, the one playing kept
+// on the picture.
+function trTick(t, v, vn) {
+  const want = S.trWant;
+  if (!want?.on || !want.fx || !S.content?.sessionKey || !S.snd) { if (S.tr?.playing) trStop(); return; }
+  if (!S.tr || S.tr.cid !== S.cid) { if (S.tr?.playing) trStop(); S.tr = { cid: S.cid, clips: [], cal: [], C: 0, stings: [], playing: null }; }
+  const R = S.tr;
+  trLoad(t);
+  const E = trE(vn.p);
+  if (E != null) for (const x of R.clips) if (x.state === 'new' && Math.abs(x.T - E) < TR.FETCH) trFetch(x);
+  if (!v.paused && !v.seeking && !v.waiting) trListen(t);
+  // once two matches agree on the clock, a message starts on time by it, ahead of its sting (which
+  // is heard a second or so late: waiting for it cuts the message's first words); the sting then
+  // only puts it right
+  const cal = R.cal.length >= 2 && Math.max(...R.cal) - Math.min(...R.cal) < 1.5;
+  if (cal && E != null && !R.playing && !v.paused) {
+    for (const x of R.clips) {
+      if (x.state !== 'ready' || x.onset == null) continue;
+      const pOn = vn.p + (x.T + x.onset + R.C - E), lead = pOn - vn.p;
+      if (lead < 0.6 && lead > -1) { trPlay(x, pOn); break; }
+    }
+  }
+  const pl = R.playing;
+  if (pl) {
+    const tau = pl.t0 + (vn.p - pl.pStart); // (where in the mp3 the picture is)
+    if (tau > pl.x.dur || tau < pl.t0 - 30) trStop();
+    else if (tau >= pl.t0) {
+      const el = pl.el, rate = v.rate || 1;
+      el.volume = S.muted ? 0 : Math.min(1, (S.volume ?? 1) * TR.VOL);
+      if (el.playbackRate !== rate) el.playbackRate = rate;
+      if (v.paused || v.seeking || v.waiting) { if (!el.paused) el.pause(); }
+      else {
+        // (not chopped: put right only when it's well off, and not while it's starting)
+        if (el.paused) { el.currentTime = tau; el.play().catch((e) => { R.err = `play: ${e.message}`; }); pl.began = now(); }
+        else if (now() - (pl.began ?? 0) > 1 && Math.abs(el.currentTime - tau) > 0.4) el.currentTime = tau;
+      }
+    }
+  }
+  return R;
 }
 
 // ---- diagnostics -------------------------------------------------------------------
@@ -529,7 +1912,9 @@ function audioAhead() {
 
 // The moments the snapshots miss: F1 TV's player changing state (playing → internally-stopped:
 // the player died), its audio track changing (fone's Track FX switch, or the user's menu) and
-// what came of it, a rebuilt pipeline (new MSE handle), the onboard views coming and going.
+// what came of it, the sound fone picks (mode), F1 TV's own mute button (muted: held by fone's
+// gain; own: a mute of F1 TV's own held so) and the subtitles asked for, a rebuilt pipeline (new
+// MSE handle), the onboard views coming and going.
 // Each with the position and state around it, so a crash can be put next to its trigger.
 function diagPlayer(prev, v) {
   const a = v.dx?.a, b = prev?.dx?.a;
@@ -537,7 +1922,8 @@ function diagPlayer(prev, v) {
   const at = { p: Math.round((v.p || 0) * 10) / 10, ps: r?.ps ?? null, h: v.dx?.h ?? null, nv: v.dx?.nv ?? null };
   if (prev && q && r && q.ps !== r.ps) diag('pstate', { from: q.ps, to: r.ps, ...at, want: r.want, sdk: r.sdk, err: r.err, audio: a?.cur ?? null });
   if (a && (a.v !== b?.v || a.cur !== b?.cur || a.err !== b?.err)) {
-    diag('audio', { from: b?.cur ?? null, to: a.cur, kind: a.kind, auto: a.auto, manual: a.manual, on: a.on, fx: a.fx, err: a.err, ...at });
+    diag('audio', { from: b?.cur ?? null, to: a.cur, kind: a.kind, auto: a.auto, manual: a.manual, on: a.on, fx: a.fx, err: a.err,
+      mode: a.mode ?? null, muted: !!a.muted, own: !!a.own, subs: v.dx?.subs?.want ?? null, ...at });
   }
   if (prev && v.dx?.h != null && prev.dx?.h != null && v.dx.h !== prev.dx.h) diag('handle', { from: prev.dx.h, to: v.dx.h, ...at, audio: a?.cur ?? null, want: r?.want ?? null });
   const obs = (x) => (x?.dx?.ob ? x.dx.ob.map((o) => `${o.ch ?? '-'}:${o.state}`).join(',') : '');
@@ -562,6 +1948,13 @@ function diagPlayer(prev, v) {
   }
 }
 
+// fone's copy of F1 TV's sound, for the snap (its element lists only while it isn't copying: the
+// server keeps events under 4 kB)
+function tapBrief(tp) {
+  if (!tp) return null;
+  const { seen, media, els, ...rest } = tp;
+  return tp.copying ? rest : { ...rest, els, media };
+}
 function diagSnap(st) {
   const v = S.video || {};
   diag('snap', {
@@ -570,7 +1963,19 @@ function diagSnap(st) {
     audio: { paused: audio.paused, rs: audio.readyState, rate: audio.playbackRate, pp: audio.preservesPitch,
       ct: Math.round(audio.currentTime * 10) / 10, ahead: audioAhead() },
     video: { p: v.p, rate: v.rate, paused: v.paused, waiting: v.waiting, src: v.src, live: v.live, seekEnd: v.seekEnd ?? null,
-      dx: v.dx ?? null },
+      utc0: v.utc0 ?? null, dx: v.dx ?? null },
+    // live: F1 TV behind its own clock, the commentary's lead over its edge, F1 TV's edge at its
+    // freshest, and the streamer's delay as the server measures it off their screen (for the next
+    // calibration: none of it is known to be right but by ear)
+    live: st.clock === 'edge' ? { fl: st.f1Lat ?? null, lead: st.lead == null ? null : Math.round(st.lead * 100) / 100,
+      up: (() => { const u = upFreshest(now()); return u == null ? null : Math.round(u * 100) / 100; })(), screen: S.screen ?? null,
+      skew: S.skew == null ? null : Math.round(S.skew * 1000) / 1000 } : null,
+    // sync by sound: where it stands and what the last look came to (the first real sessions judge it)
+    sound: st.sound ? { state: st.sound.state, score: st.sound.score, err: st.sound.err, v: st.sound.v, bias: st.sound.bias,
+      why: st.sound.why, looks: st.sound.looks, breaks: st.sound.breaks, splices: st.sound.splices, runs: st.sound.runs,
+      tap: tapBrief(S.video?.dx?.a?.tap) } : null,
+    // (the streamer's Bilibili replay, a session nothing else covers; its text is the snap's)
+    vod: st.vod ? { state: st.vod.state, bvid: st.vod.bvid, how: st.vod.how, tries: st.vod.tries, cuts: st.vod.cuts } : null,
   });
 }
 
@@ -592,6 +1997,9 @@ async function refreshDashDelay(gen) {
     const sync = await api(`/api/sync/${S.cid}?channel=${encodeURIComponent(S.channel)}&clock=multiviewer`);
     if (gen !== S.gen) return;
     S.dashDelay = sync.delay + (sync.source === 'measured' ? DASH.SAFETY_MEASURED : DASH.SAFETY);
+    const screen = sync.source === 'measured' && Number.isFinite(sync.screen) ? sync.screen : null;
+    if (screen !== S.screen) diag('screen', { screen, file: sync.file ?? null, confidence: sync.confidence ?? null });
+    S.screen = screen;
   } catch { /* keep the last one */ }
 }
 
@@ -602,7 +2010,8 @@ function dashClock(t, v, vn, E, liveM) {
   if (S.clock === 'edge') {
     // (the stream recorded here has no measured delay on a server: the long guess below)
     if (S.source !== 'local' && t - S.dashDelayAt > DASH.DELAY_TTL) refreshDashDelay(S.gen);
-    const w = liveM != null && S.synced && S.dashDelay != null ? C.wallOf(S.timeline?.pieces, liveM) : null;
+    const w0 = liveM != null && S.synced && S.dashDelay != null ? C.wallOf(S.timeline?.pieces, liveM) : null;
+    const w = w0 == null ? null : w0 + (S.local ? skewNow() : 0); // (UTC: the stream recorded here's walls are this PC's)
     e = w != null ? w - S.dashDelay : t - DASH.LIVE_LATENCY - Math.max(0, (vn.seekEnd ?? vn.p) - vn.p);
   }
   if (!Number.isFinite(e)) return;
@@ -616,13 +2025,20 @@ function tick() {
   if (!S.key || !S.video) return;
   const t = now();
   diagClocks(t);
+  if (S.base && t - (S.skewAt ?? 0) > SKEW.EVERY) refreshSkew(S.gen);
   const v = S.video;
+  const rec = S.local ? { ...FoneRecorder.status(), player: S.lplayer?.state() ?? null } : null;
   const base = {
     channel: S.channel, channels: S.channels.map((c) => c.name), server: S.base,
     clock: S.clock, delay: S.delay, delaySource: S.delaySource, cid: S.cid,
     title: S.content?.title, session: S.content?.sessionName, anchor: S.content?.anchor,
-    source: S.source, rec: S.local ? { ...FoneRecorder.status(), player: S.lplayer?.state() ?? null } : null,
+    source: S.source, direct: S.local && S.source === 'server', rec,
+    // the streamer on air, as the commentary's source knows it (a Bilibili room showing replays,
+    // 轮播, isn't; a server's recording counts as live while its file grows): null, not known
+    onAir: rec ? (rec.state === 'offline' ? false : rec.state === 'recording' && !localIdle(rec, t) ? true : null)
+      : S.timeline ? serverLive() : null,
     playing: !v.paused && t - v.receivedAt <= 4, // the picture is moving (self-update waits)
+    page: FoneStreams.pageOf(S.local ? S.stream : S.room) ?? null, // the streamer's live page (↗)
     diag: { q: diagQ.length, sent: DG.sent, err: DG.err },
     livepos: livePosBrief(),
   };
@@ -630,12 +2046,29 @@ function tick() {
     pauseAudio();
     return report({ ...base, state: 'loading', text: 'Waiting for the F1 TV player…' });
   }
+  // rewound into a server's recording that can't be had (its timeline fetch failing): the way back
+  // to the stream needs no server
+  if (!S.timeline && !S.local && S.directBack && S.clock === 'edge' && S.delay != null) {
+    const vn = C.videoNow(v, t);
+    // (backInDirect takes the stream recorded here's walls: this PC's clock)
+    const w = S.carry?.cid === S.cid ? S.carry.w - skewNow() + (vn.p - S.carry.p) : t - f1Lat(t, vn) + S.delay;
+    if (backInDirect(t, w)) {
+      goDirect(S.gen);
+      return report({ ...base, state: 'syncing', text: 'Back to the stream…' });
+    }
+  }
+  // the streamer's Bilibili replay of a session nothing else covers: being found, or this moment in it
+  base.vod = vodBrief();
+  if (S.vod && S.vod.state !== 'placed') {
+    pauseAudio();
+    vodTick(t, v);
+    return report({ ...base, state: S.vod.state === 'none' ? 'none' : S.vod.state === 'error' ? 'error' : 'syncing', text: S.vod.text });
+  }
   if (!S.timeline || !S.content || S.delay == null) {
     pauseAudio();
     return report({ ...base, state: S.error ? 'error' : 'loading', text: S.error || (S.local ? base.rec.text : '') || 'Connecting…' });
   }
   if (S.local) { // recorded here: live only, and only once there is something recorded
-    const rec = base.rec;
     if (S.clock !== 'edge') {
       pauseAudio();
       return report({ ...base, state: S.clockFinal ? 'none' : 'loading',
@@ -643,6 +2076,14 @@ function tick() {
     }
     const who = rec.name || rec.label;
     if (!S.timeline.pieces.length) {
+      // off air since the page opened, F1 TV rewound: the server's recording has what was on (and
+      // back to the stream once the streamer is on air and F1 TV within it: backInDirect)
+      const vn = C.videoNow(v, t);
+      learnLive(t, vn); // (as liveTarget does)
+      if (S.source === 'server' && rec.state === 'offline' && rewoundBy(t, vn) >= 2 * EDGE_STEP) {
+        goServer(S.gen, true, 'off air here');
+        return report({ ...base, state: 'syncing', text: "Off air: the server's recording…" });
+      }
       pauseAudio();
       const state = rec.state === 'offline' ? 'none' : rec.state === 'error' ? 'error' : 'loading';
       return report({ ...base, state, text: rec.state === 'offline' ? `${who}: ${rec.text.toLowerCase()}` : rec.text || 'Connecting to the stream…', error: rec.err });
@@ -650,55 +2091,92 @@ function tick() {
     // The stream stopped coming in (off air, or nothing for LOCAL_IDLE s): no live edge to be
     // behind, so no lead either (auto-hold lets F1 TV go), and the panel says why. What was
     // recorded still plays when F1 TV is rewound into it.
-    const idle = rec.state === 'offline' || rec.state === 'error' || (rec.lastAt != null && t - rec.lastAt > LOCAL_IDLE);
-    if (idle) {
-      const m = liveTarget(t, C.videoNow(v, t));
+    if (localIdle(rec, t)) {
+      const vn = C.videoNow(v, t);
+      const m = liveTarget(t, vn);
       const end = FoneLocal.playableEnd(FoneRecorder.buffer(S.stream));
       if (m == null || end == null || m > end - 3.5) { // (before auto-hold's zone, 3 s from the edge)
         pauseAudio();
         const text = rec.state === 'offline' ? `${who}: ${rec.text.toLowerCase()}` : `The stream stopped coming in${rec.err ? ` (${rec.err})` : ''}`;
-        return report({ ...base, state: 'after', text, lead: null, error: rec.err });
+        return report({ ...base, state: 'after', text, lead: null, error: rec.err, p: vn.p, at: t });
       }
     }
   }
-  audio.volume = S.muted ? 0 : S.volume;
-
   if (domainMismatch(v)) {
     pauseAudio();
     return report({ ...base, state: 'syncing', text: 'Re-syncing…' });
   }
   const vn = C.videoNow(v, t);
-  const E = C.eventTime(S.clock, S.content, vn.p, vn.seekEnd, t, { manualBase: S.manualBase });
+  if (clockLost(t, vn)) {
+    pauseAudio();
+    return report({ ...base, state: 'syncing', text: 'Re-syncing…' });
+  }
+  // (live with F1 TV's own clock: the time on its picture, the commentary's that much later)
+  const E = S.clock === 'edge' && f1Clock(vn) != null ? f1Clock(vn) : C.eventTime(S.clock, S.content, vn.p, vn.seekEnd, t, { manualBase: S.manualBase });
   const W = E + S.delay;
   let map = C.mapWall(S.timeline.pieces, W);
   const liveM = S.clock === 'edge' ? liveTarget(t, vn) : null;
   dashClock(t, v, vn, E, liveM);
   if (S.clock === 'edge') {
     const m = liveM;
+    base.leadAim = liveAllow() - slack(); // (auto-hold lets F1 TV go again near it)
+    // (backInDirect takes the stream recorded here's walls, this PC's clock: the lock's moment is
+    // the server's; without one, where F1 TV's picture puts it on this PC's)
+    const lw = S.liveLock?.cid === S.cid ? lockWall(S.liveLock, vn) : null;
+    const bw = lw != null ? lw - skewNow() : S.liveLock?.cid === S.cid ? null : t - f1Lat(t, vn) + S.delay;
+    if (!S.local && S.directBack && backInDirect(t, bw)) {
+      goDirect(S.gen);
+      return report({ ...base, state: 'syncing', text: 'Back to the stream…' });
+    }
     if (m != null) {
       const edge = commentaryEdge(t);
       if (edge != null && m > edge - 1) {
         pauseAudio();
-        Object.assign(base, { E, W, lead: edge - 2.5 - m, error: S.error, fixes: fixStats() });
+        Object.assign(base, { E, W, lead: edge - slack() - m, error: S.error, fixes: fixStats(), p: vn.p, at: t });
         return report({ ...base, state: 'waiting', text: `Commentary ${Math.ceil(m - edge + 1)}s behind` });
       }
-      const first = S.timeline.pieces[0];
-      map = first && m < first.m
-        ? { state: 'before', wait: first.m - m }
-        : { state: 'ok', m, file: S.timeline.pieces.length ? S.timeline.pieces[S.timeline.pieces.length - 1].f : 0 };
+      const first = S.timeline.pieces[0], last = S.timeline.pieces[S.timeline.pieces.length - 1];
+      map = first && m < first.m ? { state: 'before', wait: first.m - m }
+        // past a recording that has ended: the streamer went off air (no audio to play there)
+        : !S.local && !serverLive() && last && m >= last.m + last.d ? { state: 'after', past: m - last.m - last.d }
+          // (the file of the piece holding m: past the newest's end, waiting at the edge, that one)
+          : { state: 'ok', m, file: (S.timeline.pieces.find((x) => m >= x.m && m < x.m + x.d) || last)?.f ?? 0 };
+      // rewound past what this browser has recorded, live from the stream: the server's recording
+      // has it (more than the part of the lag a just-begun recording doesn't hold yet)
+      if (map.state === 'before' && S.local && S.source === 'server'
+        && map.wait > Math.max(0.5, (S.flBest ?? C.DEFAULT_LIVE_LATENCY) - S.delay + 2 - first.d)) {
+        goServer(S.gen, true, 'rewound');
+        return report({ ...base, state: 'syncing', text: "Rewound past this browser's recording: the server's…" });
+      }
+    } else if (S.liveLock?.gap != null) { // between two of a server's files (lockM): back in so long
+      map = { state: 'gap', wait: S.liveLock.gap };
     }
   }
   // How much commentary exists ahead of the playhead (live only) — drives auto-hold.
   const edge = S.timeline.live && S.timeline.edge != null ? S.timeline.edge + (t - S.timeline.receivedAt) : null;
   const mEdge = S.clock === 'edge' && map.state === 'ok' ? commentaryEdge(t) : null;
-  const lead = mEdge != null ? mEdge - 2.5 - map.m
-    : edge != null ? edge - 2.5 - W : null; // 2.5 s: segment + refresh slack
-  Object.assign(base, { E, W, lead, error: S.error, fixes: fixStats() });
+  const lead = mEdge != null ? mEdge - slack() - map.m
+    : S.clock !== 'edge' && edge != null ? edge - 2.5 - W : null; // 2.5 s: segment + refresh slack
+  Object.assign(base, { E, W, lead, error: S.error, fixes: fixStats(), p: vn.p, at: t,
+    rewound: S.clock === 'edge' ? Math.round(rewoundBy(t, vn) * 10) / 10 : null,
+    // F1 TV behind live by its own clock (null: its player doesn't give it)
+    f1Lat: S.clock === 'edge' && f1Clock(vn) != null ? Math.round(f1Lat(t, vn) * 100) / 100 : null });
 
   if (map.state !== 'ok') {
     pauseAudio();
-    if (map.state === 'after' && S.timeline.live) {
+    // off the end of a Bilibili replay, or before its start: the streamer's next (previous) one
+    const nb = S.timeline.vod ? vodNeighbour(map.state) : null;
+    if (nb) {
+      vodSwitch(nb);
+      return report({ ...base, state: 'syncing', text: `${vodWho()}'s next Bilibili replay…` });
+    }
+    if (map.state === 'after' && (S.local || serverLive())) {
       return report({ ...base, state: 'waiting', text: `Commentary ${Math.ceil(map.past)}s behind` });
+    }
+    // F1 TV is live and the streamer isn't (yet, or any more: off air, or showing replays, 轮播)
+    if (S.clock === 'edge' && !S.local && !serverLive() && (map.state === 'after' || map.state === 'none')) {
+      const who = S.channel || 'The streamer';
+      return report({ ...base, state: 'waiting', text: S.liveLock ? `${who} is off air` : `Waiting for ${who} to go live` });
     }
     const text = {
       none: 'No recording covers this session',
@@ -710,19 +2188,60 @@ function tick() {
   }
 
   S.lastTarget = map.m;
-  base.file = fileTitle(map.file);
+  // sync by sound, live and replays: a look every SND.EVERY s while it plays (S.sndRef: where the
+  // commentary sits for the picture this tick); how it stands, for the panel
+  S.sndRef = { p: vn.p, m: map.m };
+  const sn = S.snd;
+  if (sn) {
+    if (!sn.busy && t - sn.measAt >= SND.EVERY && !v.paused && !v.seeking && !v.waiting && (S.clock !== 'edge' || S.liveLock?.cid === S.cid)) {
+      sn.measAt = t;
+      sn.looks = (sn.looks || 0) + 1;
+      sndMeasure(t, vn);
+    }
+    sndCheck(t, v);
+    const pl = sndPlace(), err = sn.target != null && pl ? pl.err : null;
+    base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
+      v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
+      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)),
+      // (a Bilibili replay placed: it carries F1 TV's sound, it was found by it: F1 TV's own off)
+      carries: !!sn.carries || S.vod?.state === 'placed' };
+  }
+  // team radio, filled in: how it stands, for Details
+  try {
+    const R = trTick(t, v, vn);
+    if (R) base.radio = { n: R.clips.length, ready: R.clips.filter((x) => x.state === 'ready').length, C: Math.round(R.C * 10) / 10,
+      cal: R.cal.length, stings: R.stings.length, playing: R.playing?.x.name ?? null, last: R.last ?? null, err: R.err ?? null };
+  } catch (e) { base.radio = { err: String(e?.message || e).slice(0, 80) }; }
+  if (S.vod) vodTick(t, v); // (placed: looked for again if sync by sound doesn't confirm it)
+  base.file = S.local ? null : fileTitle(map.file);
+  const pf = S.local ? null : S.timeline.files?.[map.file];
+  S.pic = S.timeline.vod ? null : S.local ? { src: 'stream', stream: S.stream, gen: FoneRecorder.status().gen, m: map.m, rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting }
+    : { src: 'server', server: S.base, file: pf?.id ?? null, media: pf?.offset != null ? map.m - pf.offset : null, m: map.m,
+      rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting };
+  // the streamer's sponsor clips, found by the server: not heard
+  const ad = adAt(map.m);
+  base.ad = ad?.name ?? null;
+  // (back from a break, faded in over AD.FADE s rather than at once)
+  if (ad) S.adSeenAt = t;
+  const fade = S.adSeenAt != null ? Math.min(1, Math.max(0, (t - S.adSeenAt) / AD.FADE)) : 1;
+  const vol = S.muted || ad ? 0 : Math.round(S.volume * fade * 1000) / 1000;
+  if (audio.volume !== vol) audio.volume = vol;
+  base.vol = vol;
   if (v.paused || v.seeking || v.waiting) {
     pauseAudio();
     if (!v.waiting) preSeek(map.m);
     return report({ ...base, state: v.paused ? 'paused' : 'buffering', text: v.paused ? 'Paused' : 'Buffering…' });
   }
-  drive(map.m, v.rate || 1, v.src);
+  drive(map.m, v.rate || 1, v.src, sndSteer(t, v));
   const drift = audio.currentTime - map.m;
   Object.assign(base, { m: map.m, audioTime: audio.currentTime });
   const ok = !audio.paused && !audio.seeking && audio.readyState >= 3;
-  // Hysteresis so the status doesn't flicker between "In sync" and "Syncing…".
-  const a = Math.abs(drift);
-  S.synced = ok && (S.synced ? a < LIVE.OUT : a < LIVE.IN);
+  // Hysteresis so the status doesn't flicker between "In sync" and "Syncing…"; off 1×, from what
+  // the steering itself lets be there (it corrects only past FAST.SEEK × speed: at 2× a seek can
+  // land 0.46 s off and stay, which isn't 'Syncing…' for ever).
+  const a = Math.abs(drift), nominal = C.nominalRate(v.rate || 1);
+  const syncIn = nominal === 1 ? LIVE.IN : Math.max(LIVE.IN, C.STEER.FAST.SEEK * nominal);
+  S.synced = ok && (S.synced ? a < Math.max(LIVE.OUT, syncIn + 0.6) : a < syncIn);
   const liveText = S.clock === 'edge' && S.liveLock ? 'Live' : 'In sync';
   report({ ...base, state: S.synced ? 'sync' : 'syncing', text: S.synced ? liveText : 'Syncing…', drift });
 }
@@ -739,33 +2258,75 @@ function fmtDur(s) {
 
 function nudge(delta) {
   if (S.delay == null) return;
+  const sn = S.snd, pl = sndPlace(); // (where it stood before the nudge)
   S.delay = Math.round((S.delay + delta) * 100) / 100;
-  S.delaySource = S.source === 'local' ? 'stream' : 'content';
+  diag('nudge', { delta, delay: S.delay });
+  // synced by sound: the nudge is a preference on top of what the sound says (you like the
+  // commentary that much earlier or later), kept for the stream; the sound goes on placing it.
+  // While a correction is still easing there, the nudge goes that way first (you heard what it's
+  // fixing): only what goes past where the sound puts it, or the other way, is a preference.
+  if (sn?.target != null) {
+    const e = pl ? pl.err : 0;
+    const err = Math.abs(e) > 0.05 ? e : 0; // (a few ms left by the easing, or a look's jitter, isn't a correction under way)
+    const took = Math.sign(err) === Math.sign(delta) ? Math.sign(delta) * Math.min(Math.abs(delta), Math.abs(err)) : 0;
+    const extra = delta - took;
+    if (Math.abs(extra) > 0.0005) {
+      sn.bias = Math.round((sn.bias + extra) * 1000) / 1000;
+      sn.target += extra;
+      try { localStorage.setItem(sndBiasKey(), JSON.stringify({ bias: sn.bias, at: Date.now() })); } catch { /* private mode */ }
+    }
+  }
+  S.delaySource = S.local ? 'stream' : 'content';
   S.resync = true; // jump to the new position now
-  if (S.liveLock) S.liveLock.m0 += delta; // live: move the lock, don't re-derive it
+  if (S.liveLock) { // live: move the lock, don't re-derive it
+    S.liveLock.m0 += delta;
+    if (S.liveLock.w0 != null) S.liveLock.w0 += delta;
+  }
+  if (S.carry) S.carry.w += delta; // (a switch of source under way)
   clearTimeout(S.saveTimer);
-  if (S.source === 'local') { // kept in this browser, per stream
-    try { localStorage.setItem(localDelayKey(), JSON.stringify({ delay: S.delay, at: Date.now() })); } catch { /* private mode */ }
+  if (S.local) { // recorded here: kept in this browser, per stream
+    try { localStorage.setItem(localDelayKey(), JSON.stringify({ delay: S.delay, at: Date.now(), v: 2 })); } catch { /* private mode */ }
     return;
   }
-  const { cid, channel, clock, delay, base } = S; // (a re-attach may come before the save)
-  if (!base) return;
+  if (S.timeline?.vod) return vodSave(); // (a Bilibili replay: its place kept here)
+  saveServerDelay(S.delay, 800);
+}
+
+// The delay kept on the server for this video (and, live, as the channel's starting point): a
+// nudge's, or the one sync by sound measured. (`wait` ms first: presses in a row save once.)
+function saveServerDelay(delay, wait = 0) {
+  const { cid, channel, clock, base } = S; // (a re-attach may come before the save)
+  if (!base || delay == null) return;
+  clearTimeout(S.saveTimer);
   S.saveTimer = setTimeout(() => {
     fetch(`${base}/api/sync/${cid}`, {
       signal: AbortSignal.timeout(10000),
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channel, clock, delay }),
+      body: JSON.stringify({ channel, clock: clock === 'edge' ? 'edge2' : clock, delay: Math.round(delay * 1000) / 1000 }), // (serverSync)
     }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
       .catch((e) => { S.error = `save failed: ${e.message}`; });
-  }, 800);
+  }, wait);
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target !== 'offscreen') return;
+  if (msg.type === 'f1audio') { if (msg.tab === S.tab && S.snd) sndHeard(msg); return; }
+  if (msg.type === 'golive') { sendResponse(msg.tab === S.tab ? goLive(!!msg.holding, !!msg.chase, msg.pMax ?? null) : { handled: false }); return; }
+  if (msg.type === 'vod-dm') { // (the 弹幕 overlay, on a Bilibili replay: its own danmaku)
+    vodDanmaku(Number(msg.from), Number(msg.to)).then(sendResponse, (e) => sendResponse({ error: String(e?.message || e) }));
+    return true;
+  }
   if (msg.type === 'relive') { // "Re-sync to live": re-anchor to the commentary's live edge
+    diag('relive', { delay: S.delay, keep: msg.keep ?? null, clock: S.video?.utc0 != null });
+    // (after fone's own feed switch: with F1 TV's clock the lock keeps to the picture as it is)
+    if (Number.isFinite(msg.keep) && S.video?.utc0 != null) return;
     if (S.liveLock) S.liveLock.relock = true;
     S.minBehind = undefined;
+    // `keep`: F1 TV that far behind its most live, still (after fone's own feed switch: only the
+    // two feeds' live delays are re-measured, not your rewind, a pause or a hold before it)
+    const vn = Number.isFinite(msg.keep) && S.video ? C.videoNow(S.video, now()) : null;
+    S.minLagW = vn ? now() - vn.p - Math.max(0, msg.keep) : undefined;
     S.resync = true;
     return;
   }
@@ -779,16 +2340,73 @@ chrome.runtime.onMessage.addListener((msg) => {
     const prev = S.video;
     S.video = { ...msg.video, receivedAt: now() };
     diagPlayer(prev, S.video);
+    // (where the picture was when: sync by sound puts F1 TV's sound on it, vAt)
+    if (msg.tab === S.tab || S.tab == null) {
+      const v = S.video, at = v.at ?? v.receivedAt;
+      S.vhist = [...(S.vhist || []).filter((h) => at - h.at < 90 && h.at < at), { at, p: v.p, rate: v.rate, paused: v.paused, seeking: v.seeking, waiting: v.waiting }];
+    }
+    if (S.video.seekEnd == null) S.edgeSeenAt = null; // F1 TV's live edge: when it last stepped (edgePhase)
+    else {
+      S.edgeSeenAt ??= S.video.receivedAt;
+      // (a step: the edge on by more than a second while F1 TV played on as usual, not a seek)
+      const played = prev ? Math.abs((S.video.p - prev.p) - (S.video.paused ? 0 : (S.video.receivedAt - prev.receivedAt) * (prev.rate || 1))) < 1 : false;
+      if (prev?.seekEnd != null && S.video.seekEnd - prev.seekEnd > 1) S[played ? 'edgeStepAt' : 'edgeMissAt'] = S.video.receivedAt;
+      // F1 TV's player rebuilt (a new MSE handle, or a pause in its reports) with its content
+      // position re-based: p and its edge jump together, the picture where it was (a seek moves p
+      // alone). The lock (and the rest measured in p) moves with it, so the commentary goes on where
+      // it was rather than jumping minutes back (2026-10-23, FP1: 585 s).
+      // (with F1 TV's own clock on both, that clock says it: below)
+      const rebuilt = prev && ((S.video.dx?.h ?? null) !== (prev.dx?.h ?? null) || S.video.receivedAt - prev.receivedAt > 1);
+      let d = 0;
+      if (rebuilt && prev.seekEnd != null && msg.cid === S.cid) {
+        const exp = prev.paused ? 0 : (S.video.receivedAt - prev.receivedAt) * (prev.rate || 1);
+        const dB = (S.video.seekEnd - S.video.p) - (prev.seekEnd - prev.p);
+        d = (S.video.p - prev.p) - exp;
+        if (!(Math.abs(d) > 20 && Math.abs(dB) < Math.abs(d) / 4)) d = 0;
+      }
+      if (d && S.snd) sndReset('F1 TV re-based its position');
+      if (d && (prev.utc0 == null || S.video.utc0 == null)) {
+        if (S.liveLock) S.liveLock.p0 += d;
+        if (S.carry) S.carry.p += d;
+        if (S.minLagW != null) S.minLagW -= d;
+        diag('rebase', { d: Math.round(d * 100) / 100 });
+      }
+      // F1 TV's own clock: the picture's time doesn't move when its content position is re-based,
+      // so the lock (and the moment carried) keeps to the picture (the rewind: flBest, by the clock).
+      // And how far behind that clock its reported edge is, per step (Go live's most recent).
+      const u = S.video.utc0;
+      if (u != null) S.clockAt = S.video.receivedAt;
+      if (u != null && msg.cid === S.cid) {
+        const L = S.liveLock;
+        // (a lock made before its clock was known, as if F1 TV were where it usually starts: again,
+        // by where it is; only one carried over from the other source's moment keeps that)
+        if (L?.cid === S.cid) {
+          const p0 = L.p0;
+          if (L.u0 != null) L.p0 = L.u0 - u; else if (L.carried) L.u0 = u + L.p0; else L.relock = true;
+          if (S.snd && Math.abs(L.p0 - p0) > 0.05) sndReset('F1 TV re-based its position'); // (what it heard was on the old one)
+        }
+        const K = S.carry;
+        if (K?.cid === S.cid) { if (K.u == null) K.u = u + K.p; else K.p = K.u - u; }
+        // (another clock: a re-base, or another feed whose edge may be staler: those ages start over)
+        if (S.upU != null && Math.abs(u - S.upU) > 0.05) S.upAges = [];
+        S.upU = u;
+        if (prev?.seekEnd == null || S.video.seekEnd - prev.seekEnd > 1 || !S.upAges?.length) {
+          S.upAges = [...(S.upAges || []).filter(([at]) => S.video.receivedAt - at < GOLIVE.UP_WINDOW),
+            [S.video.receivedAt, trueNow(S.video.at ?? S.video.receivedAt) - (u + S.video.seekEnd)]];
+        }
+      }
+    }
     if (S.content && domainMismatch(S.video)) { S.clockFinal = false; decideClock(S.gen).catch(() => {}); }
     S.volume = msg.settings.volume;
     S.muted = msg.settings.muted;
+    S.trWant = { on: msg.settings.teamRadio !== false, fx: msg.settings.f1Sound !== 'eng' };
     if (!!msg.settings.anticipate !== !!S.anticipate) {
       S.anticipate = !!msg.settings.anticipate;
       if (S.delaySource === 'measured' && S.sync) { S.delay = measuredDelay(S.sync); S.resync = true; }
     }
     const st = msg.settings;
-    const key = `${msg.tab}|${msg.cid}|${msg.channel || ''}|${(st.servers || []).join(',')}|${st.source || ''}|${st.source === 'local' ? st.stream || '' : ''}`;
-    if (S.local && key === S.key) { S.bufferMin = st.bufferMin; wantRecording(); } // still wanted (and the buffer's length)
+    const key = `${msg.tab}|${msg.cid}|${msg.channel || ''}|${(st.servers || []).join(',')}|${st.source || ''}|${st.source === 'local' ? st.stream || '' : st.liveDirect === false ? 'server-live' : ''}|${st.soundSync === false ? 'no-sound' : ''}`;
+    if ((S.local || S.directBack) && key === S.key) { S.bufferMin = st.bufferMin; wantRecording(); } // still wanted (and the buffer's length)
     if (key !== S.key) attach(msg, key);
     // Paused, seeked or resumed: act now rather than on the next 100 ms tick (a quick
     // F1 TV seek can come and go between two ticks, skipping the silent pre-seek).

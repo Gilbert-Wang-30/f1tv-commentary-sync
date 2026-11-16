@@ -342,6 +342,49 @@ def test_202_while_indexing(flv, tmp_path, monkeypatch):
         assert get_ok(client, f"/api/video/{fid}/info").json()["duration"] > 19
 
 
+def test_finished_while_the_index_task_probes_and_saves(flv, tmp_path, monkeypatch):
+    """After the scan the index task still probes the first GOP and saves the index. A
+    finished recording never reads as a growing one meanwhile (EVENT playlist without its
+    tail, a short duration): while it probes there's no answer yet, while it saves it's done."""
+    env = Env(tmp_path)
+    fid = env.add(flv, mtime=time.time() - 3600)
+    probe_gate, save_gate = threading.Event(), threading.Event()
+    real_probe, real_save = VideoService._probe, VideoService._save
+
+    async def held_probe(self, path, snap):
+        await asyncio.to_thread(probe_gate.wait, 10)
+        return await real_probe(self, path, snap)
+
+    def held_save(self, entry, pos):
+        save_gate.wait(10)
+        real_save(self, entry, pos)
+
+    monkeypatch.setattr(VideoService, "_probe", held_probe)
+    monkeypatch.setattr(VideoService, "_save", held_save)
+    monkeypatch.setattr(video, "WAIT_SECONDS", 0.05)
+    url = f"/api/video/{fid}"
+    with TestClient(env.app) as client:
+        try:
+            assert client.get(f"{url}/info").status_code == 202  # probing
+            probe_gate.set()
+            info = get_ok(client, f"{url}/info").json()
+            task = env.svc._entries[fid].task
+            assert not task.done()  # saving
+            assert info["duration"] > 19 and info["edge"] == info["duration"] and info["width"] == 160
+            text = get_ok(client, f"{url}/index.m3u8").text
+            assert "#EXT-X-PLAYLIST-TYPE:VOD" in text and text.endswith("#EXT-X-ENDLIST\n")
+            assert playlist_segments(text)[-1][2].endswith("_end.ts")
+            save_gate.set()
+            deadline = time.time() + 10
+            while not task.done():
+                assert time.time() < deadline
+                time.sleep(0.02)
+        finally:
+            probe_gate.set()
+            save_gate.set()
+    assert (env.cfg.data_dir / "video" / f"{fid}.json").exists()
+
+
 def test_index_persists_and_goes_with_the_recording(flv, tmp_path, monkeypatch):
     env = Env(tmp_path)
     fid = env.add(flv, mtime=time.time() - 3600)

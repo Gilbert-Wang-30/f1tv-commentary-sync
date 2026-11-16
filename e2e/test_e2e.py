@@ -4,9 +4,11 @@ Phase A (replay): KL qualifying replay (real content id; real MultiViewer anchor
   with a finished commentary recording -> sync, seek, pause, nudge, a speed set on the
   plain <video> (1.25x) followed, end-of-recording.
 Phase A2 (Tiledmedia): F1 TV's real player (mock of its SDK): content clock, seeks, view
-  switches; F1 TV audio switched to track sound (FX) on load / feed switch, a manual pick
-  kept; 2x on replays (Player.changePlaybackRate) with the commentary at 2x, live kept at 1x;
-  the player's own rate trims (x1.004 .. x1.18, x0.75) never followed as a speed.
+  switches; F1 TV's sound switched to Track FX on load / feed switch (0.3.10's 'mute' migrated
+  to it), English Int. from the panel's two F1 TV rows, subtitles asked of page.js, F1 TV's
+  mute button its own without fone's tap, a manual pick kept; 2x on replays
+  (Player.changePlaybackRate) with the commentary at 2x, live kept at 1x; the player's own rate
+  trims (x1.004 .. x1.18, x0.75) never followed as a speed.
 Phase B (live):   commentary still being recorded and the video ahead of it
   -> 'waiting', auto-hold pauses F1 TV, resumes once the commentary catches up.
 Phase A3 (onboards, run last): the dashboard's driver onboards in F1 TV's own player (mock):
@@ -21,6 +23,7 @@ import os
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 from playwright.async_api import async_playwright
@@ -42,6 +45,7 @@ PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background:#0
 TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background:#000">
 <tiledmedia-ui-view><div class="tm-ui-controlbar tm-hidden">
   <span class="tm-ui-playbacktimelabel" id="lbl">00:00:00</span><span class="tm-ui-playbacktimelabel tm-text-right">01:19:29</span>
+  <span class="tm-ui-playbacktimelabel tm-ui-playbacktimelabel-live" id="livebadge" onclick="window.__f1live = (window.__f1live || 0) + 1">LIVE</span>
 </div></tiledmedia-ui-view>
 <tiledmedia-view id="mainview" data-channel-id="1033" data-title="F1 LIVE" data-type="pres" data-static>
   <video id="v" handleID="7" src="/media/video.mp4" muted autoplay playsinline style="width:960px;height:540px;display:initial"></video>
@@ -49,7 +53,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
 <tiledmedia-view id="obcview" data-channel-id="1009" data-title="VER" data-type="obc" data-static>
   <video handleID="8" src="/media/video.mp4" muted autoplay playsinline style="width:320px;height:180px;display:initial"></video>
 </tiledmedia-view>
-<div style="position:fixed;left:400px;bottom:20px;z-index:5"><button id="pick-eng" onclick="tmPickAudio('English')">English</button></div>
+<div style="position:fixed;left:400px;bottom:20px;z-index:5"><button id="pick-eng" onclick="tmPickAudio('English')">English</button>
+  <button id="f1mute" onclick="tmMuteButton()">mute</button><span id="f1vol" style="display:inline-block;width:80px;height:14px;background:#555"></span></div>
+<!-- F1 TV's channel switcher (vod chunk: accordion items, data-tao tm_channel_switcher_item, onClick = select the channel) -->
+<div class="channel-switcher-tm-container closed">
+  <div class="accordion-item" data-tao="tm_channel_switcher_item" data-channel-id="1033" onclick="tmSwitchFeed(1033, 'F1 LIVE')"></div>
+  <div class="accordion-item" data-tao="tm_channel_switcher_item" data-channel-id="1025" onclick="window.__intlClicks = (window.__intlClicks || 0) + 1; tmSwitchFeed(1025, 'INTERNATIONAL')"></div>
+</div>
 <script>
   // Mirrors the real Tiledmedia Web SDK surface (checked against F1 TV's bundle):
   // TimingListenerConfig(callback) with .interval/.callback; addTimingListener -> ViewListenerID
@@ -64,7 +74,97 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     document.body.prepend(g);
   }
   window.__off = 0; window.__event = 'vod'; window.__origin = 0; window.__scrub = null;
-  if (new URLSearchParams(location.search).get('ev') === 'live') { window.__event = 'live'; window.__origin = Date.now() - 45000; }
+  if (new URLSearchParams(location.search).get('ev') === 'live') { window.__event = 'live'; window.__origin = Date.now() - 32000; }
+  // ?noclock=1: no wall clock yet (the player's first reports, before its bounds are settled)
+  window.__noClock = new URLSearchParams(location.search).get('noclock') === '1';
+  // ?f1audio=1: F1 TV's sound, as its player plays it (Web Audio to the speakers): /media/f1.wav
+  // heard at the picture's position plus __f1Off (null: silent), as a player's A/V sync keeps it:
+  // what's rendered now is heard the output's latency later, and its speed is trimmed (by up to
+  // 1 %) to follow the picture, the clocks of the two drifting apart; restarted only when it's a
+  // quarter of a second off (a seek, __f1Off changed). (Fetched and decoded only once a test sets
+  // __f1Off: a 20-min file at load would hold up the picture's start, which reads as F1 TV behind
+  // live.)
+  // (?f1audio=stream: as F1 TV's player plays it since November 2026, a MediaStream on a <video>
+  // with no Web Audio graph in the page's sight: here, built in another realm, an iframe's)
+  // (?f1audio=detached: the same stream played by an Audio() never put in the page;
+  // ?f1audio=element: F1 TV's sound as its player plays it on the real page in November 2026, a
+  // media element never put in the page playing the sound itself, not a stream)
+  const f1mode = new URLSearchParams(location.search).get('f1audio');
+  if (f1mode === 'element') {
+    window.__f1Off = null;
+    (async () => {
+      const el = new Audio();
+      while (window.__f1Off == null) await new Promise((r) => setTimeout(r, 200));
+      el.src = '/media/f1.wav';
+      await new Promise((r) => el.addEventListener('canplay', r, { once: true }));
+      setInterval(() => {
+        const v = mainVid();
+        if (window.__f1Off == null || v.paused || v.readyState < 3) { if (!el.paused) el.pause(); return; }
+        const want = v.currentTime + window.__off + window.__f1Off;
+        if (el.paused || Math.abs(el.currentTime - want) > 0.25) { el.currentTime = Math.max(0, want); el.playbackRate = 1; if (el.paused) el.play().catch(() => {}); return; }
+        el.playbackRate = Math.max(0.99, Math.min(1.01, 1 + (want - el.currentTime) * 0.5));
+      }, 200);
+    })();
+  }
+  if (f1mode === '1' || f1mode === 'stream' || f1mode === 'detached') {
+    window.__f1Off = null;
+    (async () => {
+      let ctx, out;
+      if (f1mode === 'stream' || f1mode === 'detached') {
+        const ifr = document.createElement('iframe');
+        ifr.style.display = 'none';
+        document.documentElement.append(ifr);
+        ctx = new ifr.contentWindow.AudioContext();
+        out = ctx.createGain();
+        const dest = ctx.createMediaStreamDestination();
+        out.connect(dest);
+        const el = f1mode === 'detached' ? new Audio() : document.createElement('video');
+        el.srcObject = dest.stream;
+        if (f1mode !== 'detached') {
+          el.id = 'f1snd';
+          el.style.display = 'none';
+          document.documentElement.append(el);
+        }
+        const play = () => el.play().catch(() => {});
+        play();
+        setInterval(() => { if (el.paused) play(); }, 1000);
+      } else {
+        ctx = new AudioContext();
+        out = ctx.createGain();
+        out.connect(ctx.destination); // (fone's tap takes it from here, as from F1 TV's worklet)
+      }
+      window.__gain0 = window.__foneTap?.gain() ?? null; // (fone's gain as F1 TV's sound first comes: before page.js runs)
+      // the player's mute silences it before the speakers (the SDK's gain node), so the tap too
+      setInterval(() => { out.gain.value = window.__player?.audioMuted ? 0 : 1; }, 50);
+      while (window.__f1Off == null) await new Promise((r) => setTimeout(r, 200));
+      const buf = await ctx.decodeAudioData(await (await fetch('/media/f1.wav')).arrayBuffer());
+      let src = null, base = null, rate = 1;
+      const stop = () => { if (src) { try { src.stop(); } catch (e) {} src = null; } };
+      const lat = () => { // (how much later than rendered the output is heard)
+        const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+        return ts && ts.contextTime > 0 ? Math.max(0, ctx.currentTime - ts.contextTime - (performance.now() - ts.performanceTime) / 1000) : (ctx.outputLatency || 0);
+      };
+      setInterval(() => {
+        const v = mainVid();
+        if (window.__f1Off == null || v.paused || v.readyState < 3) return stop();
+        if (ctx.state !== 'running') ctx.resume();
+        const want = v.currentTime + lat() + window.__off + window.__f1Off; // (what must be rendered now)
+        const have = src ? base.tau + (ctx.currentTime - base.at) * rate : null;
+        if (src && Math.abs(have - want) < 0.25) {
+          rate = Math.max(0.99, Math.min(1.01, 1 + (want - have) * 0.5));
+          base = { at: ctx.currentTime, tau: have };
+          src.playbackRate.setValueAtTime(rate, ctx.currentTime);
+          return;
+        }
+        stop();
+        src = ctx.createBufferSource(); src.buffer = buf; src.connect(out);
+        const at = ctx.currentTime + 0.05;
+        rate = 1;
+        src.start(at, Math.max(0, want + 0.05));
+        base = { at, tau: want + 0.05 };
+      }, 200);
+    })();
+  }
   window.__active = new Set();
   const loadedAt = Date.now();
   const mainVid = () => document.getElementById('v');
@@ -100,6 +200,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       throw new Error('selection in the AudioTrackSelection must be a ContentItem, Feed, AudioTrack or null');
     this.disable = disable; this.selection = selection; this.preferredLanguage = ''; this.audioTrackSelectionMode = mode; } }
   class DesiredStateConfig { static maintainPosition() { return new DesiredStateConfig(); } }
+  class TimingConfig { constructor() { this.target = 0; this.timingType = 0; this.targetPositionStrategy = 0; this.scrubType = 'none'; } }
   class VideoSelection { constructor(selection) {
     if (!(selection instanceof ContentItem || selection instanceof Feed || selection instanceof VideoQuality))
       throw new Error('selection in the VideoSelection must be a ContentItem, Feed or VideoQuality');
@@ -110,7 +211,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       video.setAttribute('handleID', String(id)); video.playbackRate = 1; }
     changePlaybackRate(m) { this.playbackRate = m; this.videoElement.playbackRate = this.playbackRate * this.syncMultiplier; }
     syncViews(m) { this.syncMultiplier = m; this.videoElement.playbackRate = this.playbackRate * this.syncMultiplier; } }
-  window.__rateCalls = []; window.__audioLog = []; window.__syncSeq = [1]; window.__muteCalls = []; window.__noHandle = false;
+  window.__seekCalls = []; window.__rateCalls = []; window.__audioLog = []; window.__syncSeq = [1]; window.__muteCalls = []; window.__noHandle = false;
   const INTL = [['English Int.', 'eng'], ['Deutsch', 'deu'], ['Francais', 'fra'], ['Nederlands', 'nld'], ['Portugues', 'por'], ['日本語', 'jpn'], ['Track FX', 'fx']];
   // (1016 NOR and 1020 LEC: driver onboards with no audio of their own here)
   const OWN = { 1033: [['English', 'eng']], 1025: INTL, 1003: [], 1009: [['VER', 'tea'], ['English', 'eng'], ['Deutsch', 'deu']], 1016: [], 1020: [] };
@@ -178,7 +279,22 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     // playerState still reads 'playing' (seen 2026-10-11); F1 TV's app rebuilds the player.
     _refuse(what) { if (this._stopped) throw new Error(`code: -1, message: error when calling Player.${what}: no user interaction possible in current state (internally-stopped)`); }
     addPlayerFatalErrorListeners(cb) { const id = this._fatal.size + 1; this._fatal.set(id, cb); return id; }
-    setAudioIsMuted(m) { this._refuse('setAudioIsMuted'); window.__muteCalls.push(!!m); this.audioMuted = !!m; return later(null, 20); }
+    // Player.seek (vod chunk): only the SDK's own TimingConfig objects, unless
+    // self.Tiledmedia.disableStrictJSChecks; checked as it's called. RELATIVE_TIME (3) moves the
+    // content position by `target` ms (the element's clock doesn't move: tmSeek).
+    async seek(cfg) {
+      if (self.Tiledmedia?.disableStrictJSChecks !== true && !(cfg instanceof TimingConfig)) throw new Error('Player.seek() must be called with a TimingConfig object');
+      this._refuse('seek');
+      window.__seekCalls.push({ target: cfg.target, timingType: cfg.timingType, cls: cfg instanceof TimingConfig, strict: self.Tiledmedia?.disableStrictJSChecks ?? null });
+      await later(null, 30);
+      if (cfg.timingType === 3) window.__off += cfg.target / 1000;
+    }
+    // F1 TV's own UI follows the player's mute through its listener (addAudioMutedStateChangedListener
+    // -> muteStateChanged: the button's state, its next press)
+    setAudioIsMuted(m) { this._refuse('setAudioIsMuted'); window.__muteCalls.push(!!m);
+      if (this.audioMuted !== !!m) { this.audioMuted = !!m; later(null, 10).then(() => { if (this === window.__player) window.__uiMuted = this.audioMuted; }); }
+      return later(null, 20); }
+    getAudioIsMuted() { this._refuse('getAudioIsMuted'); return later(this.audioMuted); }
     get desiredAudioTrackSelection() { return this._audioSel; }
     set desiredAudioTrackSelection(s) { this._audioSel = s; window.__audioSelWrites++; }
     get destroyed() { return this._destroyed; }
@@ -256,11 +372,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
       if (this.dataset.type === 'obc') return { eventType: 'vod', currentPosition: 1000 * this.querySelector('video').currentTime, contentDuration: 4769000 };
       const c = contentPos() * 1000, live = window.__event !== 'vod';
       return { eventType: window.__event, currentPosition: c, contentDuration: 4769000, seekLowerBound: 0,
-               seekUpperBound: live ? (window.__stair ? Math.floor((c + 20000) / (window.__stair * 1000)) * window.__stair * 1000 : c + 20000) : 4769000, bufferLowerBound: 0, bufferUpperBound: c + 10000,
+               // live edge: 20 s ahead of the playhead; __stair: in steps; __edge(): one of its own (absolute, as F1 TV's)
+               seekUpperBound: live ? (window.__edge ? window.__edge() : window.__stair ? Math.floor((c + 20000) / (window.__stair * 1000)) * window.__stair * 1000 : c + 20000) : 4769000, bufferLowerBound: 0, bufferUpperBound: c + 10000,
                isAtLiveEdge: false, isCasting: false, timeshiftInMs: 0, isWallclockTimeSourceBased: live };
     }
     get currentWallclockTime() {
       const c = this.currentContentTime;
+      if (c && window.__noClock) return undefined;
       if (!c || window.__event === 'vod') return c && { ...c, eventType: 'unknown' };
       const o = window.__origin;
       // currentPosition runs ahead of the picture on the real thing; eventType isn't reliable
@@ -287,9 +405,13 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     }
   }
   customElements.define('tiledmedia-view', TMView);
-  customElements.define('tiledmedia-ui-view', class extends HTMLElement { get internalView() { return document.getElementById('mainview'); } });
+  // (its ui: F1 TV's UI behind its buttons, vod chunk: its own idea of the mute, which its mute
+  // button toggles and the player's mute listener sets; window.__uiMuted, below)
+  const UI = { getIsMuted: () => window.__uiMuted, muteStateChanged: (m) => { window.__uiMuted = !!m; } };
+  customElements.define('tiledmedia-ui-view', class extends HTMLElement { get internalView() { return document.getElementById('mainview'); }
+    get ui() { return UI; } });
   for (const v of document.querySelectorAll('tiledmedia-view')) { v._player = P; P._views.add(v); } // F1 TV's views, on its player
-  window.Tiledmedia = { AudioTrackSelection, DesiredStateConfig, ContentItem, Feed, VideoSelection,
+  window.Tiledmedia = { AudioTrackSelection, DesiredStateConfig, ContentItem, Feed, VideoSelection, TimingConfig,
     TimingListenerConfig: class { constructor(e) { this.interval = 250; this.onlySendOnChangedCurrentPosition = true; this.callback = async () => {}; if (e) this.callback = e; } } };
   window.tmSeek = (x) => { window.__off = x - mainVid().currentTime; };   // content jumps, element clock doesn't
   setInterval(() => { const s = Math.floor(window.__scrub ?? contentPos()); const z = (n) => String(n).padStart(2, '0');
@@ -333,10 +455,29 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
     await later(null, ms);
     P = window.__player = new Player();
     await P.addView(...document.querySelectorAll('tiledmedia-view[data-static]'));
+    window.__uiMuted = P.audioMuted; // (F1 TV's UI asks the new player: its view's viewAddedCallback -> initialize)
     P.mseManager.mseHandles.set(99, new MSEHandle(99, document.querySelector('#obcview video')));
     return window.tmSwitchFeed(old._ch, title);
   };
   window.__curAudio = () => P.currentAudioTrack?._track._n ?? null;
+  // F1 TV's mute button (vod chunk: its toggle flips its own look on a click; its volume controller's
+  // toggleMuted asks setAudioIsMuted(!isMuted) from inside the click, isMuted its UI's own, following
+  // the player's mute listener and read afresh from each new player): a press of yours only with a
+  // real (trusted) click, as page.click() makes
+  window.__uiMuted = false;
+  window.tmMuteButton = () => { const m = !window.__uiMuted; window.__uiMuted = m; return window.__player.setAudioIsMuted(m); };
+  // F1 TV's volume slider (vod chunk): a press on it held 200 ms, then the document's mousemove
+  // unmutes as it drags (its transition's update: setMuted(false), then the volume); leaving the
+  // slider drops the document's listeners, so a drag let go off it ends with no call of its own
+  (() => {
+    const vol = document.getElementById('f1vol');
+    let drag = false, hold = null;
+    const move = () => { if (drag) { window.__uiMuted = false; window.__player.setAudioIsMuted(false); } };
+    const drop = () => { clearTimeout(hold); drag = false; document.removeEventListener('mousemove', move); };
+    vol.addEventListener('mousedown', (e) => { e.preventDefault(); hold = setTimeout(() => { drag = true; }, 200); document.addEventListener('mousemove', move); });
+    vol.addEventListener('mouseleave', drop);
+    vol.addEventListener('mouseup', () => { if (drag) { window.__uiMuted = false; window.__player.setAudioIsMuted(false); } drop(); });
+  })();
   window.__sdkRate = () => [...P.mseManager.mseHandles.values()].find((h) => h.videoElement === mainVid())?.playbackRate ?? null;
   P.mseManager.mseHandles.set(99, new MSEHandle(99, document.querySelector('#obcview video')));
   window.tmSwitchFeed(1033, 'F1 LIVE');
@@ -385,7 +526,7 @@ async def wait_status(page, pred, timeout=30, what="condition"):
         if st and pred(st):
             return st
         await asyncio.sleep(0.2)
-    keys = ("state", "text", "drift", "E", "m", "audioTime", "lead", "holding", "error")
+    keys = ("state", "text", "drift", "E", "m", "p", "audioTime", "lead", "holding", "error", "sound")
     print("last status:", json.dumps({k: st.get(k) for k in keys if k in st}, ensure_ascii=False), json.dumps(st, ensure_ascii=False)[:500])
     dump_diag()
     raise AssertionError(f"timed out waiting for {what}")
@@ -409,6 +550,16 @@ async def wait_js(page, js, pred, timeout, what):
 
 PANEL = "document.getElementById('fone-overlay').shadowRoot"
 DETAILS = f"() => [...{PANEL}.getElementById('kv').children].map((e) => e.textContent).join('\\n')"
+# The panel's F1 TV block: per row its buttons [text, lit], the row labels, the hint, and how many of
+# 0.3.10's rows and buttons are left (none)
+F1BOX = f"""() => {{
+  const r = {PANEL}, box = r.getElementById('f1Box');
+  return {{ hidden: box.hidden, labels: [...box.querySelectorAll('.lbl')].map((l) => l.textContent),
+    rows: [...box.children].map((row) => [...row.querySelectorAll('button')].map((b) => [b.textContent, b.classList.contains('on')])),
+    info: r.getElementById('f1Info').textContent, old: r.querySelectorAll('#fxRow, #ffRow, button[data-fa], button[data-ff]').length }};
+}}"""
+# page.js's next report of F1 TV's subtitles (fone-tm subs: what it was asked)
+TM_SUBS = "() => new Promise((r) => document.addEventListener('fone-tm', (e) => r(JSON.parse(e.detail).subs), { once: true }))"
 
 # Phase A3 (onboards), in every frame before the page's scripts: page.js's reports (fone-tm) and the
 # onboard commands it gets (fone-cmd); and onboard commands the real dashboard might send by
@@ -467,13 +618,19 @@ async def main():
             args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required"],
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
-        # (track sound for the audio-track tests below; the default is to mute F1 TV instead)
-        await sw.evaluate(f"chrome.storage.sync.set({{servers: ['{SERVER}'], f1Audio: 'fx'}})")
+        # (F1 TV's sound as 0.3.10 left it by default, 'mute': migrated to Track FX, the audio-track
+        # tests below, with F1 TV's player no longer muted. Live from the server's recording: its
+        # channel's room is a real one, which the extension would otherwise pull itself, live
+        # (e2e/local tests that))
+        # (and F1 TV's channel left alone: e2e/local tests the switch to INTERNATIONAL)
+        await sw.evaluate(f"chrome.storage.sync.set({{servers: ['{SERVER}'], f1Audio: 'mute', liveDirect: false, f1Feed: 'off'}})")
 
         blob = open(f"{MEDIA}/video.mp4", "rb").read()
 
         async def f1tv(route):
             url = route.request.url
+            if url.endswith("/media/f1.wav"):  # (F1 TV's sound, ?f1audio=1)
+                return await route.fulfill(body=open(f"{MEDIA}/f1.wav", "rb").read(), content_type="audio/wav")
             if not url.endswith("/media/video.mp4"):
                 # F1 TV's own policy allows images from formula1.com and data: only (Bilibili's
                 # stickers reach the danmaku as data: URLs, through the service worker)
@@ -526,6 +683,23 @@ async def main():
         await wait_status(page, lambda s: s.get("state") == "sync", 8, "resume")
         check(True, "commentary resumes with the video")
 
+        # The streamer window (V) on a replay: the recording's own picture (the server's video
+        # handoff, /api/video), at the commentary's position in its file.
+        await page.keyboard.press("v")
+        fr = None
+        for _ in range(40):
+            fr = next((f for f in page.frames if "streamer.html" in f.url), None)
+            if fr:
+                break
+            await asyncio.sleep(0.25)
+        pic_js = "() => JSON.parse(document.documentElement.dataset.state || 'null')"
+        await wait_js(fr, pic_js, lambda s: s and s["src"] == "server" and s["mOffset"] is not None and s["vtime"] > 1, 30, "the recording's picture")
+        await asyncio.sleep(3)
+        pic = await fr.evaluate(pic_js)
+        err = pic["vtime"] + pic["mOffset"] - pic["target"]
+        check(abs(err) < 0.35 and not pic["msg"], f"the streamer window on a replay: the recording's own picture at the commentary's moment ({err:+.2f}s)")
+        await page.keyboard.press("v")
+
         # hotkey nudge persists to the server as this video's calibration
         await page.keyboard.press("]")
         await page.keyboard.press("]")
@@ -575,6 +749,35 @@ async def main():
         await wait_status(page, lambda s: s.get("state") == "after", 8, "after end")
         check(True, "reports when the commentary recording has ended")
 
+        # ---------------- Phase A1b: sync by sound on a replay ----------------
+        # The server's recording carries F1 TV's sound (f1.wav, 12 dB under the commentary's tone, at
+        # the recording's own times: run.sh); F1 TV (?f1audio=1) plays f1.wav heard at its picture's
+        # position + __f1Off. Set 2 s off where the delay puts the commentary: fone finds F1 TV's sound
+        # in the recording (its HLS segments, decoded in the engine), jumps there (its first match,
+        # over 1.5 s off) and keeps that delay for the video on the server, as a nudge would be.
+        await page.goto(f"https://f1tv.formula1.com/detail/{REPLAY_CID}/2026-bahrain-gp-in-malaysia-qualifying?action=play&tm=1&f1audio=1")
+        await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
+        await asyncio.sleep(2)
+        await page.evaluate("() => tmSeek(720)")
+        st = await wait_status(page, lambda s: s.get("state") == "sync" and s["E"] - p0 > 715, 30, "replay in sync by its delay")
+        await asyncio.sleep(2)
+        st = await status(page)
+        d0, off0 = st["delay"], st["m"] - st["p"] + 2.0  # (m: the recording's time playing, f1.wav's in it)
+        await page.evaluate(f"() => {{ window.__f1Off = {off0}; }}")
+        def rplaced(s):  # how far the recording's time playing is from where F1 TV's sound puts it
+            return (s["m"] - s["p"]) - off0
+        t0 = time.time()
+        st = await wait_status(page, lambda s: (s.get("sound") or {}).get("state") == "locked" and s.get("state") == "sync"
+                               and abs(rplaced(s)) < 0.15, 150, "replay locked by sound")
+        await asyncio.sleep(3)  # (the save goes out once the match is taken)
+        saved = api(f"/api/sync/{REPLAY_CID}?channel={urllib.parse.quote(st['channel'])}&clock={st['clock']}")
+        check(abs((st["delay"] - d0) - 2.0) < 0.15 and abs((saved.get("delay") or 0) - st["delay"]) < 0.02,
+              f"replay: sync by sound found F1 TV's sound in the server's recording in {time.time() - t0:.0f}s and put the commentary "
+              f"there ({rplaced(st) * 1000:+.0f} ms, match {st['sound']['score']}): delay {d0} -> {st['delay']}, kept for the video ({saved.get('delay')})")
+        await page.evaluate("() => { window.__f1Off = null; }")
+        # (the delay back to what the tests after this expect)
+        api(f"/api/sync/{REPLAY_CID}", {"channel": st["channel"], "clock": st["clock"], "delay": d0}, "PUT")
+
         # ---------------- Phase A2: the real F1 TV player (Tiledmedia) ----------------
         await page.goto(f"https://f1tv.formula1.com/detail/{REPLAY_CID}/2026-bahrain-gp-in-malaysia-qualifying?action=play&tm=1")
         await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
@@ -599,6 +802,34 @@ async def main():
         kv = await wait_js(page, DETAILS, lambda t: "Track FX (auto)" in t, 5, "Details audio row")
         check("English Int. (eng)" in kv and "Track FX (fx)" in kv and "VER (tea)" in kv,
               "Details: 'audio Track FX (auto)' and F1 TV's tracks listed")
+        # 0.3.10's f1Audio 'mute' became Track FX (written once, the old key left for an older build),
+        # and F1 TV's player was never muted
+        f1s = await sw.evaluate("chrome.storage.sync.get(null).then((s) => [s.f1Sound, s.f1Pick, s.f1Subs ?? null, s.f1Audio])")
+        check(f1s == ["fx", True, None, "mute"] and await page.evaluate("() => window.__muteCalls") == [],
+              f"settings: 0.3.10's F1 TV sound 'mute' migrated to Track FX, fone picking it, F1 TV not muted (f1Sound, f1Pick, f1Subs, f1Audio: {f1s})")
+        # The panel's F1 TV block: two rows, its sound and its subtitles (no more muted / as is, nor a Picture row)
+        box = await page.evaluate(F1BOX)
+        check(not box["hidden"] and box["labels"] == ["F1 TV", "Subtitles"] and box["old"] == 0
+              and box["rows"] == [[["Track FX", True], ["English Int.", False]], [["on", False], ["off", True]]],
+              f"panel: F1 TV's two rows, sound (Track FX lit) and subtitles (off lit) ({box})")
+        # Subtitles on: kept, and asked of page.js (which reports it; steering them isn't there yet)
+        await page.click("#fone-overlay button[data-cc='on']")
+        subs = await wait_js(page, TM_SUBS, lambda s: (s or {}).get("want") is True, 5, "subtitles asked of page.js")
+        stored = await sw.evaluate("chrome.storage.sync.get('f1Subs').then((s) => s.f1Subs)")
+        lit = (await page.evaluate(F1BOX))["rows"][1]
+        await page.click("#fone-overlay button[data-cc='off']")
+        await wait_js(page, TM_SUBS, lambda s: (s or {}).get("want") is False, 5, "subtitles off again")
+        check(stored is True and lit == [["on", True], ["off", False]] and await sw.evaluate("chrome.storage.sync.get('f1Subs').then((s) => s.f1Subs)") is False,
+              f"panel: subtitles on -> f1Subs stored and page.js reports it ({subs}); off again the same way")
+        # F1 TV's own mute button without fone's tap (no Web Audio here): F1 TV's own, as it always was
+        await page.click("#f1mute")
+        await wait_js(page, "() => window.__player.audioMuted", bool, 3, "F1 TV muted by its own button")
+        await asyncio.sleep(3)
+        native = await page.evaluate("() => [window.__player.audioMuted, window.__muteCalls, localStorage.getItem('fone.f1Muted'), window.__foneTap.routed()]")
+        await page.click("#f1mute")
+        await wait_js(page, "() => window.__player.audioMuted", lambda m: m is False, 3, "F1 TV unmuted by its own button")
+        check(native == [True, [True], None, False] and await page.evaluate("() => window.__muteCalls") == [True, False],
+              f"F1 TV's mute button with its sound not through fone: the player muted and unmuted by F1 TV, fone out of it ({native})")
         # The SDK owns <video>.playbackRate (rate x sync multiplier, rewritten every sync step).
         await video(page, "v.playbackRate = 2")
         await asyncio.sleep(1.2)
@@ -777,21 +1008,21 @@ async def main():
         await wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 10, "FX on INTERNATIONAL")
         check(await page.evaluate("() => window.__audioLog.slice(-2)") == ["English Int.", "Track FX"],
               "track sound: INTERNATIONAL's 'English Int.' -> 'Track FX'")
-        # F1 TV audio 'muted' (the default): setAudioIsMuted, the call F1 TV's own mute button makes,
-        # and no track switch at all; back to 'fx' unmutes and switches again
-        a0 = await page.evaluate("() => window.__audioSelWrites")
-        await sw.evaluate("chrome.storage.sync.set({f1Audio: 'mute'})")
-        await wait_js(page, "() => window.__muteCalls.slice(-1)[0]", lambda m: m is True, 8, "F1 TV muted")
-        await page.evaluate("() => tmSwitchFeed(1033, 'F1 LIVE')")  # a content load: F1 TV unmutes, fone mutes again
-        await wait_js(page, "() => window.__muteCalls.length", lambda n: n >= 2, 8, "muted again after a content load")
-        await asyncio.sleep(2)
-        a1 = await page.evaluate("() => window.__audioSelWrites")
-        check(await page.evaluate("() => [window.__player.audioMuted, __curAudio()]") == [True, "English"] and a1 - a0 <= 1,
-              f"F1 TV audio 'muted': player muted, its track left alone ({a1 - a0 - 1} fone track writes; F1 TV's own load aside)")
-        await sw.evaluate("chrome.storage.sync.set({f1Audio: 'fx'})")
-        await wait_js(page, "() => window.__muteCalls.slice(-1)[0]", lambda m: m is False, 8, "F1 TV unmuted")
-        await wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 12, "FX again after 'fx'")
-        check(True, "...and 'track sound' unmutes and picks Track FX again")
+        # F1 TV's sound 'English Int.' from the panel: its international English commentary picked,
+        # again after a content load (F1 LIVE's own 'English' first, then INTERNATIONAL's from the
+        # other feed); 'Track FX' picks that again. F1 TV's player never muted by fone.
+        await page.click("#fone-overlay button[data-fs='eng']")
+        await wait_js(page, "() => __curAudio()", lambda n: n == "English Int.", 12, "English Int. from the panel")
+        await page.evaluate("() => tmSwitchFeed(1033, 'F1 LIVE')")
+        await wait_js(page, "() => window.__audioLog.slice(-2)", lambda l: l == ["English", "English Int."], 12, "English Int. after a content load")
+        f1s = await sw.evaluate("chrome.storage.sync.get(['f1Sound', 'f1Pick']).then((s) => [s.f1Sound, s.f1Pick])")
+        box = await page.evaluate(F1BOX)
+        check(f1s == ["eng", True] and box["rows"][0] == [["Track FX", False], ["English Int.", True]]
+              and await page.evaluate("() => window.__muteCalls") == [True, False],
+              f"panel 'English Int.': F1 TV's international English commentary picked, and again after a content load ({f1s}), F1 TV not muted")
+        await page.click("#fone-overlay button[data-fs='fx']")
+        await wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 12, "FX again from the panel")
+        check(True, "...and 'Track FX' picks Track FX again")
         await page.evaluate("() => tmSwitchFeed(1025, 'INTERNATIONAL')")
         await wait_js(page, "() => __curAudio()", lambda n: n == "Track FX", 12, "FX on INTERNATIONAL again")
         st = await wait_status(page, lambda s: s.get("state") == "sync" and abs(s["fixes"]["rate"] - 2) < 0.05, 10, "2x sync after feed switch")
@@ -894,18 +1125,18 @@ async def main():
         await page.evaluate("() => tmSwitchFeed(1033, 'F1 LIVE')")
         await asyncio.sleep(4)
         check(await page.evaluate("() => __curAudio()") == "English", "...and after a feed switch, still left alone for this video")
-        # Live on Tiledmedia: edge-relative. The player's wall clock on live reads ~40 s late
-        # (packaging time), so E comes from "now - latency - distance behind the live edge"
-        # and the live default delay keeps the commentary a few seconds behind ITS edge.
+        # Live on Tiledmedia: edge-relative, by F1 TV's own clock. The player's wall clock is the
+        # time F1 TV's packager put on the picture, and its picture plays some 32 s behind it
+        # where it starts (more after a pause or a rewind): the commentary goes (that - delay)
+        # behind ITS edge. Here F1 TV starts 37 s behind its clock.
         await page.goto(f"https://f1tv.formula1.com/detail/{RACE_CID}/x?action=play&tm=1&ev=live")
         await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
-        await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 5000 - contentPos() * 1000; }")
+        await page.evaluate("() => { window.__event = 'live'; window.__origin = Date.now() - 37000 - contentPos() * 1000; }")
         st = await wait_status(page, lambda s: s.get("clock") == "edge", 20, "edge clock on Tiledmedia live")
         await asyncio.sleep(1.5)
         st = await status(page)
-        # mock: live edge is 20 s ahead of the playhead
-        check(abs(st["E"] - (time.time() - 30 - 20)) < 1.5 and st["delaySource"] == "live" and abs(st["delay"] - 23) < 1e-6,
-              f"Tiledmedia live: edge-to-edge clock, live default delay {st['delay']} (E err {st['E'] - (time.time() - 50):+.2f}s), wall clock ignored")
+        check(abs(st["E"] - (time.time() - 37)) < 1.0 and abs((st.get("f1Lat") or 0) - 37) < 1.0 and st["delaySource"] == "live" and abs(st["delay"] - 21) < 1e-6,
+              f"Tiledmedia live: F1 TV {st.get('f1Lat')} s behind its own clock (E err {st['E'] - (time.time() - 37):+.2f}s), live default delay {st['delay']}")
         # Live lock: F1 TV's live edge advances in 6 s steps; the commentary must not chase it.
         await page.evaluate("() => { window.__stair = 6; }")
         st = await wait_status(page, lambda s: s.get("state") == "sync", 30, "live lock in sync")
@@ -917,6 +1148,13 @@ async def main():
         adv = st["m"] - m0
         check(st["state"] == "sync" and seeks1 - seeks0 == 0 and abs(adv - (time.time() - t0)) < 1.0,
               f"live lock: stepped F1 TV live edge -> 0 commentary seeks in 12 s, advanced {adv:.1f}s ({st['text']})")
+        # On a server's recording the lock is placed by wall time: the commentary playing is the one
+        # recorded (F1 TV's latency - delay) before now, whatever the recording's last keyframe group.
+        tl = api(f"/api/timeline?channel={urllib.request.quote(CHANNEL)}&from={time.time() - 600}&to={time.time() + 600}")
+        pc = next((x for x in tl["pieces"] if x["m"] <= st["m"] < x["m"] + x["d"]), None)
+        off = None if pc is None else (pc["w"] + st["m"] - pc["m"]) - (st["at"] - (st["f1Lat"] - st["delay"]))
+        check(off is not None and abs(off) < 0.3,
+              f"live lock on the server's recording: by wall time, {st['f1Lat'] - st['delay']:.1f}s before now (off {off})")
         # Rewind F1 TV 30 s: the commentary goes back 30 s with it.
         before = st["m"]
         await page.evaluate("() => tmSeek(contentPos() - 30)")
@@ -932,8 +1170,9 @@ async def main():
         await page.evaluate("() => { window.__event = 'finished-live'; }")
         await asyncio.sleep(3)
         st = await status(page)
-        check(st["clock"] == "edge" and abs(st["E"] - (time.time() - 50)) < 1.5,
-              f"Tiledmedia: when the live event finishes, timing stays edge-relative (err {st['E'] - (time.time() - 50):+.2f}s)")
+        fl = st.get("f1Lat") or 0
+        check(st["clock"] == "edge" and abs(fl - 67) < 2 and abs(st["E"] - (time.time() - fl)) < 1.0,
+              f"Tiledmedia: when the live event finishes, timing stays edge-relative (F1 TV {fl} s behind its clock after the 30 s rewind)")
 
         await sw.evaluate("chrome.storage.sync.set({speed: 1})")
 

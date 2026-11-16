@@ -160,8 +160,10 @@ class VideoService:
             if growing:
                 raise Indexing(1.0)  # live, and the first keyframe isn't on disk yet
             raise LookupError("no video keyframes in this recording")
-        idle = entry.task is None or entry.task.done()
-        finished = not growing and idle and entry.indexed_size >= size
+        # indexed_size only moves once an update that started at that size has published its
+        # snapshot, so it alone says "indexed to the last byte". Not whether the task is done:
+        # it goes on to probe and save, and a finished file must not read as growing meanwhile.
+        finished = not growing and entry.indexed_size >= size
         view = _View(st, entry, entry.snap, growing, finished)
         snap0, fin0, segs = entry.cuts
         if snap0 is not entry.snap or fin0 != finished:
@@ -182,11 +184,11 @@ class VideoService:
                 log.info("indexed %s: %d tags, %d keyframes in %.1fs", entry.path.name, n, len(snap.kf_ts), time.time() - t)
             if entry.index.corrupt_at is not None and (entry.snap is None or entry.snap.pos < entry.index.corrupt_at):
                 log.warning("%s: broken FLV tag at byte %d; video stops there", entry.path.name, entry.index.corrupt_at)
+            if entry.probe is None and snap.kf_ts:  # before publishing: no answer without the picture size
+                entry.probe = await self._probe(entry.path, snap)
             entry.snap = snap
             entry.indexed_size = entry.size
             entry.error = None
-            if entry.probe is None and snap.kf_ts:
-                entry.probe = await self._probe(entry.path, snap)
             st = self.extractor.files.get(entry.fid)
             done = st is not None and not self.extractor.is_growing(st.rec)
             if (done and snap.pos > entry.saved_pos) or snap.pos - entry.saved_pos > SAVE_EVERY_BYTES:
@@ -221,11 +223,16 @@ class VideoService:
         os.replace(tmp, path)
         entry.saved_pos = pos
 
-    async def _probe(self, path: Path, snap: Snapshot) -> dict:
-        """Codec and picture size of the first GOP (ffprobe on header + headers + GOP)."""
+    async def _probe(self, path: Path, snap: Snapshot) -> dict | None:
+        """Codec and picture size of the first GOP (ffprobe on header + headers + GOP).
+        None when the GOP couldn't be read (a NAS hiccup): the next update probes again."""
         start = snap.kf_pos[0]
         end = min(snap.kf_pos[1] if len(snap.kf_pos) > 1 else snap.pos, start + (8 << 20))
-        data = snap.header + snap.headers_at(start) + await asyncio.to_thread(_read, path, start, end)
+        try:
+            data = snap.header + snap.headers_at(start) + await asyncio.to_thread(_read, path, start, end)
+        except OSError as e:
+            log.warning("probe %s: %s", path.name, e)
+            return None
         try:
             out = await self._run(PROBE, data, timeout=15)
             s = json.loads(out)["streams"][0]
