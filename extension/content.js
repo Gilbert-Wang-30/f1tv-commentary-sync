@@ -172,7 +172,7 @@
   let lastCmd = '';
   let lastCmdAt = 0;
   let duckOn = false, duckSeen = 0; // (F1 TV's own sound ducked: locked by sound within the last 10 s)
-  let vodLookWas = false;
+  let vodLookWas = false, vodWas = false;
 
   // Desired state, re-sent every 2 s: page.js stops steering when we go quiet.
   // A replay playing the streamer's Bilibili replay, this moment in it not found yet: F1 TV at 1×
@@ -187,7 +187,8 @@
     // (live and playing: not while auto-hold holds it)
     const live = playKind() === 'live' && !holding;
     // (F1 TV's sound handed on: sync by sound, live, and on replays from a fone server's recording)
-    const tap = settings.soundSync !== false && (live || sourceOf(settings) === 'server');
+    // (by hand too while a Bilibili replay plays: it's found by F1 TV's sound, and F1 TV's own goes off)
+    const tap = (settings.soundSync !== false || !!status?.vod) && (live || sourceOf(settings) === 'server');
     const prefer = FoneSettings.prefer(settings), subs = settings.f1Subs === true, feed = settings.f1Feed === 'off' ? 'none' : 'intl';
     // F1 TV's own sound off while fone has found it in the stream (locked by sound: the stream
     // carries it in step with the commentary, so it would only be heard twice): duckOn below
@@ -400,6 +401,8 @@
     $('stats').classList.toggle('on', !!window.FoneLayout?.isOn());
     $('pic').classList.toggle('on', !!window.FoneStreamer?.isOn());
     $('picPage').hidden = !s.page;
+    $('picPage').textContent = s.vod ? '↗ Bilibili replay' : '↗ Live page';
+    $('picPage').title = s.vod ? "The streamer's Bilibili replay at this moment, in a new tab" : "The streamer's live page on their platform, in a new tab";
     // the stats need a fone server (its timing service), the 弹幕 its capture of the room
     $('statsRow').hidden = serverless();
     $('dm').hidden = $('dmSet').hidden = $('dmInfo').hidden = local;
@@ -731,7 +734,7 @@
 
   // F1 TV's sound as heard (page.js, every second while asked: sync by sound), to the engine
   document.addEventListener('fone-f1audio', (e) => {
-    if (!alive || settings.soundSync === false) return;
+    if (!alive || (settings.soundSync === false && !status?.vod)) return;
     let d = null;
     try { d = JSON.parse(e.detail); } catch { return; }
     if (d?.chunks?.length) send({ type: 'f1audio', sr: d.sr, chunks: d.chunks });
@@ -780,7 +783,7 @@
     const duckNow = duckSeen > 0 && Date.now() - duckSeen < 10000;
     if (duckNow !== duckOn) { duckOn = duckNow; syncPage(true); }
     // (1× while this moment is looked for in a Bilibili replay, the chosen speed back once found)
-    if (vodLooking() !== vodLookWas) { vodLookWas = vodLooking(); syncPage(true); }
+    if (vodLooking() !== vodLookWas || !!status?.vod !== vodWas) { vodLookWas = vodLooking(); vodWas = !!status?.vod; syncPage(true); }
     // fone switched F1 TV to INTERNATIONAL (page.js, a switch seen to land): once it plays, the
     // commentary locked again to its edge (the two feeds' live delays differ by a second or two),
     // keeping how far F1 TV was behind live before the switch (your rewind, a pause, a hold: the

@@ -6,7 +6,10 @@
 //    axis, kept here (KEEP s of it, from the recorder's last 20 s on), decoded (WebCodecs) just
 //    ahead of the moment the commentary plays and drawn at it, rewinds included;
 //  * a server's recording: its video handoff (/api/video/<file>/index.m3u8, hls.js), the file's
-//    picture at the commentary's position in it.
+//    picture at the commentary's position in it;
+//  * the streamer's Bilibili replay (vod.js): its own picture (720p H.264, by byte range from
+//    Bilibili, hls.js), at the commentary's position in the replay (the engine's m: the replay's
+//    pages back to back, as its sound plays them). Their screen has their timing tower and map.
 'use strict';
 
 const KEEP = 180; // s of the stream's video kept here, for rewinds
@@ -316,6 +319,65 @@ function driveServer() {
   say('');
 }
 
+// ---- the streamer's Bilibili replay -------------------------------------------------------------
+
+const VOD_URL = 'https://vod.fone.invalid/v/';
+const B = { bvid: null, gen: 0, hls: null, rep: null, err: null, note: null, blob: null };
+function dropVod() {
+  if (B.hls) B.hls.destroy();
+  if (B.blob) URL.revokeObjectURL(B.blob);
+  Object.assign(B, { bvid: null, hls: null, rep: null, err: null, note: null, blob: null });
+  B.gen++;
+}
+async function loadVod(bvid) {
+  dropVod();
+  B.bvid = bvid;
+  const gen = B.gen;
+  B.note = 'Loading the replay’s picture…';
+  try {
+    const rep = await FoneVod.loadVideo(bvid);
+    if (gen !== B.gen) return;
+    B.rep = rep;
+    B.blob = URL.createObjectURL(new Blob([FoneVod.playlist(rep, (i) => `${VOD_URL}${bvid}/${i}`)], { type: 'application/vnd.apple.mpegurl' }));
+    const hls = new Hls({ enableWorker: false, maxBufferLength: 20, maxMaxBufferLength: 40, backBufferLength: 20, startPosition: Math.max(0, target('m') ?? 0),
+      fragLoadingMaxRetry: 6,
+      xhrSetup: async (xhr, url) => { // (to the page's signed URL now, from the mirror that works)
+        if (!url.startsWith(VOD_URL)) return;
+        const pg = B.rep?.pages[+url.slice(VOD_URL.length).split('/')[1]];
+        if (pg) xhr.open('GET', await FoneVod.urlOf(B.rep, pg), true);
+      } });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (gen !== B.gen) return;
+      const u = data.frag?.url;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR && u?.startsWith(VOD_URL)) { const pg = B.rep?.pages[+u.slice(VOD_URL.length).split('/')[1]]; if (pg) FoneVod.failed(pg); }
+      if (!data.fatal) return;
+      B.err = `The replay's picture: ${data.details}`; // (said for a moment, then loaded again from here)
+      setTimeout(() => { if (gen === B.gen) B.bvid = null; }, 3000);
+    });
+    hls.loadSource(B.blob);
+    hls.attachMedia(video);
+    B.hls = hls;
+    B.note = null;
+  } catch (err) {
+    if (gen !== B.gen) return;
+    B.err = `The replay's picture: ${err.message || err}`;
+    setTimeout(() => { if (gen === B.gen) B.bvid = null; }, 5000); // (asked again)
+  }
+}
+function driveVod() {
+  if (B.err) return say(B.err);
+  if (!B.rep) return say(B.note || '');
+  const v = target('m');
+  if (v == null) return;
+  if (video.readyState < 2) { if (Math.abs(video.currentTime - v) > 1) video.currentTime = Math.max(0, v); return say('Loading the replay’s picture…'); }
+  const drift = video.currentTime - v, rate = clock.rate || 1;
+  if (Math.abs(drift) > 0.5) video.currentTime = Math.max(0, v);
+  else video.playbackRate = rate * (1 - Math.max(-0.05, Math.min(0.05, drift)));
+  if (clock.playing && video.paused) video.play().catch(() => {});
+  if (!clock.playing && !video.paused) video.pause();
+  say('');
+}
+
 // ---- following the engine ------------------------------------------------------------------
 
 clockCh.onmessage = (e) => {
@@ -335,11 +397,15 @@ function frame() {
   requestAnimationFrame(frame);
   const src = clock && nowS() - clock.at <= STALE && clock.m != null ? clock.src : null;
   canvas.hidden = src !== 'stream';
-  video.hidden = src !== 'server';
+  video.hidden = src !== 'server' && src !== 'vod';
   if (src !== 'server' && H.key) dropServer();
+  if (src !== 'vod' && B.bvid) dropVod();
   if (src === 'stream') {
     if (clock.stream !== P.url || (clock.gen != null && clock.gen !== P.gen)) resetStream(clock.stream, clock.gen);
     drawStream(target('m'));
+  } else if (src === 'vod') {
+    if (B.bvid !== clock.bvid) loadVod(clock.bvid);
+    driveVod();
   } else if (src === 'server') {
     if (!clock.file || !clock.server) return say('No picture for this moment');
     if (H.key !== `${clock.server}|${clock.file}`) loadServer(clock.server, clock.file);

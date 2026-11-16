@@ -190,7 +190,8 @@
       const mid = E + guess - (r.slot + 1800);
       let off = 0;
       for (let i = 0; i < r.pages.length; i++) {
-        const pg = r.pages[i], a0 = Math.max(lo, off), a1 = Math.min(hi, off + pg.dur);
+        // (on a grid from the page's start: the same stretches whatever the picture, kept between looks)
+        const pg = r.pages[i], a0 = off + Math.floor(Math.max(0, Math.max(lo, off) - off) / chunk) * chunk, a1 = Math.min(hi, off + pg.dur);
         for (let a = a0; a < a1 - win; a += chunk) {
           const len = Math.min(chunk + win + 2, off + pg.dur - a);
           if (len >= win + 2) out.push({ rep: r, page: i, a, len, dist: Math.abs(a + len / 2 - mid) });
@@ -327,11 +328,20 @@
   // (deadline); other upos mirrors serve the same signed path.
   const MIRRORS = ['upos-sz-mirrorcosov.bilivideo.com', 'upos-sz-mirrorali.bilivideo.com', 'upos-sz-mirrorhw.bilivideo.com',
     'upos-sz-mirrorbd.bilivideo.com', 'upos-sz-mirrorcos.bilivideo.com', 'upos-sz-mirroraliov.bilivideo.com'];
+  // pg.kind 'video': its picture instead (H.264, the tallest up to VIDEO_H; the streamer window's).
+  const VIDEO_H = 720, AVC = 7;
   async function sound(rep, pg) {
     const d = await json(`https://api.bilibili.com/x/player/playurl?bvid=${rep.bvid}&cid=${pg.cid}&fnval=16&fnver=0&qn=0&try_look=1`);
-    const as = d?.dash?.audio || [];
-    const a = as.find((x) => x.id === 30232) || as.find((x) => x.id === 30280) || as[0];
-    if (!a) throw new Error('Bilibili gave no sound for this replay');
+    let a;
+    if (pg.kind === 'video') {
+      const vs = (d?.dash?.video || []).filter((x) => x.codecid === AVC && x.height <= VIDEO_H);
+      a = vs.sort((x, y) => y.height - x.height || y.bandwidth - x.bandwidth)[0];
+      if (!a) throw new Error('Bilibili gave no H.264 picture for this replay');
+    } else {
+      const as = d?.dash?.audio || [];
+      a = as.find((x) => x.id === 30232) || as.find((x) => x.id === 30280) || as[0];
+      if (!a) throw new Error('Bilibili gave no sound for this replay');
+    }
     const base = a.baseUrl || a.base_url, backups = a.backupUrl || a.backup_url || [];
     const sb = a.segment_base || a.SegmentBase || {};
     const rng = (s) => String(s || '').split('-').map(Number);
@@ -392,6 +402,22 @@
     return parseDanmaku(await r.text());
   }
 
-  root.FoneVod = { parseTitle, parseDanmaku, danmaku, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
+  // A replay's picture, for the streamer window: {bvid, pages [{page, cid, dur, init, segs, urls, …}],
+  // offs (each page's start on the replay's m axis, its sound's: the engine's clock)}.
+  async function loadVideo(bvid) {
+    const list = await json(`https://api.bilibili.com/x/player/pagelist?bvid=${bvid}`);
+    const rep = { bvid, pages: [] };
+    for (const p of [...list].sort((a, b) => a.page - b.page)) {
+      const pg = { page: p.page, cid: p.cid, dur: p.duration, mirror: 0, kind: 'video' };
+      await sound(rep, pg);
+      const b = await range(pg, pg.index[0], pg.index[1]);
+      pg.segs = sidx(b, pg.index[0]);
+      pg.dur = pg.segs.reduce((s, x) => s + x.d, 0);
+      rep.pages.push(pg);
+    }
+    return rep;
+  }
+
+  root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, playlist, searchPlan,
     owner, replays, load, sound, urlOf, range, failed, store, FRAG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
