@@ -137,7 +137,8 @@ async def main():
         r1, text = await page.evaluate("() => window.__sdkRate()"), (await E.status(page)).get("text")
         E.check(r1 == 1, f"2× chosen: F1 TV at 1× while it looks ({r1}×)")
         st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("state") == "placed", 240, "placed in the replay by sound")
-        E.check(st["vod"]["bvid"] == BVID, f"this moment found in {st['vod']['bvid']} ({st['vod']['title']}) by sound in {time.time() - t0:.0f}s"
+        took = time.time() - t0
+        E.check(st["vod"]["bvid"] == BVID and took < 40, f"this moment found in {st['vod']['bvid']} ({st['vod']['title']}) by sound in {took:.0f}s"
                 f" ({st['vod']['tries']} looks)")
         E.check((st.get("sound") or {}).get("carries") is True, "placed: F1 TV's own sound turned off (the replay carries it)")
         await E.wait_js(page, "() => window.__sdkRate()", lambda r: r == 2, 15, "2× again")
@@ -157,6 +158,20 @@ async def main():
         E.check(f"Bilibili 直播回放 {BVID}" in details, "Details: the recording is the Bilibili replay")
         shown = await page.evaluate(f"() => {E.PANEL}.getElementById('delay').textContent")
         E.check(shown.startswith("delay 0.0") or shown.startswith("delay −0.0"), f"the delay reads against 50 s: {shown!r}")
+        # ↗: the replay's own page at the moment playing
+        pg = st.get("page") or ""
+        E.check(pg.startswith(f"https://www.bilibili.com/video/{BVID}/?p=1&t=") and abs(int(pg.split("t=")[1]) - st["m"]) < 3,
+                f"↗ opens the replay at this moment: {pg}")
+        # by hand: still placed, nothing kept by sound, a nudge moves it and is kept for the replay
+        await sw.evaluate("chrome.storage.sync.set({soundSync: false})")
+        await asyncio.sleep(2)
+        b = await E.status(page)
+        await page.keyboard.press("]")
+        st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s) - (placed(b) + 0.5)) < 0.15, 20, "nudged by hand")
+        E.check((st.get("vod") or {}).get("state") == "placed" and abs(st["delay"] - (b["delay"] + 0.5)) < 0.01,
+                f"by hand: the replay plays on where it was, a nudge moves it (delay {b['delay']} -> {st['delay']}, {placed(st) * 1000:+.0f} ms)")
+        await page.keyboard.press("[")
+        await sw.evaluate("chrome.storage.sync.set({soundSync: true})")
         # the replay's own danmaku (the live chat on it), on the overlay, in step with it
         await sw.evaluate("chrome.storage.sync.get('danmaku').then((s) => chrome.storage.sync.set({danmaku: {...(s.danmaku || {}), on: true}}))")
         n = await E.wait_js(page, "() => document.getElementById('fone-danmaku')?.shadowRoot?.querySelectorAll('.dm').length || 0",

@@ -190,7 +190,8 @@
       const mid = E + guess - (r.slot + 1800);
       let off = 0;
       for (let i = 0; i < r.pages.length; i++) {
-        const pg = r.pages[i], a0 = Math.max(lo, off), a1 = Math.min(hi, off + pg.dur);
+        // (on a grid from the page's start: the same stretches whatever the picture, kept between looks)
+        const pg = r.pages[i], a0 = off + Math.floor(Math.max(0, Math.max(lo, off) - off) / chunk) * chunk, a1 = Math.min(hi, off + pg.dur);
         for (let a = a0; a < a1 - win; a += chunk) {
           const len = Math.min(chunk + win + 2, off + pg.dur - a);
           if (len >= win + 2) out.push({ rep: r, page: i, a, len, dist: Math.abs(a + len / 2 - mid) });
