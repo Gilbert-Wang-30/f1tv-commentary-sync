@@ -569,6 +569,11 @@ section):
   plays the replay's own picture (720p H.264, `FoneVod.loadVideo`, the same byte-range playlist,
   hls.js in `streamer.js`) at the commentary's `m`: their screen has their timing tower and map,
   which fone has no other source for so old (F1's archive refuses).
+- **Stats without timing.** The dashboard, for a video with no timing session or one the server
+  has no timing for (`available: false`), shows the streamer's screen instead (their stream is
+  their timing screen: MultiViewer's tower, race control, the map): `streamer.html?mode=box` in
+  an iframe of its own beside F1 TV's player, which it asks for at half the width (layout.js's
+  'player' command). The engine sends the dashboard its clock for such videos too.
 - **Its danmaku.** The live chat Bilibili put on the replay (`x/v1/dm/list.so?oid=<cid>`, XML,
   each `<d p="progress,mode,size,colour,…,uid hash,…">`, `FoneVod.parseDanmaku`), each put on the
   replay's wall clock by its page and progress (`vodDanmaku`): the 弹幕 overlay asks the engine

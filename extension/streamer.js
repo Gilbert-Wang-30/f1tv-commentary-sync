@@ -7,7 +7,7 @@
 //    ahead of the moment the commentary plays and drawn at it, rewinds included;
 //  * a server's recording: its video handoff (/api/video/<file>/index.m3u8, hls.js), the file's
 //    picture at the commentary's position in it;
-//  * the streamer's Bilibili replay (vod.js): its own picture (720p H.264, by byte range from
+//  * the streamer's Bilibili replay (vod.js): its own picture (1080p H.264, by byte range from
 //    Bilibili, hls.js), at the commentary's position in the replay (the engine's m: the replay's
 //    pages back to back, as its sound plays them). Their screen has their timing tower and map.
 'use strict';
