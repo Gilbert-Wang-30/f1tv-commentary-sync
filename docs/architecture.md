@@ -226,11 +226,11 @@ didn't hear (no levels, colours or stickers there). Served by send time.
 | streamer window | `streamer.html`: `vendor/hls.light.min.js`, `streamer.js` (in the box's iframe, or a popup window of its own) | the streamer's picture at the commentary's moment, muted. Follows the engine's clock (`fone-clock`): the stream recorded here, from the recorder's video (`fone-video`) decoded with WebCodecs (H.264, HEVC where the browser decodes it) and drawn on a canvas at `m`, the last 3 min kept for rewinds; a server's recording, its video handoff with hls.js at the file's position (`media − mOffset`), its requests made by the engine (`fone-fetch`: an iframe in F1 TV's https page can't reach an http server) |
 | content scripts, **main** world | `page.js`, `layout_page.js`; `audiotap.js` at `document_start` | the only place the Tiledmedia player's objects are reachable: position, speed, audio tracks, F1 TV's mute button, onboard views; fullscreen redirection for the split view; F1 TV's sound through fone's gain, copied for sync by sound |
 | service worker | `background.js` (+ `dashproxy.js`, `f1token.js`, `streams.js`) | relays messages between tabs and the engine, opens the offscreen document, fetches for pages that can't (mixed content, CSP), hands the F1 TV token to the engine, sets the streaming platforms' header rules, self-update |
-| offscreen document | `offscreen.html`: `vendor/hls.light.min.js`, `core.js`, `demux.js`, `localcore.js`, `streams.js`, `recorder.js`, `localplayer.js`, `livepos.js`, `offscreen.js` | **the audio engine**: picks the source (a server, or the stream recorded here), clock and delay, plays `m` (a server's recordings with hls.js, its own recording through MSE) and keeps it on target (at 1× by tiny rate changes, otherwise by rare seeks); relays live car positions |
+| offscreen document | `offscreen.html`: `vendor/hls.light.min.js`, `core.js`, `demux.js`, `localcore.js`, `streams.js`, `recorder.js`, `localplayer.js`, `livepos.js`, `sound.js`, `teamradio.js`, `vod.js`, `offscreen.js` | **the audio engine**: picks the source (a server, the stream recorded here, or the streamer's Bilibili replay), clock and delay, plays `m` (a server's recordings with hls.js, its own recording through MSE) and keeps it on target (at 1× by tiny rate changes, otherwise by rare seeks); relays live car positions |
 | extension pages | `dashboard.html` (`dashcore.js`, `dashboard.js`, `dashboard.css`), `options.html` (`settings.js`, `options.js`) | the stats (as an iframe behind the shrunken player, or a window of its own); the settings |
 
-`core.js`, `dashcore.js`, `dmcore.js`, `demux.js`, `localcore.js`, `settings.js` and `sound.js` are
-pure functions shared with the Node unit tests.
+`core.js`, `dashcore.js`, `dmcore.js`, `demux.js`, `localcore.js`, `settings.js`, `sound.js`,
+`teamradio.js` and `vod.js`'s parsing are pure functions shared with the Node unit tests.
 
 ### Without a server: the stream recorded in the browser
 
@@ -502,6 +502,67 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   Live from a server's recording (not straight from the stream) isn't measured yet: its lock is
   re-placed by wall time across the server's files, which an offset on the lock doesn't follow.
   A clock change (a live item becoming a replay) starts sync by sound over.
+
+### The streamer's Bilibili replays: replays no recording covers
+
+A fone server keeps its recordings for weeks (the janitor's 21 days, in the author's setup); the
+streamer's Bilibili replays (直播回放) stay on their space for years. A replay whose session no
+piece of the server's timeline covers (`vodWanted`: a replay clock, the content anchored, the
+channel's Bilibili room known from `/api/danmaku/status`) plays the room's own replay of it,
+streamed from Bilibili (`vod.js`, pure parts in `vod.test.js`; the engine's "Bilibili replays"
+section):
+
+- **Which.** The room's streamer (`room/v1/Room/get_info`), their '直播回放' series
+  (`x/polymer/web-space/seasons_series_list`), its archives (`x/series/archives`, 100 a page,
+  kept in the offscreen document's localStorage and read again from the newest when stale). A
+  replay's title is `【直播回放】<room title> YYYY年MM月DD日HH点场`: the Beijing hour the streamer
+  went live in, so its content starts somewhere in that hour. The candidates are the replays whose
+  `[slot, slot + 1 h + duration]` meets the session's events plus −2…+10 min of delay.
+- **Its sound.** `x/player/pagelist` and `x/player/playurl` (`fnval=16`, `try_look=1`, no login)
+  give each page's DASH audio (AAC-LC ~72 kbps, id 30232): one fMP4 per page with a sidx of ~5 s
+  segments, its URLs signed for this IP for ~2 h (`deadline`) and served the same by every
+  `upos-sz-mirror*` host, at very different speeds (0.2-1.2 MB/s a connection here, ~4 MB/s
+  with six at once). `FoneVod.range` fetches byte ranges, moving to the next mirror on a failure;
+  `urlOf` asks again 10 min before the deadline. The `bilibili.com`/`bilivideo.com` session rule
+  adds the Referer the CDN wants (and the Akamai mirror's host is in it). hls.js plays a playlist
+  built from the sidx (`FoneVod.playlist`: each page's init segment by `EXT-X-MAP`, its segments by
+  `EXT-X-BYTERANGE`, a discontinuity between pages) from a blob URL, its placeholder URLs
+  (`https://vod.fone.invalid/<bvid>/<page>`) opened on the page's URL now by `xhrSetup`.
+- **The repeats.** Bilibili builds a replay from ~30-min fragments, each starting with the last
+  ~4.2 s of the one before (a page boundary too); the repeat is the same AAC packets byte for byte
+  after a few (`server/fone/backfill_dedup.py`). `FoneVod.findCuts` looks ±20 s around where each
+  join is due (every 1804.2 s after the last, from each page's start, and across each page
+  boundary), hashes the packets and takes the lag most packets-with-sound that occur exactly twice
+  share (`findRepeat`); the cut is that many packets after the earlier copy's last match (the
+  backfill's bit-exact splice). One not heard (both copies the same silence) is assumed where it
+  was due. On the 2025 British GP replay (2 pages, 4 h 15 min) it found the backfill's 8 joins to
+  1-2 packets, reading 3 MB. The cuts are kept per replay. `FoneVod.timeline` puts the replay on
+  the wall clock from its first sample's time `T0`, the cuts as gaps in `m` (pieces, files: what a
+  server's `/api/timeline` gives), so the replay's own `m` plays and the repeats are skipped by
+  the usual wall-time mapping.
+- **Where this moment is.** Found by sound: the newest 25 s of F1 TV's sound heard (sync by
+  sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
+  stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
+  the delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
+  kept as 16-bit while it looks; after two misses, all of each replay). Taken when sure (score
+  ≥ 9.5 and 1.5× anything else anywhere; ≥ 14 and twice: at once) or when two looks in a row
+  agree on the offset to 0.3 s (each ≥ 7): real sync-by-sound matches scored a median of 14
+  (2026-11-11). The replay is then placed so that the delay reads 50 s (`VOD.D0`, plus the
+  stream's nudge bias), `T0 = E + 50 − content(m)`, and sync by sound runs on it as on any replay,
+  reading its sound from Bilibili (`vodRead`: segments by one range request, `FoneDemux.mp4Audio`
+  to ADTS, decoded at 8 kHz). Where it was put (`T0`, delay) is kept per video and replay
+  (`vodPlace|<cid>|<bvid>`): the next time it starts there at once. Sync by sound not confirming a
+  place in 8 looks of its own (2 min) while hearing F1 TV: looked for again, playing on (then
+  every 10 min). Off the end (or start) of the replay playing: the streamer's next (previous)
+  one, kept or looked for. The danmaku of these sessions isn't shown (the server has none so old).
+- **Status.** `vod: {state, text, bvid, title, how, tries, reps, cuts}` (states `finding`,
+  `listening`, `searching`, `placed`, `none`, `error`); until placed the engine reports `syncing`
+  (or `none`/`error`) with its text, plays nothing, and leaves F1 TV's own sound on. Details:
+  "recording: Bilibili 直播回放 <bvid> · <title> · found by sound · N repeats cut". Delays and
+  nudges on it are kept in the browser, not on the server. Only with a server (the replay's
+  anchor is the server's) and sync by sound on. `e2e/vod/run.sh` plays a stretch of the real
+  British GP replay as F1 TV's sound against a mock server with nothing recorded: found in
+  30-40 s, locked within 30 ms, the 8 repeats cut, opened again where it was.
 
 ### Team radio, filled in
 

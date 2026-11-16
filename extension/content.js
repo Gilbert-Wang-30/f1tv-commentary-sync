@@ -171,11 +171,15 @@
   let lastCmd = '';
   let lastCmdAt = 0;
   let duckOn = false, duckSeen = 0; // (F1 TV's own sound ducked: locked by sound within the last 10 s)
+  let vodLookWas = false;
 
   // Desired state, re-sent every 2 s: page.js stops steering when we go quiet.
+  // A replay playing the streamer's Bilibili replay, this moment in it not found yet: F1 TV at 1×
+  // meanwhile (it's found by F1 TV's sound, heard at 1× only), the speed chosen kept for after.
+  const vodLooking = () => ['listening', 'searching'].includes(status?.vod?.state) && playKind() === 'replay';
   function syncPage(force) {
     if (!alive || !cid || !video || !FonePlayer.isTiledmedia()) return;
-    const speed = SPEEDS.includes(Number(settings.speed)) ? Number(settings.speed) : 1;
+    const speed = vodLooking() ? 1 : SPEEDS.includes(Number(settings.speed)) ? Number(settings.speed) : 1;
     // (live and playing: not while auto-hold holds it)
     const live = playKind() === 'live' && !holding;
     // (F1 TV's sound handed on: sync by sound, live, and on replays from a fone server's recording)
@@ -354,6 +358,7 @@
     if (s.sound?.state === 'locked' && (s.state === 'sync' || s.state === 'syncing')) text += ' · by sound';
     if (settings.muted) text += ' · muted';
     else if (s.ad) text += ' · sponsor clip muted';
+    if (vodLooking() && (Number(settings.speed) || 1) !== 1) text += ` · 1× while it looks, then ${settings.speed}×`;
     $('text').textContent = text;
     $('chev').textContent = settings.collapsed ? '▸' : '▾';
     if (settings.collapsed) return;
@@ -463,6 +468,12 @@
       rows.push(['kept', `${fmtDur(rec.kept)} of ${settings.bufferMin} min${rec.kbps ? ` · audio ${rec.kbps} kbps` : ''}${rec.fmt ? ` · ${rec.fmt}` : ''}${rec.net ? ` · stream ${rec.net} kbps` : ''}${rec.filled ? ` · ${rec.filled}s of gaps` : ''}`]);
       if (rec.title) rows.push(['stream', rec.title]);
       if (s.server) rows.push(['server', `${s.server} (${s.direct ? 'replays, stats, sponsor clips' : 'stats'})`]);
+    } else if (s.vod) { // the streamer's Bilibili replay (nothing on the server covers this session)
+      const v = s.vod;
+      rows.push(['recording', `Bilibili 直播回放${v.bvid ? ` ${v.bvid}` : ''}${v.title ? ` · ${v.title}` : ''}`
+        + ` · ${{ placed: v.how === 'kept' ? 'where it was last time' : 'found by sound', finding: 'looking it up', listening: 'listening for F1 TV', searching: 'looking for this moment', none: 'none for this session', error: 'failed' }[v.state] || v.state}`
+        + `${v.cuts != null ? ` · ${v.cuts} repeats cut` : ''}`]);
+      rows.push(['server', `${s.server || '–'} (nothing recorded for this session)`]);
     } else {
       rows.push(['recording', s.file || '–'], ['server', s.server || '–']);
     }
@@ -749,6 +760,8 @@
     if (locked) duckSeen = Date.now();
     const duckNow = duckSeen > 0 && Date.now() - duckSeen < 10000;
     if (duckNow !== duckOn) { duckOn = duckNow; syncPage(true); }
+    // (1× while this moment is looked for in a Bilibili replay, the chosen speed back once found)
+    if (vodLooking() !== vodLookWas) { vodLookWas = vodLooking(); syncPage(true); }
     // fone switched F1 TV to INTERNATIONAL (page.js, a switch seen to land): once it plays, the
     // commentary locked again to its edge (the two feeds' live delays differ by a second or two),
     // keeping how far F1 TV was behind live before the switch (your rewind, a pause, a hold: the

@@ -91,7 +91,8 @@
   // these domains (and the Node test harness into request headers). YouTube's SOCS cookie
   // answers its consent page, which a cookie-less request in the EU gets instead of the video.
   const HEADERS = [
-    { domains: ['bilibili.com', 'bilivideo.com', 'bilivideo.cn'], set: { Referer: 'https://live.bilibili.com/', Origin: 'https://live.bilibili.com' } },
+    // (upos-hz-mirrorakam.akamaized.net: an overseas mirror of its replays' sound, vod.js)
+    { domains: ['bilibili.com', 'bilivideo.com', 'bilivideo.cn', 'upos-hz-mirrorakam.akamaized.net'], set: { Referer: 'https://live.bilibili.com/', Origin: 'https://live.bilibili.com' } },
     { domains: ['twitch.tv', 'ttvnw.net'], set: { Referer: 'https://www.twitch.tv/', Origin: 'https://www.twitch.tv' } },
     { domains: ['youtube.com'], set: { Referer: 'https://www.youtube.com/', Origin: 'https://www.youtube.com', Cookie: 'SOCS=CAI' } },
     { domains: ['douyin.com', 'douyincdn.com'], set: { Referer: 'https://live.douyin.com/' } },

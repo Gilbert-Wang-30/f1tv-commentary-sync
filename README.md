@@ -66,6 +66,13 @@ extension and the install paths all go by that name.
   found, which is saved for the video). It needs the streamer to
   pass F1 TV's sound through (the panel says "by sound" when it has it; Details says what it
   hears, and "lost" after 10 minutes without it). The panel's **Sync** row switches between by sound and by hand, and the F1 TV row says when F1 TV's own sound is off because the stream's copy plays.
+- **Old replays play the streamer's Bilibili replay.** A session your server has nothing for
+  (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
+  直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
+  session, finds this moment in it by F1 TV's sound (its title only says which hour the stream
+  started in: the first look takes 10-60 s), cuts Bilibili's ~4 s repeats every half hour, and
+  keeps it in sync by sound. Where it was is kept for the video. Needs a server (for the
+  replay's timing), a Bilibili channel and sync by sound.
 - **Live works edge to edge, with or without a server.** fone locks the commentary's live edge
   to F1 TV's, by F1 TV's own clock (the time its player puts on the picture: how far behind live
   its picture really is, which differs by a few seconds every time the page loads), then follows
@@ -603,6 +610,10 @@ docs/                  architecture, F1 data sources, README images
   replays the server anchored before then stay exact and newer ones use the pre-roll estimate, a
   session has stats only if the server captured it live (`FONE_TIMING_RECORD`), and nothing
   stored is pruned.
+- An old replay from the streamer's Bilibili replays needs F1 TV's sound to be in the stream at
+  the moment you're at: until fone hears it there (the streamer talking over a muted F1 TV, or
+  before their stream began), it says it's still looking and plays nothing. F1 TV's sound
+  should be what the streamer had on (Track FX or English Int.).
 - Pre- and post-race shows and other non-session videos have no anchor: they play in *manual* mode
   and you line them up by ear.
 - Danmaku from before fone listened (the danmakus.com archive) have no levels, colours or
