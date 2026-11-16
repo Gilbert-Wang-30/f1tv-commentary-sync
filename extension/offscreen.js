@@ -2258,7 +2258,7 @@ function tick() {
   if (S.vod) vodTick(t, v); // (placed: looked for again if sync by sound doesn't confirm it)
   base.file = S.local ? null : fileTitle(map.file);
   const pf = S.local ? null : S.timeline.files?.[map.file];
-  S.pic = S.timeline.vod ? null : S.local ? { src: 'stream', stream: S.stream, gen: FoneRecorder.status().gen, m: map.m, rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting }
+  S.pic = S.timeline.vod ? { src: 'vod', bvid: S.timeline.vod, m: map.m, rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting } : S.local ? { src: 'stream', stream: S.stream, gen: FoneRecorder.status().gen, m: map.m, rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting }
     : { src: 'server', server: S.base, file: pf?.id ?? null, media: pf?.offset != null ? map.m - pf.offset : null, m: map.m,
       rate: v.rate || 1, playing: !v.paused && !v.seeking && !v.waiting };
   // the streamer's sponsor clips, found by the server: not heard

@@ -559,6 +559,16 @@ section):
   its looks scored 5-6 for long stretches against Track FX, then 17-108). A nudge on a replay is
   kept for that replay (`soundBias|vod:<bvid>`), not the channel's: the streamer's setup then may
   not be theirs now.
+- **By hand, its page, its picture.** By hand (the Sync row, switched without restarting the
+  engine) the replay is still found by F1 TV's sound (there's no other way to place it) and F1
+  TV's own sound turned off; nothing corrects it after, a nudge moves it and is kept for the
+  replay. While it listens, the plan for the picture now is fetched and decoded ahead (stretches on
+  a grid from each page's start, so a later look's are the same; 30 kept, ~2 MB each), and a look
+  starts at 15 s of F1 TV's sound, again every 8 s more of it, up to 30 s: about 20 s to a place.
+  ↗ opens the replay's own page at the moment playing (`?p=<page>&t=<s>`). The streamer window
+  plays the replay's own picture (720p H.264, `FoneVod.loadVideo`, the same byte-range playlist,
+  hls.js in `streamer.js`) at the commentary's `m`: their screen has their timing tower and map,
+  which fone has no other source for so old (F1's archive refuses).
 - **Its danmaku.** The live chat Bilibili put on the replay (`x/v1/dm/list.so?oid=<cid>`, XML,
   each `<d p="progress,mode,size,colour,…,uid hash,…">`, `FoneVod.parseDanmaku`), each put on the
   replay's wall clock by its page and progress (`vodDanmaku`): the 弹幕 overlay asks the engine
