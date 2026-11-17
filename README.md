@@ -341,15 +341,22 @@ folder) is said in its log at start (`docker logs fone`), on the status page and
 settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev`
 in `.env`, then `docker compose build fone`.
 
-**Who can reach it.** The server has no login. Its port is published on every interface by
-default, for the browsers elsewhere on your LAN, and anything that reaches it can read its open
-routes ([Server API](#server-api)); the header the rest asks for (`X-Fone: 1`) keeps web pages
-out, not scripts. On a VPS, or any host the internet reaches, never expose 8788 to the internet:
-set `FONE_BIND` in `.env` to a private address, the host's Tailscale or WireGuard address
-(`tailscale ip -4`) so only your VPN reaches it, or `127.0.0.1` with an SSH tunnel from each
-browser's machine (`ssh -N -L 8788:127.0.0.1:8788 <host>`, then `http://localhost:8788` in fone's
-settings). A firewall on the host doesn't cover it: Docker's published ports bypass ufw's rules.
-`FONE_BIND` is fone-ext's address too (port 8789, [Advanced](#advanced-a-self-hosted-update-channel)).
+**Who can reach it.** The server has no login. Its port is published on every interface (IPv4
+and IPv6) unless `FONE_BIND` is set, for the browsers elsewhere on your LAN, and anything that
+reaches it can read its open routes ([Server API](#server-api)); the header the rest asks for
+(`X-Fone: 1`) keeps web pages out, not scripts. On a VPS, or any host the internet reaches, never
+expose 8788 to the internet: set `FONE_BIND` in `.env` to a private address, the host's Tailscale
+or WireGuard address (`tailscale ip -4`) so only your VPN reaches it, or `127.0.0.1` with an SSH
+tunnel from each browser's machine (`ssh -N -L 8788:127.0.0.1:8788 <host>`, then
+`http://localhost:8788` in fone's settings). A firewall on the host doesn't cover it: Docker's
+published ports bypass ufw's rules. A VPN's address must exist when Docker starts: a container
+published on an address the host doesn't have fails to start, and after a reboot Docker doesn't
+retry it. Either let the host bind it before it exists (the sysctl
+`net.ipv4.ip_nonlocal_bind=1`, in a file in `/etc/sysctl.d/`) or start Docker after the VPN
+(`sudo systemctl edit docker`, then `After=tailscaled.service` and `Wants=tailscaled.service`
+under `[Unit]`; WireGuard's is `wg-quick@wg0.service`). `127.0.0.1` with a tunnel doesn't have
+this problem. `FONE_BIND` is fone-ext's address too (port 8789,
+[Advanced](#advanced-a-self-hosted-update-channel)).
 
 ### 2. A recorder: configure your streamer
 
@@ -553,7 +560,7 @@ where its player happened to start.
 | `FONE_RECORDINGS` | (required) | the recordings' folder on the host, a folder per streamer: mounted read-only at `/rec`, except `fone-import/` (backfill's); fone's recorders write into `fone/`. Both must exist |
 | `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.1` | the server image (`docker compose build fone` builds `./server` under this name) |
 | `FONE_PORT` | `8788` | the server's port on the host |
-| `FONE_BIND` | `0.0.0.0` | the host address the server's port (and fone-ext's) is published on: every interface by default; on a VPS a private one, a VPN's or `127.0.0.1` ([Run a server](#1-the-server)) |
+| `FONE_BIND` | (every interface) | the host address the server's port (and fone-ext's) is published on: unset, every interface, IPv4 and IPv6; on a VPS a private one, a VPN's or `127.0.0.1` ([Run a server](#1-the-server)) |
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |
 | `COMPOSE_PROFILES` | | optional services `docker compose up -d` starts too: `recorder` (fone-recorder, its gate, the janitor), `streamlink` (fone-streamlink, the janitor), `ext-update` (fone-ext, [Advanced](#advanced-a-self-hosted-update-channel)) |
 | `FONE_UID`, `FONE_GID` | `1000` | the user the recorders write as |

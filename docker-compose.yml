@@ -22,11 +22,12 @@ services:
     # A cap on the screen-clock OCR and the ffmpeg jobs (a one-off pass over existing recordings
     # after an upgrade), for a host that also runs the recorders. 0: none.
     cpus: ${FONE_CPUS:-0}
-    # On every interface by default, for the browsers on your LAN. The server has no login: on a
-    # VPS or any host the internet reaches, FONE_BIND (.env) is a private address (a VPN's, or
-    # 127.0.0.1 and an SSH tunnel). Docker's published ports bypass ufw's rules.
+    # On every interface (IPv4 and IPv6) unless FONE_BIND is set, for the browsers on your LAN.
+    # The server has no login: on a VPS or any host the internet reaches, FONE_BIND (.env) is a
+    # private address (a VPN's, or 127.0.0.1 and an SSH tunnel). Docker's published ports bypass
+    # ufw's rules.
     ports:
-      - "${FONE_BIND:-0.0.0.0}:${FONE_PORT:-8788}:8788"
+      - "${FONE_BIND:+${FONE_BIND:-}:}${FONE_PORT:-8788}:8788"
     volumes:
       # All recorder output, read-only. Each streamer's folder becomes a channel, whichever
       # recorder wrote it (a 录播姬 you already run, or fone-recorder / fone-streamlink below).
@@ -75,7 +76,7 @@ services:
     profiles: ["ext-update"]
     restart: unless-stopped
     ports:
-      - "${FONE_BIND:-0.0.0.0}:8789:8000"   # (the same address as the server's)
+      - "${FONE_BIND:+${FONE_BIND:-}:}8789:8000"   # (the same address as the server's)
     volumes:
       - type: bind
         source: ${FONE_EXT_DIST:-./fone-dist}

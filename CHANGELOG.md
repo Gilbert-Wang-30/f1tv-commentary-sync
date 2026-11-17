@@ -49,9 +49,10 @@ image to run with your own streamer, recorder and storage.
   GitHub by hand (`.github/workflows/e2e.yml`).
 - `FONE_ADS_REFS` and `FONE_ADS_CHANNELS` (your own sponsor clips, and where to look for them),
   `GATE_ACTION`, and `FONE_TIMING_KEEP_DAYS` passed from `.env`.
-- `FONE_BIND`: the host address the server's port (and fone-ext's) is published on. Every
-  interface by default, for the LAN; on a VPS a private one (a VPN's, or `127.0.0.1` and an SSH
-  tunnel): Docker's published ports bypass ufw's rules.
+- `FONE_BIND`: the host address the server's port (and fone-ext's) is published on. Unset, every
+  interface, IPv4 and IPv6, as before, for the LAN; on a VPS a private one (a VPN's, or
+  `127.0.0.1` and an SSH tunnel): Docker's published ports bypass ufw's rules. A VPN's address
+  has to be up when Docker starts (README: the sysctl or the systemd order that sees to it).
 
 ### Changed
 - Your setup, not the author's: `docker-compose.yml` takes the recordings folder, rooms,
