@@ -813,14 +813,15 @@ async def main():
         # The panel's F1 TV block: its sound, its subtitles and its picture (no more muted / as is;
         # the Picture row back since 0.4.3: F1 TV's own choice, or its sharpest pinned)
         box = await page.evaluate(F1BOX)
-        check(not box["hidden"] and box["labels"] == ["F1 TV", "Subtitles", "Picture"] and box["old"] == 0
-              and box["rows"] == [[["Track FX", True], ["English Int.", False]], [["on", False], ["off", True]], [["auto", True], ["best", False]]],
-              f"panel: F1 TV's rows, sound (Track FX lit), subtitles (off lit) and picture (auto lit) ({box})")
+        check(not box["hidden"] and box["labels"] == ["F1 TV", "Own sound", "Subtitles", "Picture"] and box["old"] == 0
+              and box["rows"] == [[["Track FX", True], ["English Int.", False]], [["auto off", True], ["on", False]],
+                                  [["on", False], ["off", True]], [["auto", True], ["best", False]]],
+              f"panel: F1 TV's rows, sound (Track FX lit), its own sound (auto off lit), subtitles (off lit) and picture (auto lit) ({box})")
         # Subtitles on: kept, and asked of page.js (which reports it; steering them isn't there yet)
         await page.click("#fone-overlay button[data-cc='on']")
         subs = await wait_js(page, TM_SUBS, lambda s: (s or {}).get("want") is True, 5, "subtitles asked of page.js")
         stored = await sw.evaluate("chrome.storage.sync.get('f1Subs').then((s) => s.f1Subs)")
-        lit = (await page.evaluate(F1BOX))["rows"][1]
+        lit = (await page.evaluate(F1BOX))["rows"][2]
         await page.click("#fone-overlay button[data-cc='off']")
         await wait_js(page, TM_SUBS, lambda s: (s or {}).get("want") is False, 5, "subtitles off again")
         check(stored is True and lit == [["on", True], ["off", False]] and await sw.evaluate("chrome.storage.sync.get('f1Subs').then((s) => s.f1Subs)") is False,

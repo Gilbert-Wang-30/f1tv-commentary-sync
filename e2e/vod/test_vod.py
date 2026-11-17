@@ -204,6 +204,16 @@ async def main():
         E.check(st["vod"]["bvid"] == BVID and took < 40, f"this moment found in {st['vod']['bvid']} ({st['vod']['title']}) by sound in {took:.0f}s"
                 f" ({st['vod']['tries']} looks)")
         E.check((st.get("sound") or {}).get("carries") is True, "placed: F1 TV's own sound turned off (the replay carries it)")
+        # …unless you'd rather keep it on (the panel's Own sound: on), and back to off with auto off
+        ducked = "() => window.__foneTap?.ducked?.() ?? null"
+        d0 = await E.wait_js(page, ducked, lambda d: d is True, 15, "F1 TV's own sound off")
+        await page.click("#fone-overlay button[data-own='on']")
+        d1 = await E.wait_js(page, ducked, lambda d: d is False, 10, "kept on")
+        kept = await sw.evaluate("chrome.storage.sync.get('soundDuck').then((s) => s.soundDuck)")
+        await page.click("#fone-overlay button[data-own='auto']")
+        d2 = await E.wait_js(page, ducked, lambda d: d is True, 10, "off again")
+        E.check(d0 is True and d1 is False and kept is False and d2 is True,
+                "the panel's Own sound: 'on' keeps F1 TV's own sound on with the replay playing, 'auto off' turns it off again")
         await E.wait_js(page, "() => window.__sdkRate()", lambda r: r == 2, 15, "2× again")
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.5, 30, "in step at 2×")
         E.check(True, f"…then 2× again, the commentary in step ({placed(st) * 1000:+.0f} ms, drift {st['drift'] * 1000:+.0f} ms)")
