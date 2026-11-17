@@ -88,6 +88,18 @@ image to run with your own streamer, recorder and storage.
   packages through `tools/build_ext.sh`, the release's packager.
 
 ### Fixed
+- Replays are anchored exactly again without F1's live-timing archive (401 since 2026-10-18):
+  the session's start is dated by the server's own timing of it (its live capture, or OpenF1's
+  rebuild; a capture that connected late, or that MultiViewer's own start time contradicts, is
+  left out) or by MultiViewer's own start time, both within a fraction of a second, instead of
+  the pre-roll estimate, which was up to ~6 s off and ten minutes off the 2026 Japanese GP race
+  (it started late). A replay first looked up before the server had the session's timing is
+  anchored again once it has; an exact anchor known is never traded for a lesser one. The
+  panel's Details say *exact (timing)* for the server's timing.
+- A race whose session MultiViewer now gives another video for (the 2026 Italian GP's post-race
+  show, Singapore's F1 Kids video) is the session's feed again, by MultiViewer's list of the
+  session's channels: anchored, no longer on the manual clock that refused its Bilibili replay.
+  The videos MultiViewer names instead (the F1 Kids video, the post-race show) stay manual.
 - Backfill no longer downloads the replay of a stream the recorder gate keeps out (a game
   stream it stopped read as one long gap): it fills by itself only a live with a title, while
   live, that the gate's filter keeps (`GATE_RECORD` / `GATE_SKIP`, passed to the server as

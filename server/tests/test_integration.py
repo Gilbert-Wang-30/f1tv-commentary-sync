@@ -277,6 +277,7 @@ def test_every_service_is_mounted_and_each_can_be_switched_off(boot):
         assert client.get("/api/video/nope/info").status_code == 404
         assert client.get("/api/timing/session/0/state", params={"t": 1}).status_code == 422
         assert client.get("/api/timing/status").status_code == 200
+        assert app.mapper.timing_started == app.timing.started  # (replays' exact anchors from the timing)
         bf = client.get("/api/backfill/status").json()
         assert bf["enabled"] and bf["importDir"] == str(imp.parent)
         assert [r["room"] for r in bf["rooms"]] == [23954427] and bf["rooms"][0]["channel"] == CHANNEL

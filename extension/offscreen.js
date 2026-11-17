@@ -567,8 +567,8 @@ async function refreshTimeline(gen) {
   if (S.local) return; // the stream recorded here: refreshLocal's loop (its timer is S.timelineTimer too)
   clearTimeout(S.timelineTimer);
   try {
-    // Live sessions get upgraded to the exact anchor once MultiViewer publishes it.
-    if (S.content && S.content.anchor !== 'multiviewer' && now() - S.contentAt > 600) await loadContent(gen);
+    // Live sessions get upgraded to an exact anchor once MultiViewer publishes it.
+    if (S.content && !C.exactAnchor(S.content) && now() - S.contentAt > 600) await loadContent(gen);
     else if (S.content && !S.clockFinal) await decideClock(gen);
     if (S.local) return; // gone live from the stream itself (refreshLocal's loop now)
     if (S.directBack) directGivenUp(FoneRecorder.status()); // (rewound into this recording: the way back)

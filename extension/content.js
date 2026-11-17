@@ -451,6 +451,9 @@
     edge: ['live: edge to edge', ''],
     manual: ['manual — line it up', 'est'],
   };
+  // The exact clock's badge by where the server dated the session's start (content.anchor, f1.py):
+  // MultiViewer's above for F1's archive and MultiViewer's own start time; this for the server's timing.
+  const EXACT_FROM = { timing: 'exact (timing)' };
 
   function render() {
     if (host.hidden) return;
@@ -555,7 +558,8 @@
       sel.dataset.v = chans.join('|');
     }
     sel.value = s.channel || '';
-    const [clockText, est] = CLOCKS[s.clock] || ['–', 'est'];
+    const [clockText, est] = (s.clock === 'multiviewer' && EXACT_FROM[s.anchor] ? [EXACT_FROM[s.anchor], ''] : CLOCKS[s.clock])
+      || ['–', 'est'];
     $('kv').innerHTML = '';
     const rows = [
       ['F1 TV', s.title || cid],

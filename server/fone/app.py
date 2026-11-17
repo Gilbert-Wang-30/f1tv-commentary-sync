@@ -43,6 +43,7 @@ def _timing():
     from .timing import TimingService, make_router
 
     svc = TimingService(cfg, mapper)
+    mapper.timing_started = svc.started  # (a replay's exact anchor from the session's own timing)
     return svc, make_router(svc)
 
 

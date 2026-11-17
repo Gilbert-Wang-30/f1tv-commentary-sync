@@ -28,8 +28,14 @@
   const SERVER_LIVE_LAG = 11;
   const SERVER_LIVE_DELAY = DEFAULT_LIVE_LATENCY - SERVER_LIVE_LAG;
 
+  // A replay's exact anchors (the server's f1.py): MultiViewer's session start dated by F1's
+  // archive, by the server's own timing of the session, or by MultiViewer's own start time.
+  const EXACT_ANCHORS = new Set(['multiviewer', 'timing', 'pdt']);
+  const exactAnchor = (content) => EXACT_ANCHORS.has(content?.anchor);
+
   // How we turn p into E.
-  //   multiviewer  replay (or live) on the same timeline as the replay; exact anchor
+  //   multiviewer  replay (or live) on the same timeline as the replay; an exact anchor (any of
+  //                EXACT_ANCHORS: the clock keeps the name its delays are saved under)
   //   preroll      same timeline, anchor estimated from the scheduled start
   //   epoch        player exposes unix time directly
   //   edge         live, unknown timeline: measure back from the live edge
@@ -51,7 +57,7 @@
     if (v.p > 1e9) return 'epoch'; // a replay player handing us UTC directly
     if (!content || content.error) return 'manual';
     const anchored = content.p0 != null;
-    const kind = content.anchor === 'multiviewer' ? 'multiviewer' : 'preroll';
+    const kind = exactAnchor(content) ? 'multiviewer' : 'preroll';
     return anchored ? kind : 'manual';
   }
 
@@ -351,6 +357,6 @@
     return { st, rate: rs * (1 + st.k) };
   }
 
-  root.FoneCore = { chooseClock, videoNow, eventTime, mapWall, wallOf, chosenRate, nominalRate, isCoarse, isPrecise, newSteer, holdSteer, steer,
+  root.FoneCore = { chooseClock, exactAnchor, videoNow, eventTime, mapWall, wallOf, chosenRate, nominalRate, isCoarse, isPrecise, newSteer, holdSteer, steer,
     STEER, SPEEDS, TRIM_REACH, DEFAULT_LIVE_LATENCY, LIVE_EDGE_LAG, LIVE_EDGE_DELAY, LOCAL_EDGE_DELAY, SERVER_LIVE_LAG, SERVER_LIVE_DELAY };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

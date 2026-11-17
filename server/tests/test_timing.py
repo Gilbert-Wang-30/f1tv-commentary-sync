@@ -291,6 +291,34 @@ def test_relayed_positions_alone_never_stand_in_the_way_of_the_sessions_timing(t
     assert (other.store.meta(KEY)["source"], other.store.meta(KEY)["t0"]) == ("live", t0) and not other._openf1_due(KEY)
 
 
+def test_the_sessions_started_for_a_replays_anchor(archived_root, tmp_path):
+    """f1.py's exact anchor without F1's archive: the first SessionStatus Started stored, at
+    t0 + its offset. The archive's copy gives Q1's green light as its SessionData dates it."""
+    svc = make_service(clone(archived_root, tmp_path / "a"))
+    assert abs(svc.started(KEY) - utc("2026-10-03T08:00:00.172")) < 1e-6
+    assert svc.started(11731) is None  # (nothing stored)
+    # a live capture: the keyframe at connect (Inactive, at our receive time), then the feed's own
+    # messages at F1's times; a red flag's restart is not the start
+    live = make_service(tmp_path / "live")
+    t0, started = utc("2026-10-04T06:45:00.020"), utc("2026-10-04T07:03:17.462")
+    w = live._writer(11731)
+    w.write("SessionStatus", {"Status": "Inactive", "Started": "Started"}, t0)  # (as 2026 Mexico's race: Started 'Started')
+    assert live.started(11731) is None  # (not started yet)
+    w.write("SessionStatus", {"Status": "Started", "Started": "Started", "_kf": True}, started)
+    w.write("SessionStatus", {"Status": "Aborted", "Started": "Started", "_kf": True}, started + 3756)
+    w.write("SessionStatus", {"Status": "Started", "Started": "Started", "_kf": True}, started + 6095)
+    assert abs(live.started(11731) - started) < 1e-3  # (offsets are kept to the ms)
+    # a capture that connected after the start opens on Started, at when it connected: none
+    late = make_service(tmp_path / "late")
+    w = late._writer(11399)
+    w.write("SessionStatus", {"Status": "Started", "Started": "Started"}, utc("2026-10-31T17:45:00"))
+    w.write("SessionStatus", {"Status": "Finished", "Started": "Finished", "_kf": True}, utc("2026-10-31T18:30:13"))
+    assert late.started(11399) is None
+    # car positions relayed alone: no timing of its own
+    late.ingest_positions(KEY, [{"Timestamp": "2026-10-03T08:30:00.100Z", "Entries": {"1": {"X": 1, "Y": 2, "Z": 3}}}])
+    assert late.store.meta(KEY)["source"] == "relay" and late.started(KEY) is None
+
+
 def test_position_uploads_are_deduplicated_and_validated(tmp_path):
     svc = make_service(tmp_path)
 
