@@ -756,8 +756,8 @@ extension/             Chrome extension (Manifest V3)
   background.js          relay, self-update, the platforms' header rules; dashproxy.js reads the server for pages
   options.*              the settings page
   testdata/              synthetic streams for the demuxer tests
-recorder/              the 录播姬 config template (seed.sh fills in FONE_ROOMS) and the F1-only gate
-                       (test_gate.py); streamlink/: the any-site recorder
+recorder/              the 录播姬 config template (seed.sh fills in FONE_ROOMS: test_seed.py) and the
+                       F1-only gate (test_gate.py); streamlink/: the any-site recorder
 docker-compose.yml     the server and the recorders, settings from .env (.env.example)
 e2e/                   end-to-end suites (Playwright in Docker)
 tools/                 the release's packager and checks (build_ext.sh, check_version.py,

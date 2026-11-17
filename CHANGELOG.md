@@ -47,8 +47,9 @@ image to run with your own streamer, recorder and storage.
   instead of creating it empty.
 - No streamer by default: a Bilibili room is watched only when `FONE_ROOMS` names it, and it is
   the one setting for the server and the recorder (`recorder/seed.sh` writes the recorder's
-  config from it, a folder per room number, which is that room's channel). With no room named
-  the recorder doesn't start, and its log says what to set.
+  config from it, a folder per room number, which is that room's channel; `0123` is room 123).
+  With no room named, in `FONE_ROOMS` or in the recorder's config, the recorder doesn't start,
+  and its log says what to set.
 - The recorder gate's default filter is any streamer's F1 titles, and it only logs what it would
   stop until `GATE_ACTION=stop`; `GATE_RECORD` replaces the default filter.
 - The bundled sponsor clips are matched only on the channel they were made from; other channels
