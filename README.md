@@ -70,7 +70,9 @@ Docker containers and volume, the extension and the install paths all go by that
   When a look finds the sound somewhere else (the stream skipped or repeated a little), the next
   look comes 5 s later instead of 15, so the commentary is put back within ~20 s. **⟳ resync
   sound** (or `R`) looks again at once and puts the commentary where the first sure match says
-  (by hand too: found once, then left to your nudges).
+  (by hand too: found once, then left to your nudges); on an F1 Academy, F2 or F3 replay not
+  found yet (its start only a guess) it looks ±4 min and waits for two matches that agree, since
+  so wide a look is sure on a repeat now and then.
 - **Old replays play the streamer's Bilibili replay.** A session your server has nothing for
   (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
   直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
@@ -899,6 +901,10 @@ CHANGELOG.md           what changed in each version (a release's notes)
   needs F1 TV's sound to be in the stream at the moment you're at: until fone hears it there (the
   streamer talking over a muted F1 TV, or before their stream began), it says it's still looking
   and plays nothing. F1 TV's sound should be what the streamer had on (Track FX or English Int.).
+  On F1 TV's pre-roll estimate (until MultiViewer publishes, or while F1's archive refuses) the
+  clock's place is as far off as that estimate (10 min on the 2026 Japanese GP race) until sync
+  by sound finds the moment where it really is twice: it looks there once it hasn't found it near
+  the clock's place for about 2 minutes, so it needs F1 TV's sound in the stream then too.
 - Pre- and post-race shows and other non-session videos have no anchor: they play in *manual* mode
   and you line them up by ear.
 - Danmaku from before fone listened (the danmakus.com archive) have no levels, colours or
