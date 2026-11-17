@@ -27,8 +27,9 @@ long (past VOD.CHECK_WAIT 120 s) the moment sound locks, the look again open: it
 in a pause (FoneVod.checkClock), so it isn't given up and the clock doesn't move it. 1200 s: more
 than sound's look reaches. The mock F1 TV's anchor is the pre-roll's guess, so the clock's place
 may be off as far as that guess is: played where the clock says first, then (sync by sound not
-finding it near there) looked for over the hour as a place by sound is (FoneVod.recheckDue), sure
-there and refused by the clock (kept), found there again by the sound heard after it, and so placed
+finding it near there) looked for over the hour as a place by sound is (FoneVod.recheckDue), 20 min
+wider either side (FoneVod.lookWider: the guess may put the moment there), sure there and refused by
+the clock (kept), found there again by the sound heard after it, and so placed
 by sound, the clock put right by -1200 s (clockShift); locked by sync by sound there, never moved
 back. ANCHOR=multiviewer (run.sh's VOD_ANCHOR): an exact anchor, the clock rules as ever: played
 where it says, never placed by sound, never locked, never moved.
@@ -188,8 +189,10 @@ async def main():
                 t1 = time.time()
                 await diag_until(lambda: [d for d in vods("place") if d["place"] == "sound"], 360)
                 ps, veto, shift = [d for d in vods("place") if d["place"] == "sound"], vods("clockVeto"), vods("clockShift")
-                E.check(ps and any(d.get("kept") for d in veto) and shift and abs(shift[0]["clockShift"] + CLOCK_OFF) < 1,
-                        f"…F1 TV's anchor only the pre-roll's guess: looked for over the hour ({len(vods('recheck'))} rechecks), sure there "
+                wide = [d for d in vods("look") if "plan" in d and d.get("wider") == 1200]  # (VOD.WIDER)
+                E.check(ps and wide and any(d.get("kept") for d in veto) and shift and abs(shift[0]["clockShift"] + CLOCK_OFF) < 1,
+                        f"…F1 TV's anchor only the pre-roll's guess: looked for over the hour and 20 min either side ({len(vods('recheck'))} "
+                        f"rechecks, {len(wide)} looks that wide, {wide[0]['plan'] if wide else None} stretches), sure there "
                         f"and refused by the clock ({len(veto)} clockVeto, kept {[d.get('kept') for d in veto]}), found there again "
                         f"({shift[0]['by'] if shift else None}): placed by sound {time.time() - t1:.0f}s on (T0 {ps[0]['T0'] if ps else None}, "
                         f"the clock's {pl[0]['T0']}), the clock put right by {shift[0]['clockShift'] if shift else None} s")

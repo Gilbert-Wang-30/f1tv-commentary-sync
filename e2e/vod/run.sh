@@ -17,8 +17,8 @@
 #                                    its time doesn't run in a pause, so still not moved
 #   VOD_CLOCK_OFF=1200               ...20 min off, more than sound's look reaches, F1 TV's anchor the
 #                                    pre-roll's guess: played where the clock says, then looked for over
-#                                    the hour, found twice there by sound: placed by it, the clock put
-#                                    right, locked, never moved back
+#                                    the hour and 20 min either side, found twice there by sound: placed
+#                                    by it, the clock put right, locked, never moved back
 #   VOD_CLOCK_OFF=1200 VOD_ANCHOR=multiviewer   ...F1 TV's anchor exact: the clock rules, played where
 #                                    it says, never placed by sound, never moved
 #   VOD_EXT=<dir>                    another build of the extension
