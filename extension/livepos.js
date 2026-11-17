@@ -508,7 +508,7 @@
     try {
       const res = await fetch(`${r.server}/api/timing/session/${r.sessionKey}/positions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Fone': '1' }, // (the extension's: fone refuses web pages)
         body: JSON.stringify({ messages: batch.map((s) => ({ Timestamp: s.ts, Entries: s.e })) }),
         // Chrome sends cookies on extension requests to any host it may access, unless told
         // not to: fone needs none, so nothing but the positions goes there.

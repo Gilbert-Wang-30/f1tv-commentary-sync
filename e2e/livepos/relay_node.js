@@ -103,7 +103,7 @@ async function assertServed(key) {
   for (let a = t[0] - 1; a < t[t.length - 1]; a += 100) windows.push([a, a + 100]); // the server answers <= 120 s
   const step = Math.max(1, Math.floor(windows.length / 8));
   for (const [from, to] of windows.filter((_, i) => i % step === 0 || i === windows.length - 1)) {
-    const got = (await (await realFetch(`${FONE}/api/timing/session/${key}/positions?from=${from}&to=${to}`)).json()).cars;
+    const got = (await (await realFetch(`${FONE}/api/timing/session/${key}/positions?from=${from}&to=${to}`, { headers: { 'X-Fone': '1' } })).json()).cars;
     const want = {};
     const perCar = {};
     SAMPLES.forEach((s, i) => {

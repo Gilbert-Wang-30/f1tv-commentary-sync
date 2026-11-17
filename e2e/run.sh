@@ -135,7 +135,7 @@ for i in $(seq 1 120); do
   if docker exec $NAME-server python -c "
 import json,urllib.request,sys,time
 t=time.time()
-tl=json.load(urllib.request.urlopen('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%d&to=%d'%(t-30*86400,t+3600)))
+tl=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%d&to=%d'%(t-30*86400,t+3600),headers={'X-Fone':'1'})))
 fs=tl['files']
 done=[f for f in fs if f['status']=='done' and f['inPlaylist'] and not f['growing']]
 live=[f for f in fs if f['growing'] and f['inPlaylist'] and f['duration']>=6]
@@ -147,7 +147,7 @@ docker exec $NAME-server python -c "
 import json,urllib.request,time
 p0=$(python3 -c "import json; print(json.load(open('$WORK/media/meta.json'))['p0'])")
 for label,a,b in (('replay window',p0+40-7200,p0+33609),('wide window',time.time()-30*86400,time.time()+3600)):
-    tl=json.load(urllib.request.urlopen('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%f&to=%f'%(a,b)))
+    tl=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%f&to=%f'%(a,b),headers={'X-Fone':'1'})))
     print('  timeline', label, ': pieces', len(tl['pieces']), 'files', [(f['name'][:13], f['status'], f['inPlaylist'], round(f['duration'])) for f in tl['files']])
 " 2>&1 | head -4
 

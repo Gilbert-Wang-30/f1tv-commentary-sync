@@ -35,7 +35,9 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
+import shutil
 import statistics
 import subprocess
 import time
@@ -64,7 +66,13 @@ NEAR_E = 240.0  # a reading this near (event s) where the extension is serves it
 PAR = 3  # frames read at once
 TIMING_WAIT = 420.0  # longest wait for the session's timing (an OpenF1 rebuild: ~1 min)
 NONE_TTL = 6 * 3600.0  # 'none' is asked again after this
+RETRY = 60.0  # an error is asked again after this, doubling with each in a row (up to NONE_TTL)
 URL_TTL = 90 * 60.0  # Bilibili's signed URLs: ~2 h
+RANGE_WAIT = 120.0  # longest download of one fragment
+MAX_KEPT = 500  # (replay, session)s kept in memory (all on disk)
+# What a frame's reading is (find_header, read_with): kept readings of another are read again.
+# Their wall times are worked out afresh every time, from the session's timing as it is then.
+OCR = 1
 CLOCKISH = re.compile(r"[\d:.]{3,9}")
 
 
@@ -261,7 +269,7 @@ def find_header(words: list[dict], size: tuple[int, int]) -> Header | None:
             b += 1
         line = line[a:b + 1]
         x0 = line[0]["x"]
-        ty = int(statistics.median(w["y"] for w in line if w["h"] <= 1.5 * th))
+        ty = int(statistics.median([w["y"] for w in line if w["h"] <= 1.5 * th] or [w["y"] for w in line]))
         # (the clock sits under the event's name: left of 'GP:', a flag maybe further left)
         under = [w for w in words if th * 0.5 < w["y"] - ty < th * 4 and x0 - th * 3 < w["x"] < gp["x"]
                  and CLOCKISH.fullmatch(w["text"])]
@@ -296,6 +304,11 @@ class Reading:
     def to_dict(self) -> dict:
         return {"page": self.page, "at": round(self.at, 3), "session": self.session, "shown": self.shown,
                 "lap": list(self.lap) if self.lap else None, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Reading:
+        return cls(int(d["page"]), float(d["at"]), str(d.get("session") or ""), d.get("shown"),
+                   tuple(d["lap"]) if d.get("lap") else None, str(d.get("text") or ""))
 
 
 def _ocr(img: np.ndarray, box: Box, scale: int, whitelist: str | None) -> str:
@@ -464,6 +477,11 @@ def decode_frame(mp4: bytes, at: float, timeout: float = 60.0) -> np.ndarray | N
     return sm._read_pgm(io.BytesIO(r.stdout)) if r.returncode == 0 and r.stdout else None
 
 
+class Refused(RuntimeError):
+    """A mirror refused the replay's signed URL (403, 404, 410): expired, likely. Anything else
+    (a mirror down, slow, a connection cut) leaves the URLs as good as they were."""
+
+
 @dataclass
 class Video:
     urls: list[str]
@@ -488,11 +506,18 @@ class VodClockService:
         self.tasks: dict[tuple[str, int], asyncio.Task] = {}
         self._video_cache: dict[tuple[str, int], Video] = {}
         self._sem: asyncio.Semaphore | None = None
+        self.missing: list[str] = []
 
     async def start(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         if self.bili is None:
             self.bili = bb.BiliClient(min_interval=1.0)
+        # (without them every frame reads as nothing: 'no MultiViewer clock on the streamer's
+        # screen', for every replay, after downloading its frames)
+        self.missing = [tool for tool, used in (("ffmpeg", self.decode is decode_frame), ("tesseract", self.words is sm.frame_words))
+                        if used and shutil.which(tool) is None]
+        if self.missing:
+            log.warning("vodclock: no %s on this server: replays aren't placed by their clock", " or ".join(self.missing))
 
     async def stop(self) -> None:
         for t in self.tasks.values():
@@ -505,23 +530,64 @@ class VodClockService:
 
     def get(self, bvid: str, key: int, slot: float | None, E: float | None = None) -> dict:
         """What's known (status working | ok | none | error, readings); a job started when
-        there's more to read: the first frames, or ones near event time E."""
+        there's more to read: the first frames (again, for an error once its wait is over, a
+        'none' after NONE_TTL), or ones near event time E."""
+        if self.missing:
+            return {"status": "none", "why": f"no {' or '.join(self.missing)} on the fone server"}
         k = (bvid, key)
-        st = self.state.get(k)
+        st = self.state.pop(k, None)  # (and back in last: the longest unasked are forgotten first)
         if st is None:
-            try:
-                st = json.loads(self._file(bvid, key).read_text())
-            except (OSError, ValueError):
-                st = {"status": "working", "why": "starting", "seen": []}
-            if st.get("status") in ("working", "error") or (st.get("status") == "none" and time.time() - st.get("at", 0) > NONE_TTL):
-                st.update(status="working", why="starting")
-            self.state[k] = st
-        want_near = st.get("status") == "ok" and E is not None and self._wants(st, E)
-        if k not in self.tasks and (st.get("status") == "working" or want_near):
-            if want_near:
-                st["more"] = True
-            self.tasks[k] = asyncio.create_task(self._job(bvid, key, slot, E))
+            st = self._load(bvid, key)
+        self.state[k] = st
+        for old in [x for x in self.state if x != k and x not in self.tasks][:max(0, len(self.state) - MAX_KEPT)]:
+            del self.state[old]  # (on disk, as they were)
+        if k not in self.tasks:
+            status, now = st.get("status"), time.time()
+            # (timing gone, pruned say, is no other timing: what was worked out from it stands)
+            again = status == "working" or (status == "error" and now >= st.get("again", 0)) \
+                or (status == "none" and now - st.get("at", 0) > NONE_TTL) \
+                or (status in ("ok", "none") and (timing := self._timing_of(key)) is not None and st.get("timing") != timing)
+            want_near = status == "ok" and E is not None and now >= st.get("near_again", 0) and self._wants(st, E)
+            if again or want_near:
+                if again:
+                    st.update(status="working", why="starting")
+                else:
+                    st["more"] = True
+                self.tasks[k] = asyncio.create_task(self._job(bvid, key, slot, E))
         return {x: v for x, v in st.items() if x != "seen"}
+
+    def _load(self, bvid: str, key: int) -> dict:
+        try:
+            st = json.loads(self._file(bvid, key).read_text())
+        except (OSError, ValueError):
+            st = None
+        if not isinstance(st, dict) or st.get("v", 1) != OCR:  # (frames read another way: read again)
+            return {"status": "working", "why": "starting", "seen": [], "v": OCR}
+        if st.get("status") in ("working", "error"):  # (a job a restart cut short; one that failed: on)
+            st.update(status="working", why="starting")
+        return st
+
+    def _timing_of(self, key: int) -> list | None:
+        """Which timing the session has (source, t0): what was worked out from other timing (a
+        capture since replaced by the archive, say) is worked out again."""
+        meta = self._meta(key)
+        return [meta.get("source"), meta["t0"]] if meta else None
+
+    def _meta(self, key: int) -> dict | None:
+        """The session's timing meta, if it has timing: a relay's car positions (timing.RELAY)
+        aren't, the archive or an OpenF1 rebuild replaces them."""
+        meta = self.timing.store.meta(key) if self.timing else None
+        return meta if meta and meta.get("t0") is not None and meta.get("source") != "relay" else None
+
+    def _save(self, bvid: str, key: int, st: dict) -> None:
+        """What's known, frames read included, for the asks after a restart."""
+        f = self._file(bvid, key)
+        try:
+            tmp = f.with_name(f.name + ".tmp")
+            tmp.write_text(json.dumps({x: v for x, v in st.items() if x != "more"}))
+            os.replace(tmp, f)
+        except OSError as e:
+            log.warning("%s (session %s) not saved: %s", bvid, key, e)
 
     @staticmethod
     def _wants(st: dict, E: float) -> bool:
@@ -535,54 +601,105 @@ class VodClockService:
 
     async def _job(self, bvid: str, key: int, slot: float | None, E: float | None) -> None:
         k = (bvid, key)
+        st = self.state[k]
         try:
-            if self._sem is None:
-                self._sem = asyncio.Semaphore(2)
-            async with self._sem:
-                await self._read(k, bvid, key, slot, E)
-            st = self.state[k]
-            st["at"] = time.time()
-            if st.get("status") in ("ok", "none"):
-                self._file(bvid, key).write_text(json.dumps(st))
+            # (the wait for the session's timing, up to TIMING_WAIT, holds no slot: only reading
+            # frames does, and a replay whose timing is there isn't kept waiting behind it)
+            clock = await self._clock(k, key)
+            if clock is not None:
+                if self._sem is None:
+                    self._sem = asyncio.Semaphore(2)
+                async with self._sem:
+                    await self._read(k, bvid, slot, E, clock)
+            elif st.get("status") == "ok" and E is not None:
+                self._near_missed(st, E)  # (its timing gone since: nothing to read by)
+            if st["status"] in ("ok", "none"):
+                st.pop("fails", None)
+                st.pop("again", None)
             log.info("%s (session %s): %s, %d frames, %s", bvid, key, st["status"], len(st.get("seen", [])),
                      st.get("why") or [r["text"] for r in st.get("readings", [])])
-        except Exception as e:  # noqa: BLE001 - reported, asked again a minute later
+        except Exception as e:
             log.exception("%s (session %s) failed", bvid, key)
-            if self.state.get(k, {}).get("status") != "ok":
-                self._say(k, status="error", why=f"{type(e).__name__}: {e}"[:200])
-                asyncio.get_running_loop().call_later(60, lambda: self.state.pop(k, None))
+            if st.get("status") != "ok":
+                self._fail(k, f"{type(e).__name__}: {e}"[:200])
+            elif E is not None:  # (more near E: what's known stands)
+                self._near_missed(st, E)
         finally:
-            self.state.get(k, {}).pop("more", None)
+            st["at"] = time.time()
+            st.pop("more", None)
+            self._save(bvid, key, st)
             self.tasks.pop(k, None)
 
     def _say(self, k: tuple[str, int], **fields) -> None:
         self.state.setdefault(k, {}).update(fields)
 
+    @staticmethod
+    def _near_missed(st: dict, E: float) -> None:
+        """No reading near E to be had (no video, a pagelist refused): that moment isn't looked
+        for again, nor another before RETRY, doubling with each miss in a row (up to NONE_TTL).
+        The extension asks every 20 s while it has none near: each ask was a pagelist, a
+        playurl and every mirror tried again."""
+        if E not in st.setdefault("tried", []):
+            st["tried"].append(E)
+        n = st.get("near_fails", 0) + 1
+        st.update(near_fails=n, near_again=time.time() + min(RETRY * 2 ** (n - 1), NONE_TTL))
+
+    def _fail(self, k: tuple[str, int], why: str) -> None:
+        """An error: asked again after RETRY, doubling with each in a row (Bilibili's risk control
+        counts every ask), up to NONE_TTL."""
+        st = self.state[k]
+        n = st.get("fails", 0) + 1
+        st.update(status="error", why=why, fails=n, again=time.time() + min(RETRY * 2 ** (n - 1), NONE_TTL))
+
     async def _clock(self, k: tuple[str, int], key: int) -> Clock | None:
+        """The session's clock, or None and why: 'none' when there's no timing for the session
+        at all (nor any clock in it), an error, asked again later, while it may still come
+        (an OpenF1 rebuild queued or refused for now, the archive yet to publish)."""
         until = time.monotonic() + TIMING_WAIT
+        ok = self.state[k].get("status") == "ok"  # (more near E: what's known stands, whatever happens)
         while True:
-            meta = self.timing.store.meta(key) if self.timing else None
-            if meta and meta.get("t0") is not None:
-                return await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
+            if meta := self._meta(key):
+                clock = await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
+                self._say(k, timing=[meta.get("source"), meta["t0"]])
+                if clock is None and not ok:
+                    self._say(k, status="none", why="no clock in the session's timing")
+                return clock
+            if ok:
+                return None
             why = await asyncio.to_thread(self.timing._missing_reason, key) if self.timing else "no timing service"
-            if time.monotonic() > until or why in ("no timing data for this session", "session has not started"):
-                self._say(k, why=f"the session's timing: {why}")
+            if why in ("no timing data for this session", "no timing service"):
+                self._say(k, status="none", why=f"the session's timing: {why}", timing=None)
+                return None
+            if time.monotonic() > until or why == "session has not started":
+                self._fail(k, f"the session's timing: {why}")
                 return None
             self._say(k, why=f"waiting for the session's timing ({why})")
             await asyncio.sleep(5)
 
     async def _range(self, urls: list[str], a: int, b: int) -> bytes:
+        """Bytes a..b of the video, from the first mirror that sends just those. Streamed: one
+        that ignores Range would send the whole page's video (GBs) before it could be refused."""
         err: Exception | None = None
+        refused = False
+        n = b - a + 1
         for u in urls:
             try:
-                r = await self.bili.http.get(u, headers={"User-Agent": bb.UA, "Referer": "https://www.bilibili.com/",
-                                                         "Range": f"bytes={a}-{b}"}, timeout=30)
-                if r.status_code == 206 and len(r.content) == b - a + 1:
-                    return r.content
-                err = RuntimeError(f"HTTP {r.status_code}")
-            except Exception as e:  # noqa: BLE001 - the next mirror
-                err = e
-        raise RuntimeError(f"the replay's video: {err}")
+                async with asyncio.timeout(RANGE_WAIT):
+                    async with self.bili.http.stream("GET", u, timeout=30, headers={
+                            "User-Agent": bb.UA, "Referer": "https://www.bilibili.com/", "Range": f"bytes={a}-{b}"}) as r:
+                        if r.status_code != 206:
+                            raise (Refused if r.status_code in (403, 404, 410) else RuntimeError)(f"HTTP {r.status_code}")
+                        got = bytearray()
+                        async for chunk in r.aiter_bytes():
+                            got += chunk
+                            if len(got) > n:
+                                break
+                if len(got) == n:
+                    return bytes(got)
+                err = RuntimeError(f"{len(got)} bytes for {n}")
+            except Exception as e:  # the next mirror
+                err, refused = e, refused or isinstance(e, Refused)
+        raise (Refused if refused else RuntimeError)(f"the replay's video: {err}")
 
     async def _video(self, bvid: str, page: dict) -> Video:
         pk = (bvid, int(page["cid"]))
@@ -600,32 +717,44 @@ class VodClockService:
         self._video_cache[pk] = v
         return v
 
-    async def _frame(self, bvid: str, page: dict, at: float) -> np.ndarray | None:
+    async def _fragment(self, bvid: str, page: dict, at: float) -> tuple[bytes, float]:
+        """The fragment holding `at` (with its init segment) and where `at` is in it."""
         v = await self._video(bvid, page)
         seg = next((s for s in v.segs if s[0] <= at < s[0] + s[1]), v.segs[-1])
-        data = await self._range(v.urls, seg[2], seg[2] + seg[3] - 1)
-        return await asyncio.to_thread(self.decode, v.init + data, at - seg[0])
+        try:
+            data = await self._range(v.urls, seg[2], seg[2] + seg[3] - 1)
+        except Refused:
+            self._video_cache.pop((bvid, int(page["cid"])), None)  # (its signed URLs, expired: new ones next time)
+            raise
+        return v.init + data, at - seg[0]
 
-    async def _read(self, k: tuple[str, int], bvid: str, key: int, slot: float | None, E: float | None) -> None:
+    async def _read(self, k: tuple[str, int], bvid: str, slot: float | None, E: float | None, clock: Clock) -> None:
         st = self.state[k]
         seen: list[dict] = st.setdefault("seen", [])
-        clock = await self._clock(k, key)
-        if clock is None:
-            self._say(k, status="none")
-            return
         pages = await self.bili.pagelist(bvid)
         by_page = {int(p["page"]): p for p in pages}
         st["running"] = clock.running()
-        found = [(Reading(**{x: (tuple(v) if x == "lap" and v else v) for x, v in r.items() if x != "cands"}), r["cands"])
-                 for r in seen]
+        # (what each frame showed is kept, when that was is worked out each time: from this clock)
+        found = [(rd, candidates(clock, rd)) for rd in map(Reading.from_dict, seen)]
+        failed: list[Exception] = []
 
-        async def read(page: int, at: float) -> None:
-            img = await self._frame(bvid, by_page[page], at)
-            got = await asyncio.to_thread(read_frame, img, self.words) if img is not None else None
+        async def read(page: int, at: float) -> bool:
+            try:
+                mp4, off = await self._fragment(bvid, by_page[page], at)
+            except Exception as e:  # (the download: a later job tries again, it's no unreadable frame)
+                log.warning("%s p%d %.0f s: %s", bvid, page, at, e)
+                failed.append(e)
+                return False
+            try:
+                img = await asyncio.to_thread(self.decode, mp4, off)
+                got = await asyncio.to_thread(read_frame, img, self.words) if img is not None else None
+            except Exception:  # (this frame alone: unreadable, the others go on)
+                log.exception("%s p%d %.0f s: the frame", bvid, page, at)
+                got = None
             rd = Reading(page, at, *(got[:3] if got else ("", None, None)), got[3] if got else "")
-            ts = candidates(clock, rd)
-            found.append((rd, ts))
-            seen.append({**rd.to_dict(), "cands": ts})
+            found.append((rd, candidates(clock, rd)))
+            seen.append(rd.to_dict())
+            return True
 
         def done() -> list[tuple[Reading, float]]:
             ok = confirmed(found, pages, slot)
@@ -637,9 +766,12 @@ class VodClockService:
             todo = [pa for pa in plan(clock, pages, slot) if not any(s["page"] == pa[0] and abs(s["at"] - pa[1]) < 30 for s in seen)]
             while todo and len(seen) < MAX_FRAMES and not done():
                 batch, todo = todo[:PAR], todo[PAR:]
-                await asyncio.gather(*(read(p, a) for p, a in batch))
+                if not any(await asyncio.gather(*(read(p, a) for p, a in batch))):
+                    break  # (no video at all: asked again later)
                 self._say(k, why=f"{len(seen)} frames of the streamer's screen read")
             if not done():
+                if failed:  # (frames it couldn't download: no answer yet)
+                    raise RuntimeError(f"{len(failed)} frames not downloaded: {failed[-1]}")
                 why = "no MultiViewer clock on the streamer's screen" if not any(c for _r, c in found) \
                     else "the clock on the streamer's screen doesn't agree with the session's"
                 self._say(k, status="none", why=why)
@@ -647,11 +779,15 @@ class VodClockService:
             self._say(k, status="ok", why=None)
         # then a reading near E, where the extension is: where the nearest says E is, and a bit on
         if E is not None and self._wants(st, E):
-            st.setdefault("tried", []).append(E)
+            st.setdefault("tried", []).append(E)  # (read or not: looked for once, not at every ask)
             near = min(done(), key=lambda x: abs(x[1] - E))
             c = content_of(pages, near[0].page, near[0].at) + (E - near[1])
             spots = [pa for cc in (c, c + 4, c + 8) if (pa := page_at(pages, cc))]
-            await asyncio.gather(*(read(p, a) for p, a in spots))
+            if any(await asyncio.gather(*(read(p, a) for p, a in spots))):
+                st.pop("near_fails", None)
+                st.pop("near_again", None)
+            elif spots:  # (none downloaded)
+                self._near_missed(st, E)
             done()
 
 

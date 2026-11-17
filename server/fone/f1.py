@@ -19,6 +19,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 
@@ -100,7 +101,9 @@ class F1Mapper:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def _json(self, url: str) -> dict | None:
+    async def _json(self, url: str, kind: type = dict) -> Any:
+        """The answer, if it's JSON of that kind (a 200 can be a maintenance page or a bot
+        check), else None."""
         try:
             r = await self.http.get(url)
         except httpx.HTTPError as e:
@@ -108,7 +111,12 @@ class F1Mapper:
             return None
         if r.status_code != 200:
             return None
-        return json.loads(r.content.decode("utf-8-sig"))
+        try:
+            v = json.loads(r.content.decode("utf-8-sig"))
+        except ValueError as e:  # (UnicodeDecodeError is one)
+            log.warning("GET %s: not JSON (%s)", url, e)
+            return None
+        return v if isinstance(v, kind) else None
 
     async def content(self, cid: str, refresh: bool = False) -> dict:
         cached = self.store.get_content(cid)
@@ -119,7 +127,12 @@ class F1Mapper:
             # cached before the stream list existed is fetched once more for it.
             if "streams" in data and (data.get("anchor") == "multiviewer" or time.time() - fetched_at < 600):
                 return data
-        data = await self._resolve(cid)
+        try:
+            data = await self._resolve(cid)
+        except Exception as e:  # an answer of some other shape: a failed lookup, like F1 TV being down
+            log.exception("content %s", cid)
+            data = {"contentId": cid, "anchor": None, "p0": None, "streams": [],
+                    "error": f"unexpected answer ({type(e).__name__})"}
         # A lookup that failed (F1 TV down for a moment) never replaces what was known: the
         # cached answer is served again, and the next lookup tries once more.
         if cached and data.get("error") and not cached[0].get("error"):
@@ -139,8 +152,10 @@ class F1Mapper:
         now = time.time()
         lo = datetime.fromtimestamp(now - 4 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         hi = datetime.fromtimestamp(now + 4 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        sessions = await self._json(f"{OPENF1_SESSIONS}?date_start>={lo}&date_start<={hi}")
+        sessions = await self._json(f"{OPENF1_SESSIONS}?date_start>={lo}&date_start<={hi}", list)
         for s in sessions or []:
+            if not isinstance(s, dict) or "meeting_key" not in s or "session_key" not in s:
+                continue
             mv = await self._json(MV_SESSION.format(mk=s["meeting_key"], sk=s["session_key"]))
             if mv and str(mv.get("f1tv_content_id")) == str(cid):
                 return s, mv

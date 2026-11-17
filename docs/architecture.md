@@ -94,18 +94,25 @@ backfill/                    downloads in progress
 
 ### Routes
 
-All reads are open to anyone who can reach the port. **Writes (anything but GET/HEAD/OPTIONS)
-are refused with 403 when the request carries an `Origin` that isn't `chrome-extension://` or
-`moz-extension://`** (`RefuseWebPageWrites`): the extension's own pages and scripts without an
-Origin (curl) can write, a web page you visit cannot. CORS is `*` with private-network access
-allowed, so a page on https://f1tv.formula1.com can read from a server on the LAN.
+**Everything but a few reads is the extension's and scripts' alone** (`RefuseWebPages`): writes,
+and the GETs that start work or hand out what viewers did (`/api/f1tv`, `/api/sync`,
+`/api/timeline`, `/api/timing/session/*`, `/api/timing/content/*`, `/api/vod`, `/api/video`,
+`/api/diag`, anything not listed as open). Those need an `Origin` of `chrome-extension://` or
+`moz-extension://`, or no `Origin` and the header `X-Fone: 1` (the extension sends it on all its
+requests; curl and scripts add it: `curl -H 'X-Fone: 1' …`, as `tools/diag.py` does), else 403.
+A web page can send neither: its fetch() carries its own Origin, its `<img>`, `<script>`, links
+and forms can't carry a header, and a fetch() adding one needs a CORS preflight, which is refused.
+CORS allows the extension's origins only (with private-network access), so no page reads the
+server's answers either. Open to anyone: `/`, `/api/health`, `/api/channels`, the playlist and
+audio segments, `/api/danmaku` and the services' status and per-file results (`/api/timing/status`,
+`/api/danmaku/status`, `/api/backfill/status`, `/api/ads/{fid}`, `/api/screenclock/{fid}`).
 
 **Core**
 
 | | |
 |---|---|
 | `GET /` | status page (HTML): every recording, its extraction status and analysis notes |
-| `GET /api/health` | `{ok, recDir, files, now, services: [...]}` |
+| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `notes`: what the setup leaves out (no `FONE_ROOMS`, no ffmpeg/tesseract for the replays' clock), for the options page's Test connection |
 | `GET /api/channels` | `[{name, files, latest, live}]`, newest first; `live` = a file is still growing |
 | `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}`. Cached in SQLite; an anchored replay never changes, everything else is re-checked after 10 min, and a re-check that can't make the exact anchor again (the archive refusing) keeps the cached one |
 | `GET /api/sync/{cid}?channel=&clock=` | the delay to start from: `{delay, source: "content"\|"measured"\|"channel"\|"default"}`; `measured` adds `{screen, reaction, confidence, file}` |

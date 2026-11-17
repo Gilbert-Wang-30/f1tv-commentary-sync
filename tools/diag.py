@@ -116,7 +116,9 @@ def main():
         q["client"] = a.client
     if a.type:
         q["type"] = a.type
-    d = json.load(urllib.request.urlopen(f"{a.server}/api/diag?{urllib.parse.urlencode(q)}", timeout=20))
+    # (X-Fone: a script's, not a web page's; the server hands every viewer's playback to no page)
+    req = urllib.request.Request(f"{a.server}/api/diag?{urllib.parse.urlencode(q)}", headers={"X-Fone": "1"})
+    d = json.load(urllib.request.urlopen(req, timeout=20))
     for c, info in sorted(d["clients"].items(), key=lambda x: -(x[1].get("last") or 0)):
         print(f"client {c}: {info.get('platform')} build {info.get('build')} last {fmt_t(info['last']) if info.get('last') else '?'}")
     evs = d["events"]

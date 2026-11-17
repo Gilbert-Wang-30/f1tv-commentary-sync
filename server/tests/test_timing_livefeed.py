@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from fone import livefeed
 from fone.timing import CaptureWriter, LiveCapture, ScheduledSession, SessionStore
 from fone.timing_state import SessionTimeline, inflate, iso_ms, read_stream
-from test_timing import KEY, Q_PATH, T0, TFIX, app_for, archived_root, clone, make_service, utc  # noqa: F401
+from test_timing import KEY, Q_PATH, T0, TFIX, app_for, clone, make_service, utc
 
 # 32 s of the real feed at 2026-10-04 00:17Z: keyframes of the finished KL qualifying + pings.
 SNAPSHOT = gzip.decompress((TFIX / "sse_snapshot_11730.txt.gz").read_bytes())

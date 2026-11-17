@@ -147,3 +147,28 @@ def test_a_failed_lookup_never_replaces_the_cached_answer(tmp_path):
     again = asyncio.run(m.content("1000011024"))
     assert not again.get("error") and again["anchor"] == "multiviewer" and again["p0"] == first["p0"]
     assert m.store.get_content("1000011024")[0]["anchor"] == "multiviewer"
+
+
+def test_answers_that_arent_json_or_of_another_shape_are_a_failed_lookup(tmp_path):
+    # a 200 that's a maintenance page or a bot check, JSON of another shape: an error lookup (the
+    # cached answer kept), never an exception out of the route
+    pages = {
+        "html": lambda r: httpx.Response(200, content=b"<html>Service unavailable</html>"),
+        "binary": lambda r: httpx.Response(200, content=b"\xff\xfe\x00garbage"),
+        "a list": lambda r: httpx.Response(200, json=[1, 2]) if "f1tv" in str(r.url) else httpx.Response(200, json={}),
+        "odd sessions": lambda r: httpx.Response(200, json=[{"session_key": 1}, "x", 3])
+        if "openf1" in str(r.url) else httpx.Response(200, json={"resultObj": {"containers": []}}),
+        "odd multiviewer": lambda r: httpx.Response(200, json={"f1tv_content_id": 1000011024, "sync_offsets": [1]})
+        if "multiviewer" in str(r.url) else mock_transport().handle_request(r),
+    }
+    m = mapper(tmp_path)
+    first = asyncio.run(m.content("1000011024"))
+    for what, page in pages.items():
+        m.store.put_content("1000011024", {k: v for k, v in first.items() if k != "streams"})
+        m.http = httpx.AsyncClient(transport=httpx.MockTransport(page))
+        assert asyncio.run(m.content("1000011024"))["p0"] == first["p0"], what
+        (tmp_path / what).mkdir()
+        new = mapper(tmp_path / what)  # (nothing cached)
+        new.http = httpx.AsyncClient(transport=httpx.MockTransport(page))
+        out = asyncio.run(new.content("1000011024"))
+        assert out["contentId"] == "1000011024" and (out.get("error") or out["anchor"] == "preroll"), (what, out)

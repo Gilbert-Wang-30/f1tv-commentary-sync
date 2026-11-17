@@ -11,7 +11,7 @@ from fone.backfill_dedup import JoinFinder, Timeline, load_part
 from fone.backfill_start import JOIN_GAP_S, from_t0
 from fone.backfill_writer import audio_packets, build_import, import_name, probe, publish, safe_title
 from fone.extractor import Extractor
-from test_backfill_synth import ff, synth  # noqa: F401  (fixture)
+from test_backfill_synth import ff
 
 SH = ZoneInfo("Asia/Shanghai")
 T0 = 1791010992.735  # recorder-frame wall time of the synthetic replay's first sample

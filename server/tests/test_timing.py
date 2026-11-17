@@ -240,6 +240,7 @@ def test_loaded_sessions_are_an_lru(archived_root, tmp_path):
 def test_archive_replaces_a_live_capture(tmp_path):
     svc = make_service(tmp_path)
     t = utc("2026-10-03T08:30:00")
+    svc._writer(KEY).write("TrackStatus", {"Status": "1", "Message": "AllClear"}, t)  # (the capture's first)
     msg = {"Timestamp": "2026-10-03T08:30:00.100Z", "Entries": {"1": {"X": 1, "Y": 2, "Z": 3, "Status": "OnTrack"}}}
     assert svc.ingest_positions(KEY, [msg])["stored"] == 1
     assert svc.store.meta(KEY)["source"] == "live"
@@ -259,6 +260,35 @@ def test_archive_replaces_a_live_capture(tmp_path):
     assert svc.positions(KEY, t - 1, t + 1)["cars"] == {}  # the archive's (trimmed) positions start later
     assert svc.state(KEY, t)["part"] == 2
     assert svc.ingest_positions(KEY, [msg]) == {"ok": True, "stored": 0, "reason": "archived"}
+
+
+def test_relayed_positions_alone_never_stand_in_the_way_of_the_sessions_timing(tmp_path):
+    """No capture (FONE_TIMING_RECORD=0, or it failed) and the viewer's positions relayed: they
+    made a 'live' session of car positions alone, and with something stored, no OpenF1 rebuild
+    ever came (no tower, no clock: the vodclock's 'none' for good)."""
+    svc = make_service(tmp_path)
+    t = utc("2026-10-03T08:30:00")
+    msg = {"Timestamp": "2026-10-03T08:30:00.100Z", "Entries": {"1": {"X": 1, "Y": 2, "Z": 3, "Status": "OnTrack"}}}
+    assert svc.ingest_positions(KEY, [msg])["stored"] == 1
+    meta = svc.store.meta(KEY)
+    assert meta["source"] == "relay" and not svc._stored(KEY) and svc._openf1_due(KEY)
+    assert svc.positions(KEY, t - 1, t + 1)["cars"] == {"1": [[t + 0.1, 1, 2]]}  # (the map has them meanwhile)
+    # after a restart too
+    again = make_service(tmp_path)
+    assert again._openf1_due(KEY) and again._writer(KEY).t0 == meta["t0"]
+    # the rebuild goes in its place, and nothing more is appended to it
+    staged = svc.store.staging(KEY)
+    (staged / "SessionInfo.jsonStream").write_text("")
+    assert svc._install_openf1(KEY, staged, {"t0": T0, "name": "Qualifying"}) == "ok"
+    assert svc.store.meta(KEY)["source"] == "openf1" and svc._stored(KEY) and not svc._openf1_due(KEY)
+    assert svc.ingest_positions(KEY, [msg]) == {"ok": True, "stored": 0, "reason": "archived"}
+    assert not (svc.store.dir(KEY) / "Position.z.jsonStream").exists()
+    # a capture's first message makes a relay its own: live, on the relay's t0
+    other = make_service(tmp_path / "2")
+    other.ingest_positions(KEY, [msg])
+    t0 = other.store.meta(KEY)["t0"]
+    other._writer(KEY).write("TrackStatus", {"Status": "1", "Message": "AllClear"}, t + 5)
+    assert (other.store.meta(KEY)["source"], other.store.meta(KEY)["t0"]) == ("live", t0) and not other._openf1_due(KEY)
 
 
 def test_position_uploads_are_deduplicated_and_validated(tmp_path):
@@ -323,8 +353,13 @@ def test_nothing_is_pruned_while_the_archive_refuses(archived_root, tmp_path):
 
     root = clone(archived_root, tmp_path)
     old = make_service(root, handler=refusing).store.meta(KEY)["fetched"] + 31 * 86400
-    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) is None
+    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) == []
     assert make_service(root).store.dir(KEY).exists()
+    # an OpenF1 rebuild is made again when asked for: pruned all the same (~12 MB each)
+    rebuilt = make_service(root)
+    rebuilt.store.write_meta(11731, {"key": 11731, "source": "openf1", "t0": T0, "fetched": old - 31 * 86400})
+    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) == [11731]
+    assert not rebuilt.store.dir(11731).exists() and rebuilt.store.dir(KEY).exists()
     assert asyncio.run(make_service(root, handler=refusing).fetch_archive(KEY)) == "refused"
     # the archive answering again: pruned as before
     assert asyncio.run(make_service(root).maybe_prune(old)) == [KEY]
@@ -385,7 +420,11 @@ def test_routes(client):
     body = {"messages": [{"Timestamp": "2026-10-04T07:00:00.000Z",
                           "Entries": {"1": {"X": 1, "Y": 2, "Z": 0, "Status": "OnTrack"}}}]}
     assert c.post("/api/timing/session/11731/positions", json=body).json() == {"ok": True, "stored": 1}
-    assert c.get("/api/timing/status").json()["sessions"]["11731"]["source"] == "live"
+    assert c.get("/api/timing/status").json()["sessions"]["11731"]["source"] == "relay"  # (no capture of ours)
+    # the session over: asking for its state fetches the timing to go in place of the positions alone
+    svc._set_schedule(schedule_rows())
+    assert c.get("/api/timing/session/11731/state", params={"t": t}).status_code == 200
+    assert wait_attempt(svc, 11731) == "not published"
 
 
 def test_track_gets_the_circuits_corner_numbers(archived_root, tmp_path):

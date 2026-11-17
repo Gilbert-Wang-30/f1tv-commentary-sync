@@ -57,7 +57,8 @@ async function getJSON(url, signal) {
     return r.json;
   }
   const timeout = AbortSignal.timeout(8000);
-  const opts = { cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
+  // (X-Fone: the extension's, not a web page's: the server answers these to it alone)
+  const opts = { cache: 'no-store', headers: { 'X-Fone': '1' }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
   // An iframe without the proxy can still reach a server Chrome knows is on the home network
   // (localhost is no mixed content to begin with).
   if (MODE === 'iframe' && !/^(localhost|127\.|\[::1\])/.test(new URL(url).host)) opts.targetAddressSpace = 'local';

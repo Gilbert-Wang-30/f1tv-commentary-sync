@@ -29,6 +29,9 @@ SEEK_PAST_KEYFRAME = 1.0  # fragmented-MP4 seeks land one GOP early when aimed j
 # A re-encode takes every core for many minutes: below the live commentary path, and
 # below everything else on this box.
 NICE = ("nice", "-n", "15") if shutil.which("nice") else ()
+# Past this an ffmpeg/ffprobe is stuck (a re-encode of a whole page on a slow box takes about the
+# page's length), and the job fails rather than holding up every other backfill behind it.
+RUN_TIMEOUT = 4 * 3600.0
 _UNSAFE = re.compile(r'[\x00-\x1f/\\:*?"<>|]+')
 
 
@@ -56,10 +59,13 @@ def import_name(start: float, title: str, tz: ZoneInfo) -> str:
     return f"{dt:%Y%m%d-%H%M%S}-{ms % 1000:03d}-{safe_title(title)}.flv"
 
 
-def run(*cmd: str) -> str:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+def run(*cmd: str, timeout: float = RUN_TIMEOUT) -> str:
+    name = cmd[len(NICE)] if NICE and cmd[:len(NICE)] == NICE else cmd[0]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{name} took over {timeout:g} s") from None
     if r.returncode != 0:
-        name = cmd[len(NICE)] if NICE and cmd[:len(NICE)] == NICE else cmd[0]
         raise RuntimeError(f"{name} failed: {r.stderr.strip()[-400:]}")
     return r.stdout
 

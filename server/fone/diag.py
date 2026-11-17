@@ -4,8 +4,10 @@ read afterwards instead of reproduced.
 
 POST /api/diag   {"client", "build", "platform", "events": [{"t", "type", ...}, ...]}
                  (from the extension's audio engine every few seconds; refused from web
-                 pages like every other write, see app.RefuseWebPageWrites)
+                 pages like every other write, see app.RefuseWebPages)
 GET  /api/diag?client=&type=&since=&limit=   newest last; plus every client's last report
+                 (every viewer's playback: the extension's and scripts' alone, X-Fone: 1;
+                 tools/diag.py reads it)
 
 Playback state only: positions, speeds, sync drift, seeks, buffering, player errors. Kept
 in memory (the last 20000 events) and in <data_dir>/diag/<day>.jsonl for 7 days.
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -32,6 +35,18 @@ log = logging.getLogger("fone.diag")
 KEEP_DAYS = 7
 MAX_EVENTS = 200  # per request
 MAX_EVENT_BYTES = 4000
+MAX_TYPE = 40  # characters of an event's type ('snap', 'seek', 'vod', ...)
+MAX_DAY_BYTES = 64 << 20  # a day's file; a busy day's playback writes a few MB
+
+
+def _clean(ev: dict) -> dict:
+    """An event as kept: what the queries go by, a numeric t and a short type, made so."""
+    t, typ = ev.get("t"), ev.get("type")
+    if "t" in ev and not (isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t)):
+        ev = {**ev, "t": None}
+    if "type" in ev and not (isinstance(typ, str) and len(typ) <= MAX_TYPE):
+        ev = {**ev, "type": str(typ)[:MAX_TYPE] if typ is not None else None}
+    return ev
 
 
 class DiagBody(BaseModel):
@@ -48,6 +63,7 @@ class DiagStore:
         self.clients: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._pruned_day = ""
+        self._full_day = ""
         if root:
             root.mkdir(parents=True, exist_ok=True)
             self._load()
@@ -57,7 +73,7 @@ class DiagStore:
         for f in sorted(self.root.glob("*.jsonl"))[-KEEP_DAYS:]:
             try:
                 for line in f.read_text().splitlines():
-                    ev = json.loads(line)
+                    ev = _clean(json.loads(line))
                     self.events.append(ev)
                     c = self.clients.setdefault(ev.get("client", "?"), {})
                     c.update(last=ev.get("rx"), build=ev.get("build"), platform=ev.get("platform"))
@@ -68,10 +84,13 @@ class DiagStore:
         rx = time.time()
         kept = []
         for ev in body.events:
-            line = json.dumps(ev, separators=(",", ":"), default=str)
-            if len(line) > MAX_EVENT_BYTES:
-                ev = {"t": ev.get("t"), "type": ev.get("type"), "truncated": len(line)}
-            kept.append({**ev, "client": body.client, "build": body.build, "platform": body.platform, "rx": rx})
+            try:  # (Python's json reads Infinity and NaN, which no answer can carry)
+                line = json.dumps(ev, separators=(",", ":"), default=str, allow_nan=False)
+            except ValueError:
+                line = None
+            if line is None or len(line) > MAX_EVENT_BYTES:
+                ev = {"t": ev.get("t"), "type": ev.get("type"), "truncated": len(line) if line else "not JSON"}
+            kept.append({**_clean(ev), "client": body.client, "build": body.build, "platform": body.platform, "rx": rx})
         with self._lock:
             self.events.extend(kept)
             self.clients[body.client] = {"last": rx, "build": body.build, "platform": body.platform}
@@ -82,8 +101,15 @@ class DiagStore:
         if not self.root or not kept:
             return
         day = datetime.fromtimestamp(rx, timezone.utc).strftime("%Y-%m-%d")
+        path = self.root / f"{day}.jsonl"
         try:
-            with (self.root / f"{day}.jsonl").open("a") as f:
+            if path.exists() and path.stat().st_size > MAX_DAY_BYTES:
+                if self._full_day != day:
+                    self._full_day = day
+                    log.warning("diagnostics: %s is over %d MB, the rest of the day only kept in memory",
+                                path.name, MAX_DAY_BYTES >> 20)
+                return
+            with path.open("a") as f:
                 f.writelines(json.dumps(ev, separators=(",", ":"), default=str) + "\n" for ev in kept)
             if day != self._pruned_day:
                 self._pruned_day = day
