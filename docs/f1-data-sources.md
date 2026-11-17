@@ -98,9 +98,9 @@ https://api.multiviewer.app/api/v1/meetings/{meetingKey}/sessions/{sessionKey}
 |---|---|
 | `session_start` | replay position (s) of `SessionStatus: Started` in the main feed; absent until MultiViewer has synced the session, usually some hours after it |
 | `session_start_pdt` | a UTC (`2026-10-03T08:00:07.520Z`) that has run 7.30–8.02 s after the official `Started` on every session checked (races and sprints ~7.87 s, the others ~7.47 s): fone's `pdt` anchor, and the check on its `timing` one. Absent on some sessions (2026 Italian GP race) |
-| `f1tv_content_id` | the main (session) feed's content id; by November 2026 another video of the session for some (the 2026 Italian GP race's post-race show, 1000011143; Singapore's race, 1000079710), where it had named the race's own |
+| `f1tv_content_id` | the main (session) feed's content id; by November 2026 another video of the session for some, which F1 TV files under the race's own session key (the 2026 Italian GP race's post-race show, 1000011143; Singapore race's F1 Kids video, 1000079710; `sync_offsets.session_type` says `post_race_show`, `f1_kids`), where it had named the race's own |
 | `session_info.Path`, `.Name` | the live-timing archive path and the session name |
-| `sync_offsets.sync_offsets[]` | per stream `{streamData: {channelId, contentId, sessionKey}, diff}`: how far each channel runs from the main feed (seconds); onboards run ~7 s behind. fone treats a content as the session feed when `f1tv_content_id` is it, or when these list it on the main channel (1025, INTERNATIONAL) for the session (some list another session's video too: Singapore's FP1, 11378, lists 1000010188 for session 11236) |
+| `sync_offsets.sync_offsets[]` | per stream `{streamData: {channelId, contentId, sessionKey}, diff}`: how far each channel runs from the main feed (seconds); onboards run ~7 s behind. fone treats a content as the session feed when these list it on the main channel (1025, INTERNATIONAL) for the session, or, only where they list none of the session's own (some list only another session's video: Singapore's FP1, 11378, lists 1000010188 for session 11236; or none), when `f1tv_content_id` is it |
 
 ```
 https://api.multiviewer.app/api/v1/circuits/{circuitKey}/{year}

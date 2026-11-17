@@ -97,9 +97,9 @@ image to run with your own streamer, recorder and storage.
   anchored again once it has; an exact anchor known is never traded for a lesser one. The
   panel's Details say *exact (timing)* for the server's timing.
 - A race whose session MultiViewer now gives another video for (the 2026 Italian GP's post-race
-  show, Singapore's) is the session's feed again, by MultiViewer's list of the session's channels:
-  anchored, no longer on the manual clock that refused its Bilibili replay. The F1 Kids feed
-  stays manual.
+  show, Singapore's F1 Kids video) is the session's feed again, by MultiViewer's list of the
+  session's channels: anchored, no longer on the manual clock that refused its Bilibili replay.
+  The videos MultiViewer names instead (the F1 Kids video, the post-race show) stay manual.
 - Backfill no longer downloads the replay of a stream the recorder gate keeps out (a game
   stream it stopped read as one long gap): it fills by itself only a live with a title, while
   live, that the gate's filter keeps (`GATE_RECORD` / `GATE_SKIP`, passed to the server as

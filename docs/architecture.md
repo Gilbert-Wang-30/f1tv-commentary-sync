@@ -36,7 +36,7 @@ The clock (`FoneCore.chooseClock`) is one of:
 | `preroll` | `p0 + p`, `p0 = scheduledStart + PREROLL[kind]` (the replay's fixed pre-roll per session type): the median, but up to ~6 s off on a session, and ten minutes off one that started late (the 2026 Japanese GP race) | a session feed before MultiViewer publishes `session_start` (live, and the first hours after), or one with no `session_start_pdt` the server has no timing of |
 | `epoch` | `p` itself: the player hands out unix time | a replay player that exposes UTC directly |
 | `edge` | measured back from the live edge | the video is live: after one alignment the commentary follows F1 TV's playhead (`m0 + (p − p0)`) and only moves on a seek or a nudge |
-| `manual` | your own alignment | not a session feed (pre-/post-shows, the F1 Kids feed), or F1 TV doesn't know the content. A session feed is the video MultiViewer names for the session (`f1tv_content_id`), or one its `sync_offsets` list for the session on the main channel (1025): it now names the post-race show for some (2026 Italian GP race, Singapore) |
+| `manual` | your own alignment | not a session feed (pre-/post-shows, the F1 Kids video), or F1 TV doesn't know the content. A session feed is a video MultiViewer's `sync_offsets` list for the session on the main channel (1025); only where they list none of the session's own is it the one MultiViewer names for the session (`f1tv_content_id`), which for some is now another video of the session, filed under its session key: the post-race show for the 2026 Italian GP race, the F1 Kids video for Singapore's. Those stay manual |
 
 Two rules follow from this:
 
