@@ -32,26 +32,71 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.deepEqual(V.candidates(list, E0, E1).map((r) => r.bvid), ['race', 'restart']);
   });
 
-  await test('the replay list kept: read again when its session\'s replay may be up since', () => {
-    const h = 3600, d = 86400, E0 = 1.75e9, since = E0 - d, t = E0 + 3 * h;
+  await test('the replay list kept: read again soon only while the session is so recent its replays may not be up', () => {
+    const h = 3600, d = 86400, E0 = 1.75e9, E1 = E0 + 2 * h, since = E0 - d, until = E1 + 12 * h;
     const list = (at, ...slots) => ({ at, items: slots.map((s, i) => ({ bvid: `BV${i}`, slot: s })), done: false });
-    // read an hour after the session ended, its replay not yet published: the day before only
-    const early = list(E0 + 2 * h, E0 - 2 * d, E0 - d + h);
-    assert.equal(V.listDoes(early, since, early.at + 300), true);
-    assert.equal(V.listDoes(early, since, early.at + 601), false); // (was trusted for 6 h: 'none' all along)
-    // with the session's replay in it (the streamer live from an hour before): 6 h
-    const got = list(E0 + 2 * h, E0 - 2 * d, E0 - h);
-    assert.equal(V.listDoes(got, since, got.at + 5 * h), false); // (went live before the session's day: not by the slot)
-    const post = list(E0 + 6 * h, E0 - 2 * d, E0 - h, E0 + 3 * h); // (and their post-race show's, after it)
-    assert.equal(V.listDoes(post, since, post.at + 5 * h), true);
-    assert.equal(V.listDoes(list(t, E0 - 2 * d, E0 + d), since, t + 5 * h), true);
-    assert.equal(V.listDoes(list(t, E0 - 2 * d, E0 + d), since, t + 7 * h), false);
+    // read an hour after the session ended, its replay maybe not published yet: 10 min
+    const early = list(E1 + h, E0 - 2 * d, E0 - d + h);
+    assert.equal(V.listDoes(early, since, early.at + 300, until), true);
+    assert.equal(V.listDoes(early, since, early.at + 601, until), false); // (was trusted for 6 h: 'none' all along)
+    // the same with the session's replay in it (the streamer live from an hour before): 10 min still
+    // (a restart's second may come later)
+    assert.equal(V.listDoes(list(E1 + h, E0 - 2 * d, E0 - h), since, E1 + h + 601, until), false);
+    // read the next day (the session's replays all up): 6 h, whenever the streamer went live for it
+    const next = list(E0 + d, E0 - 2 * d, E0 - h);
+    assert.equal(V.listDoes(next, since, next.at + 5 * h, until), true);
+    assert.equal(V.listDoes(next, since, next.at + 7 * h, until), false);
+    assert.equal(V.listDoes(next, since, next.at + 5 * h), true); // (no `until`: as read after it)
     // not reaching back to `since`: read again, whatever its age (unless it holds them all)
-    assert.equal(V.listDoes(list(t, E0 - h, E0 + d), since, t + 1), false);
-    assert.equal(V.listDoes({ ...list(t, E0 - h, E0 + d), done: true }, since, t + 1), true);
+    assert.equal(V.listDoes(list(next.at, E0 - h, E0 + d), since, next.at + 1, until), false);
+    assert.equal(V.listDoes({ ...list(next.at, E0 - h, E0 + d), done: true }, since, next.at + 1, until), true);
     // an old session (over a week before it was read): its replays all up long since
-    assert.equal(V.listDoes(list(E0 + 30 * d, E0 - 2 * d), since, E0 + 60 * d), true);
-    assert.equal(V.listDoes(null, since, t), false);
+    assert.equal(V.listDoes(list(E0 + 30 * d, E0 - 2 * d), since, E0 + 60 * d, until), true);
+    assert.equal(V.listDoes(null, since, E1, until), false);
+  });
+
+  await test("the replay list: Bilibili refusing a read again, the one kept (when it reaches back); 'none' looked for again", async () => {
+    const mem = new Map(), was = { fetch: globalThis.fetch, localStorage: globalThis.localStorage };
+    globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+    const d = 86400, t = Date.now() / 1000, since = t - 3 * d, who = { uid: 7, sid: 9 };
+    const keep = (items, at) => mem.set('vodList|7', JSON.stringify({ at, sid: 9, items, done: false }));
+    let status = 412, asked = 0;
+    // (the session's own, from yesterday: its title the Beijing hour it went live in)
+    const bj = new Date((t - d + 8 * 3600) * 1000), title = `【直播回放】F1 ${bj.getUTCFullYear()}年${bj.getUTCMonth() + 1}月${bj.getUTCDate()}日${bj.getUTCHours()}点场`;
+    globalThis.fetch = async () => {
+      asked++;
+      return { status, ok: status === 200, json: async () => ({ code: 0, data: { archives: [{ bvid: 'BVnew', title, duration: 9000, pubdate: t }], page: { total: 1 } } }) };
+    };
+    try {
+      const race = { bvid: 'BVrace', slot: t - 2 * d, dur: 9000 }, old = { bvid: 'BVold', slot: t - 4 * d, dur: 9000 };
+      keep([race, old], t - 660); // (11 min old, read before the session's replays were all up)
+      const warned = [];
+      let got = await V.replays(who, since, { until: t + d, warn: (e) => warned.push(String(e.message)) });
+      assert.deepEqual(got.items.map((r) => r.bvid), ['BVrace', 'BVold']);
+      assert.ok(got.at === t - 660 && asked === 1 && /412/.test(warned[0]));
+      // kept, not reaching back: the error
+      keep([race], t - 660);
+      await assert.rejects(V.replays(who, since, { until: t + d }), /412/);
+      // read again, and kept with the new one
+      status = 200;
+      keep([race, old], t - 660);
+      got = await V.replays(who, since, { until: t + d });
+      assert.deepEqual(got.items.map((r) => r.bvid), ['BVnew', 'BVrace', 'BVold']);
+      assert.ok(got.at > t - 1 && JSON.parse(mem.get('vodList|7')).items.length === 3);
+      // read after the session's replays were all up: 6 h, nothing asked
+      asked = 0;
+      keep([race, old], t - 3600);
+      got = await V.replays(who, since, { until: t - 2 * d });
+      assert.ok(asked === 0 && got.at === t - 3600);
+    } finally {
+      Object.assign(globalThis, was);
+    }
+    // 'none': again every 5 min while the list it came from was read before the replays were all up; never after
+    const until = 1e6;
+    assert.equal(V.noneAgain({ at: 1000, listAt: 990 }, 1299, until, 300), false);
+    assert.equal(V.noneAgain({ at: 1000, listAt: 990 }, 1300, until, 300), true);
+    assert.equal(V.noneAgain({ at: 1000, listAt: until + 1 }, 9e6, until, 300), false);
+    assert.equal(V.noneAgain({ at: 1000 }, 9e6, until, 300), false); // (no list read: an error's, not this)
   });
 
   // a sidx box (version 0) with segments of `durs` (timescale 48000) and `sizes` bytes

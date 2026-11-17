@@ -428,43 +428,54 @@
     return o;
   }
 
-  // Whether the list kept ({at, items, done}) does for replays back to `since` at t: it reaches
-  // back that far, and `since` is over a week before it was read (its replays long up), or it's
-  // under 6 h old; under 10 min when it has none from `since` + 1 day on (`since` is a day before
-  // the session: its own replay, published some time after the live, may be up since).
-  function listDoes(kept, since, t) {
-    if (!kept) return false;
-    const items = kept.items || [];
-    const oldest = items.reduce((a, r) => Math.min(a, r.slot ?? Infinity), Infinity);
-    const newest = items.reduce((a, r) => Math.max(a, r.slot ?? -Infinity), -Infinity);
-    if (!(kept.done || oldest <= since)) return false;
-    return since < kept.at - 7 * 86400 || t - kept.at < (newest >= since + 86400 ? 6 * 3600 : 600);
+  // Whether the list kept ({at, items, done}) reaches back to replays from `since`.
+  const listReaches = (kept, since) => !!kept && (!!kept.done || (kept.items || []).some((r) => r.slot != null && r.slot <= since));
+  // Whether the list kept does for replays back to `since` at t: it reaches back that far, and
+  // `since` is over a week before it was read (its replays long up), or it's under 6 h old; under
+  // 10 min when it was read before `until` (the session so recent then that its replays may not
+  // all have been published: one may be up since). Read after that, the session's are all in it,
+  // whenever the streamer went live for it.
+  function listDoes(kept, since, t, until = -Infinity) {
+    if (!listReaches(kept, since)) return false;
+    return since < kept.at - 7 * 86400 || t - kept.at < (kept.at < until ? 600 : 6 * 3600);
   }
-  // Their replays back to `since` (unix s), newest first: [{bvid, title, live, slot, dur}]. Kept;
-  // read again (from the newest, merged with what's kept) when what's kept won't do (listDoes).
-  async function replays({ uid, sid }, since) {
+  // Their replays back to `since` (unix s), newest first: {items: [{bvid, title, live, slot, dur}],
+  // at (when the list was read)}. Kept; read again (from the newest, merged with what's kept) when
+  // what's kept won't do (listDoes, `until`). Bilibili failing that (a 412, offline): what's kept,
+  // when it reaches back that far (warn(e) told), else the error.
+  async function replays({ uid, sid }, since, { until = -Infinity, warn = null } = {}) {
     const k = `vodList|${uid}`, t = Date.now() / 1000;
     const kept = store.get(k)?.sid === sid ? store.get(k) : null;
     const items = kept?.items || [];
-    if (listDoes(kept, since, t)) return items;
+    if (listDoes(kept, since, t, until)) return { items, at: kept.at };
     const seen = new Set(items.map((r) => r.bvid));
     let done = false;
-    for (let pn = 1; pn <= 30; pn++) {
-      const d = await json(`https://api.bilibili.com/x/series/archives?mid=${uid}&series_id=${sid}&only_normal=true&sort=desc&pn=${pn}&ps=100`);
-      const arcs = d?.archives || [];
-      for (const a of arcs) {
-        if (seen.has(a.bvid)) continue;
-        seen.add(a.bvid);
-        const p = parseTitle(a.title);
-        items.push({ bvid: a.bvid, title: a.title, live: p?.live ?? a.title, slot: p?.slot ?? null, dur: a.duration });
+    try {
+      for (let pn = 1; pn <= 30; pn++) {
+        const d = await json(`https://api.bilibili.com/x/series/archives?mid=${uid}&series_id=${sid}&only_normal=true&sort=desc&pn=${pn}&ps=100`);
+        const arcs = d?.archives || [];
+        for (const a of arcs) {
+          if (seen.has(a.bvid)) continue;
+          seen.add(a.bvid);
+          const p = parseTitle(a.title);
+          items.push({ bvid: a.bvid, title: a.title, live: p?.live ?? a.title, slot: p?.slot ?? null, dur: a.duration });
+        }
+        done = !arcs.length || pn * 100 >= (d?.page?.total ?? 0);
+        if (done || arcs.some((a) => (a.pubdate ?? Infinity) < since)) break;
       }
-      done = !arcs.length || pn * 100 >= (d?.page?.total ?? 0);
-      if (done || arcs.some((a) => (a.pubdate ?? Infinity) < since)) break;
+    } catch (e) {
+      if (!listReaches(kept, since)) throw e;
+      if (warn) warn(e);
+      return { items: items.sort((x, y) => (y.slot ?? 0) - (x.slot ?? 0)), at: kept.at };
     }
     items.sort((x, y) => (y.slot ?? 0) - (x.slot ?? 0));
     store.set(k, { at: t, sid, items, done: done || !!kept?.done });
-    return items;
+    return { items, at: t };
   }
+  // 'none' (no replay of the session in the list read at `listAt`, found so at `at`): looked for
+  // again `every` s on while that list was read before `until` (one may have been published
+  // since); never after: the list read then has them all.
+  const noneAgain = ({ at, listAt }, t, until, every) => listAt != null && listAt < until && t - at >= every;
 
   // A replay's pages and their sound: rep.pages [{page, cid, dur, init: [a, b], index: [a, b],
   // initInfo (FoneDemux.mp4Init's), urls, deadline, segs}] (dur from its sidx: the playlist's own
@@ -645,5 +656,5 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, keptOn, placeOf, holder, outside };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, noneAgain, keptOn, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

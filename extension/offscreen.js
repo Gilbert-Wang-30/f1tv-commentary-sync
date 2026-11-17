@@ -571,12 +571,14 @@ async function refreshTimeline(gen) {
     if (gen !== S.gen || S.local) return;
     tl.receivedAt = now();
     // nothing of the server's covers this replay: the streamer's Bilibili replay of it (looked
-    // for again a minute after a failure, VOD.NONE_AGAIN s after none was found: one published
-    // since); the server's timeline stays out of it until it does
+    // for again a minute after a failure; none found while the session's may not all be up yet,
+    // quietly every VOD.NONE_AGAIN s: one published since); the server's timeline stays out of it
+    // until it does
     if (S.vod && !vodWanted(tl)) vodStop();
     else if (S.vod || vodWanted(tl)) {
       const V = S.vod, t = now();
-      if (!V || (V.state === 'error' && t - (V.failedAt ?? 0) > 60) || (V.state === 'none' && t - V.at > VOD.NONE_AGAIN)) vodBegin(gen);
+      if (!V || (V.state === 'error' && t - (V.failedAt ?? 0) > 60)) vodBegin(gen);
+      else if (V.state === 'none' && !V.retrying && FoneVod.noneAgain(V, t, vodUntil(), VOD.NONE_AGAIN)) vodBegin(gen, V);
       if (!S.timeline || !S.timeline.vod) { S.timeline = tl; S.playlist = null; }
       S.error = null;
       throw VOD_ON;
@@ -1451,8 +1453,11 @@ function sndSteer(t, v) {
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
   WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
   CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, RELOAD: 60, RELOAD_MAX: 1800,
-  SCAN_WAIT: 30, SCAN_WAIT_MAX: 300, NONE_AGAIN: 300 };
+  SCAN_WAIT: 30, SCAN_WAIT_MAX: 300, NONE_AGAIN: 300, PUBLISH: 12 * 3600 };
 // (RELOAD: a replay that wouldn't load tried again this many s on, twice as long each time to RELOAD_MAX)
+// (PUBLISH: a session's replays all on Bilibili this long after it ends: the streamer's show runs
+// on after it, and Bilibili publishes a 直播回放 a while after the live. A list read before then is
+// read again after 10 min, 'none' looked for again every NONE_AGAIN s; one read after, as ever)
 // (the clock on the streamer's screen, read by a fone server: vodClock*. CLOCK_POLL s between asks
 // while it reads, CLOCK_AGAIN for a reading near a new moment; sound waits CLOCK_WAIT s for it
 // (unless sure at once). SCREEN: their screen's clock runs this far ahead of the sound they pass
@@ -1479,18 +1484,29 @@ function vodListenText(sn) {
   if (sn.state === 'deaf') return `F1 TV's sound isn't reaching fone (reload the page?): it finds this moment in ${vodWho()}'s replay by it`;
   return `Listening to F1 TV to find this moment in ${vodWho()}'s Bilibili replay…`;
 }
-async function vodBegin(gen) {
-  const V = S.vod = { state: 'finding', text: `Looking for ${vodWho()}'s Bilibili replay of this session…`, reps: [], cur: null,
+// When the session's replays are all up on Bilibili (VOD.PUBLISH after it ends).
+const vodUntil = () => (S.content?.p0 ?? 0) + (S.content?.duration || 4 * 3600) + VOD.PUBLISH;
+// `again`: a 'none' looked for again: it stays as it is (the panel's, the diag's) till one's found.
+async function vodBegin(gen, again = null) {
+  const V = { state: 'finding', text: `Looking for ${vodWho()}'s Bilibili replay of this session…`, reps: [], cur: null,
     tries: 0, checks: 0, cands: [], chunks: new Map(), busy: false, lastTryAt: null, at: now(), unloaded: [] };
+  if (again) again.retrying = true;
+  else S.vod = V;
+  const gone = () => gen !== S.gen || S.vod !== (again || V);
   try {
     const room = /(\d+)\/?$/.exec(S.room)?.[1];
     if (!room) throw new Error('no Bilibili room');
     const who = await FoneVod.owner(room);
     const c = S.content, E0 = c.p0, E1 = c.p0 + (c.duration || 4 * 3600);
-    const list = await FoneVod.replays(who, E0 - 86400);
-    if (gen !== S.gen || S.vod !== V) return;
+    // (Bilibili refusing a list read again: the one kept, when it reaches back far enough)
+    const warn = (e) => { if (!again) diag('vod', { listErr: String(e?.message || e).slice(0, 120) }); };
+    const { items: list, at: listAt } = await FoneVod.replays(who, E0 - 86400, { until: vodUntil(), warn });
+    if (gone()) return;
     const cands = FoneVod.candidates(list, E0, E1);
-    diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length });
+    if (again && !cands.length) return Object.assign(again, { at: now(), listAt });
+    if (again) S.vod = V; // (found one since: on from here)
+    V.listAt = listAt;
+    diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length, again: !!again || undefined });
     if (!cands.length) return vodSay(V, 'none', `No recording covers this session, nor any Bilibili replay of ${vodWho()}'s`);
     const reps = await vodLoad(V, cands);
     if (gen !== S.gen || S.vod !== V) return;
@@ -1504,10 +1520,13 @@ async function vodBegin(gen) {
     if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, kept.how || 'kept', kept.hand);
     vodSay(V, 'listening', vodListenText(S.snd));
   } catch (e) {
+    if (again && S.vod === again) { again.at = now(); return; } // (quietly: again in a while)
     if (S.vod !== V) return;
     vodSay(V, 'error', `${vodWho()}'s Bilibili replay: ${e.message || e}`);
     V.failedAt = now();
     diag('vod', { err: String(e?.message || e).slice(0, 160) });
+  } finally {
+    if (again) again.retrying = false;
   }
 }
 // The replays that may hold it, each loaded on its own: one that won't (taken down, still being
