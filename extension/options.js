@@ -5,7 +5,7 @@
   const PORT = 8788; // the fone server's (docker-compose.yml)
 
   // One server as typed -> {url} or {error} (null: a blank line). http:// is added where no scheme
-  // was typed, and :8788 where no port either ("192.168.1.5", "myserver:8788"); a trailing slash
+  // was typed, and :8788 where no port either ("my-server", "192.0.2.10", "my-server:8788"); a trailing slash
   // goes. Only http(s): any other would be fetched relative to this page, or not at all.
   function server(typed) {
     const raw = String(typed ?? '').trim();
@@ -168,29 +168,39 @@ for (const r of document.querySelectorAll('input[name=source]')) r.addEventListe
 $('servers').addEventListener('input', () => { if ($('servers').value.trim() && !$('stream').value.trim()) pick('server'); });
 $('stream').addEventListener('input', () => { if ($('stream').value.trim() && !$('servers').value.trim()) pick('local'); });
 
+let said = 0;
+function say(text, ms) { // (an earlier save's timer doesn't wipe a later message)
+  const k = ++said;
+  $('saved').textContent = text;
+  if (ms) setTimeout(() => { if (k === said) $('saved').textContent = ''; }, ms);
+}
+
 $('save').addEventListener('click', async () => {
   const { servers: list, changed, errors } = readServers();
+  const stream = $('stream').value.trim();
+  const rest = { // everything but where the commentary comes from
+    stream, bufferMin: bufferMin(), channel: $('channel').value,
+    autoHold: $('autoHold').checked, liveDirect: $('liveDirect').checked, soundSync: $('soundSync').checked, soundDuck: $('soundDuck').checked,
+    f1Sound: $('f1SoundEng').checked ? 'eng' : 'fx', f1Subs: $('f1Subs').checked, f1Pick: $('f1Pick').checked, f1Feed: $('f1Intl').checked ? 'intl' : 'off',
+  };
+  $('bufferMin').value = rest.bufferMin;
   if (errors.length) {
-    $('saved').textContent = `Not saved: ${errors.join('; ')}`;
+    // A line the server box can't use costs only the server list: it and the source stay as they
+    // were saved (the box keeps what was typed, to be fixed), the rest is saved.
+    await chrome.storage.sync.set(rest);
+    say(`Saved, except Server URLs, kept as they were: ${errors.join('; ')}. Fix ${errors.length > 1 ? 'those lines' : 'that line'} and Save again.`);
     return;
   }
-  const stream = $('stream').value.trim();
   const src = FoneOptions.source(source(), stream, list);
   const notes = changed.map(([a, b]) => `${a} → ${b}`);
   if (src !== source()) {
     notes.push(src === 'server' ? 'Using the server: no live URL for "This computer".' : 'Using this computer: no server listed.');
     pick(src);
   }
-  await chrome.storage.sync.set({
-    source: src, stream, bufferMin: bufferMin(),
-    servers: list, channel: $('channel').value, autoHold: $('autoHold').checked, liveDirect: $('liveDirect').checked, soundSync: $('soundSync').checked, soundDuck: $('soundDuck').checked,
-    f1Sound: $('f1SoundEng').checked ? 'eng' : 'fx', f1Subs: $('f1Subs').checked, f1Pick: $('f1Pick').checked, f1Feed: $('f1Intl').checked ? 'intl' : 'off',
-  });
+  await chrome.storage.sync.set({ ...rest, source: src, servers: list });
   $('servers').value = list.join('\n');
-  $('bufferMin').value = bufferMin();
   $('welcome').hidden = !!(list.length || stream);
-  $('saved').textContent = ['Saved.', ...notes].join(' ');
-  setTimeout(() => { $('saved').textContent = ''; }, notes.length ? 8000 : 2500);
+  say(['Saved.', ...notes].join(' '), notes.length ? 8000 : 2500);
 });
 $('test').addEventListener('click', test);
 $('testStream').addEventListener('click', testStream);

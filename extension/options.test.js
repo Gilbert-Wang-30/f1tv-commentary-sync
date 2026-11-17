@@ -23,8 +23,8 @@ function pure() {
 
 test('a server as typed: scheme and port filled in only where none was typed', () => {
   const O = pure();
-  assert.deepEqual(O.server('192.168.1.5'), { url: 'http://192.168.1.5:8788' });
-  assert.deepEqual(O.server(' myserver:8788 '), { url: 'http://myserver:8788' });
+  assert.deepEqual(O.server('192.0.2.10'), { url: 'http://192.0.2.10:8788' });
+  assert.deepEqual(O.server(' my-server:8788 '), { url: 'http://my-server:8788' });
   assert.deepEqual(O.server('localhost:9000/'), { url: 'http://localhost:9000' });
   assert.deepEqual(O.server('[fd00::5]'), { url: 'http://[fd00::5]:8788' });
   assert.deepEqual(O.server('http://fone.lan:8788/'), { url: 'http://fone.lan:8788' });
@@ -44,9 +44,9 @@ test('a server that can\'t be fetched is refused, saying why', () => {
 
 test('the server box: normalised, duplicates once, what changed said', () => {
   const O = pure();
-  const r = O.servers('192.168.1.5\n\nhttp://192.168.1.5:8788/\nhttps://fone.example.com\nftp://x\n');
-  assert.deepEqual([...r.servers], ['http://192.168.1.5:8788', 'https://fone.example.com']);
-  assert.deepEqual(r.changed.map((x) => [...x]), [['192.168.1.5', 'http://192.168.1.5:8788']]);
+  const r = O.servers('192.0.2.10\n\nhttp://192.0.2.10:8788/\nhttps://fone.example.com\nftp://x\n');
+  assert.deepEqual([...r.servers], ['http://192.0.2.10:8788', 'https://fone.example.com']);
+  assert.deepEqual(r.changed.map((x) => [...x]), [['192.0.2.10', 'http://192.0.2.10:8788']]);
   assert.equal(r.errors.length, 1);
 });
 
@@ -122,13 +122,13 @@ test('first run: the welcome shows, "This computer" checked', async () => {
 
 test('first run, only a server typed in: saved as the source, not "This computer" (the panel said "No stream set")', async () => {
   const p = await page();
-  await p.type('servers', '192.168.1.5');
+  await p.type('servers', '192.0.2.10');
   assert.equal(p.els.srcServer.checked, true); // picked as it was typed
   await p.els.save.fire('click');
   assert.equal(p.sync.source, 'server');
-  assert.deepEqual([...p.sync.servers], ['http://192.168.1.5:8788']);
-  assert.equal(p.els.servers.value, 'http://192.168.1.5:8788');
-  assert.match(p.els.saved.textContent, /192\.168\.1\.5 → http:\/\/192\.168\.1\.5:8788/);
+  assert.deepEqual([...p.sync.servers], ['http://192.0.2.10:8788']);
+  assert.equal(p.els.servers.value, 'http://192.0.2.10:8788');
+  assert.match(p.els.saved.textContent, /192\.0\.2\.10 → http:\/\/192\.0\.2\.10:8788/);
   assert.equal(p.els.welcome.hidden, true);
 });
 
@@ -150,12 +150,26 @@ test('a stream with a server for the stats keeps "This computer"', async () => {
   assert.equal(p.sync.stream, 'https://www.twitch.tv/name');
 });
 
-test('a server that can\'t be fetched isn\'t saved', async () => {
-  const p = await page();
-  await p.type('servers', 'ftp://nas');
+test('a server that can\'t be fetched isn\'t saved, and costs nothing else (F1 TV\'s sound is)', async () => {
+  const p = await page({ servers: ['http://fone.lan:8788'], source: 'server' });
+  await p.type('servers', 'http://fone.lan:8788\nftp://nas');
+  p.els.f1SoundFx.checked = false; p.els.f1SoundEng.checked = true;
+  p.els.f1Subs.checked = true;
+  p.els.srcLocal.checked = true; p.els.srcServer.checked = false; // (a source switched too: kept as saved)
   await p.els.save.fire('click');
-  assert.equal(p.sync.servers, undefined);
-  assert.match(p.els.saved.textContent, /Not saved: ftp:\/\/nas: only http/);
+  assert.deepEqual([...p.sync.servers], ['http://fone.lan:8788']); // as it was
+  assert.equal(p.sync.source, 'server');
+  assert.equal(p.sync.f1Sound, 'eng');
+  assert.equal(p.sync.f1Subs, true);
+  assert.equal(p.els.servers.value, 'http://fone.lan:8788\nftp://nas'); // left to be fixed
+  assert.match(p.els.saved.textContent, /^Saved, except Server URLs, kept as they were: ftp:\/\/nas: only http.*Fix that line/);
+
+  const q = await page(); // a first run: nothing to keep
+  await q.type('servers', 'ftp://nas');
+  await q.els.save.fire('click');
+  assert.equal(q.sync.servers, undefined);
+  assert.equal(q.sync.source, undefined);
+  assert.equal(q.sync.f1Sound, 'fx');
 });
 
 test('Test connection: the server\'s version, its channels, and whether it has the channel\'s Bilibili room', async () => {
