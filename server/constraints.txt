@@ -1,0 +1,26 @@
+# The exact versions the server image is built with (server/Dockerfile:
+# pip install -c constraints.txt -r requirements.txt). requirements.txt says what fone needs;
+# this pins everything that resolves to, so a rebuild gets the same packages. Taken from
+# `pip freeze` in a fresh build; docs/releasing.md says how to refresh it. Each has a
+# musllinux wheel for x86_64 and aarch64 or is pure Python: nothing compiles, arm64 included.
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+brotli==1.2.1
+certifi==2026.10.23
+click==8.5.1
+fastapi==0.163.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+numpy==2.5.5
+opentelemetry-api==1.45.2
+pydantic==2.14.3
+pydantic_core==2.50.4
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+tzdata==2026.6
+uvicorn==0.54.0
+websockets==17.4

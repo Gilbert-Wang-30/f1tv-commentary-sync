@@ -1,5 +1,6 @@
 """gate.py: the title filter, log-only by default, the room's folders.
 python3 -m unittest discover -s recorder (stdlib only, no recorder needed)."""
+import ast
 import importlib
 import os
 import sys
@@ -44,6 +45,16 @@ class Titles(unittest.TestCase):
 
     def test_empty_record_is_the_default(self):
         self.assertEqual(load(GATE_RECORD="").RECORD.pattern, load().F1_TITLES)
+
+    def test_backfill_fills_the_lives_this_records(self):
+        """The server's backfill fills a live only if this filter would record it (GATE_RECORD /
+        GATE_SKIP, which docker-compose.yml passes on): its default words are these, word for word."""
+        src = Path(__file__).resolve().parent.parent / "server" / "fone" / "backfill.py"
+        if not src.exists():
+            self.skipTest(f"no {src}: run from the whole checkout (CONTRIBUTING.md)")
+        words = [ast.literal_eval(n.value) for n in ast.parse(src.read_text(encoding="utf-8")).body
+                 if isinstance(n, ast.Assign) and [getattr(t, "id", None) for t in n.targets] == ["F1_TITLES"]]
+        self.assertEqual(words, [load().F1_TITLES])
 
 
 ROOM = {"objectId": "o1", "roomId": 123, "name": "Acct", "title": "小播一会粥", "recording": True, "streaming": True}

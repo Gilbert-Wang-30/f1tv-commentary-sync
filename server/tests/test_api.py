@@ -251,6 +251,39 @@ def test_web_pages_can_neither_write_nor_start_work(server):
     assert client.get("/").status_code == 200
 
 
+def test_a_refusal_says_what_to_do(server):
+    """An extension from before 1.0.1 (no X-Fone) on this server: the answer says why, in JSON."""
+    client, _ = server
+    del client.headers["X-Fone"]
+    want = {"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) or send X-Fone: 1"}
+    for r in (client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}),
+              client.get("/api/f1tv/1000011024", headers=EVIL),
+              client.put("/api/sync/123", json={"channel": CHANNEL, "clock": "multiviewer", "delay": 1})):
+        assert r.status_code == 403 and r.headers["content-type"] == "application/json" and r.json() == want
+    r = client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}, headers=EXT)
+    assert r.status_code == 200  # (the rule itself as it was)
+
+
+def test_f1tv_for_a_session_with_no_key_of_its_own(server):
+    """F1 Academy, F2, F3: no session key, so the pre-roll of the session's kind, as the
+    extension's guess reads it (sessionKey null, anchor preroll: sound.js guessed())."""
+    import httpx
+
+    import fone.app
+    from fone.f1 import PREROLL
+    from test_f1 import feeder_metadata
+
+    client, _ = server
+    page = feeder_metadata("1000077807", "F1A Reverse Grid Race")
+    fone.app.mapper.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=page) if "f1tv.formula1.com" in str(r.url) else httpx.Response(404)))
+    r = client.get("/api/f1tv/1000077807")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["sessionKey"], out["anchor"], out["kind"], out["isSessionFeed"]) == (None, "preroll", "race", False)
+    assert out["p0"] == out["scheduledStart"] + PREROLL["race"]
+
+
 def test_what_is_open_to_anyone(server):
     import fone.app
 

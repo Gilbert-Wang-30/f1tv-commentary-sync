@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field, replace
@@ -255,6 +256,168 @@ def test_fully_recorded_stream_schedules_nothing(tmp_path):
     ex.add("a", [Piece(KL_LIVE + 5, 0, 3600)])
     assert svc.check_periods(now=KL_LIVE + 4000) == []
     assert svc.status()["jobs"] == []
+
+
+# ---- which lives are filled: the recorder gate's titles -------------------------------------------
+
+GAME = "小播一会粥"  # (a stream the gate stops recording with GATE_ACTION=stop)
+
+
+def another_days_recording(ex):
+    """Recordings are known (the first scan is done), none of them of this live."""
+    ex.add("yesterday", [Piece(KL_LIVE - 86400, 0, 3600)])
+
+
+def live(svc, titles, start=KL_LIVE, length=3600):
+    """A live seen with these titles in turn, the last one until start + length, then over."""
+    times = [start + 60 + k * (length - 60) / len(titles) for k in range(len(titles))] + [start + length]
+    for t, title in zip(times, [*titles, titles[-1]]):
+        svc.record(status(True, start, title), CHANNEL, t)
+    svc.record(status(False), CHANNEL, start + length + 60)
+
+
+def test_a_live_whose_title_isnt_f1_is_not_filled(tmp_path, caplog):
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    live(svc, [GAME, "下播前闲聊"])
+    with caplog.at_level("INFO", logger="fone.backfill"):
+        assert svc.check_periods(now=KL_LIVE + 4000) == []
+        assert svc.check_periods(now=KL_LIVE + 4100) == []
+    (p,) = svc.db.periods(ROOM)
+    assert p["checked"] == KL_LIVE + 4000 and p["wanted"] == 0 and GAME in p["skipped"]
+    said = [r.getMessage() for r in caplog.records if r.name == "fone.backfill"]
+    assert said == [f"room {ROOM} live {KL_LIVE}: {p['skipped']}"]  # (once)
+    st = svc.status()
+    assert st["jobs"] == [] and st["periods"][0]["skipped"] == p["skipped"]
+    assert ex.ensured == []  # (nothing waited for either)
+
+
+def test_an_f1_title_is_filled(tmp_path):
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    live(svc, [KL_TITLE])
+    (job,) = svc.check_periods(now=KL_LIVE + 4000)
+    assert job.data["source"] == "auto" and job.data["gaps"] == [[KL_LIVE, KL_LIVE + 3600]]
+    (p,) = svc.db.periods(ROOM)
+    assert p["wanted"] == 1 and p["skipped"] is None and p["checked"] == KL_LIVE + 4000
+    # the gate's default words, judged the same (recorder/test_gate.py's titles)
+    for t in ("【胡闹P房】16点 巴林 排位赛", "日本大奖赛 正赛", "F1 Japanese Grand Prix - Race watchalong",
+              "FP2 live", "Sprint Qualifying", "Abu Dhabi GP", "F2 feature race", "方程式 围场 发布会"):
+        assert svc.settings.wanted(t) is True, t
+    for t in (GAME, "GPU benchmark night", "Racing game marathon", "Just chatting"):
+        assert svc.settings.wanted(t) is False, t
+
+
+def test_a_title_that_turns_f1_mid_live_is_filled(tmp_path):
+    """The gate starts recording again when the title turns F1: what came before it is missing,
+    and it's one live (one 开播), filled once any title it had was F1."""
+    ex = FakeExtractor()
+    svc = make_service(tmp_path, extractor=ex)
+    live(svc, [GAME, GAME, KL_TITLE, "下播前闲聊"])
+    ex.add("a", [Piece(KL_LIVE + 1300, 0, 2000)])  # recorded from when the title turned F1
+    (job,) = svc.check_periods(now=KL_LIVE + 4000)
+    assert job.data["gaps"] == [[KL_LIVE, KL_LIVE + 1300], [KL_LIVE + 3300, KL_LIVE + 3600]]
+    assert svc.db.periods(ROOM)[0]["wanted"] == 1
+
+
+def test_a_live_with_no_title_seen_is_filled(tmp_path):
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    live(svc, ["", " "])
+    (job,) = svc.check_periods(now=KL_LIVE + 4000)
+    assert svc.db.periods(ROOM)[0]["wanted"] is None and job.data["source"] == "auto"
+
+
+def test_the_gates_skip_and_record_settings(tmp_path):
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    s = Settings.from_env({"FONE_BACKFILL_RECORD": "胡闹P房|F1", "FONE_BACKFILL_SKIP": "F1 25|游戏"})
+    svc = make_service(tmp_path, extractor=ex, record=s.record, skip=s.skip)
+    live(svc, ["F1 25 career mode"])
+    assert svc.check_periods(now=KL_LIVE + 4000) == []
+    assert "F1 25 career mode" in svc.db.periods(ROOM)[0]["skipped"]
+    live(svc, ["【胡闹P房】周末闲聊"], start=KL_LIVE + 86400)  # the streamer's tag alone
+    (job,) = svc.check_periods(now=KL_LIVE + 86400 + 4000)
+    assert job.data["liveTime"] == KL_LIVE + 86400
+    assert s.wanted("Abu Dhabi GP") is False  # (not in this filter: GATE_RECORD replaces the words)
+
+
+def test_an_empty_filter_is_the_gates_default_words():
+    # (docker-compose.yml passes GATE_RECORD / GATE_SKIP on even when .env leaves them empty)
+    for env in ({}, {"FONE_BACKFILL_RECORD": "", "FONE_BACKFILL_SKIP": ""}):
+        s = Settings.from_env(env)
+        assert s.record.pattern == bf.F1_TITLES and s.record.flags & re.I and s.skip is None
+        assert s.wanted("【胡闹P房】16点 巴林 排位赛") and s.wanted(GAME) is False and s.wanted("") is None
+    with pytest.raises(ValueError, match="FONE_BACKFILL_SKIP='F1 \\(' isn't a regex"):
+        Settings.from_env({"FONE_BACKFILL_SKIP": "F1 ("})
+
+
+def test_a_live_left_alone_then_live_again_is_judged_again(tmp_path):
+    """A poll that missed the room ends the period, and it's left alone at once (no recording to
+    wait for); the same 开播 live again, now with an F1 title, is judged again when it ends."""
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    svc.record(status(True, title=GAME), CHANNEL, KL_LIVE + 60)
+    svc.record(status(False), CHANNEL, KL_LIVE + 120)
+    assert svc.check_periods(now=KL_LIVE + 130) == [] and svc.db.periods(ROOM)[0]["skipped"]
+    svc.record(status(True), CHANNEL, KL_LIVE + 180)  # KL_TITLE
+    p = svc.db.periods(ROOM)[0]
+    assert (p["checked"], p["skipped"], p["stop"], p["wanted"]) == (None, None, None, 1)
+    svc.record(status(True), CHANNEL, KL_LIVE + 3640)
+    svc.record(status(False), CHANNEL, KL_LIVE + 3700)
+    (job,) = svc.check_periods(now=KL_LIVE + 3800)
+    assert job.data["window"] == [KL_LIVE, KL_LIVE + 3640]
+
+
+def test_a_live_asked_for_by_hand_is_imported_whatever_its_title(api):
+    client, svc = api
+    another_days_recording(svc.extractor)
+    live(svc, [GAME])
+    assert svc.check_periods(now=KL_LIVE + 4000) == []
+    r = client.post("/api/backfill/import", json={"from": KL_LIVE, "to": KL_LIVE + 3600, "channel": CHANNEL})
+    assert r.status_code == 200 and r.json()["job"]["source"] == "manual" and r.json()["job"]["state"] == "waiting"
+    r = client.post("/api/backfill/import", json={"bvid": "BV1ePHq6DE8B"})
+    assert r.status_code == 200 and r.json()["job"]["bvid"] == "BV1ePHq6DE8B"
+    assert [j["source"] for j in client.get("/api/backfill/status").json()["jobs"]] == ["manual", "manual"]
+
+
+OLD_PERIODS = """CREATE TABLE bf_period (
+    room INTEGER NOT NULL, start REAL NOT NULL, last_live REAL NOT NULL, stop REAL, title TEXT NOT NULL,
+    uid INTEGER NOT NULL, channel TEXT NOT NULL, checked REAL, PRIMARY KEY (room, start))"""  # (before 1.0.1)
+
+
+def test_a_database_from_before_titles_were_judged(tmp_path):
+    """Its periods get the new columns, empty: an ended one still to check is judged by the one
+    title it has (its first), and one with none is filled."""
+    import sqlite3
+
+    db = tmp_path / "data" / "fone.sqlite3"
+    db.parent.mkdir()
+    with sqlite3.connect(db) as c:
+        c.execute(OLD_PERIODS)
+        c.executemany("INSERT INTO bf_period VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+            (ROOM, KL_LIVE - 86400, KL_LIVE - 82800, KL_LIVE - 82740, KL_TITLE, UID, CHANNEL, KL_LIVE - 82000),
+            (ROOM, KL_LIVE, KL_LIVE + 3600, KL_LIVE + 3660, KL_TITLE, UID, CHANNEL, None),
+            (ROOM, KL_LIVE + 7200, KL_LIVE + 9000, KL_LIVE + 9060, GAME, UID, CHANNEL, None),
+            (ROOM, KL_LIVE + 9600, KL_LIVE + 10000, KL_LIVE + 10060, "", UID, CHANNEL, None)])
+    c.close()
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    assert [(p["wanted"], p["skipped"]) for p in svc.db.periods(ROOM)] == [(None, None)] * 4
+    jobs = svc.check_periods(now=KL_LIVE + 20000)
+    assert sorted(j.data["liveTime"] for j in jobs) == [KL_LIVE, KL_LIVE + 9600]
+    game = svc.db.periods(ROOM, since=KL_LIVE + 7200)[1]
+    assert game["start"] == KL_LIVE + 7200 and GAME in game["skipped"]
+    assert svc.db.periods(ROOM)[-1]["checked"] == KL_LIVE - 82000  # (an old check stays)
+    # and a live seen now writes its judgement
+    svc.record(status(True, KL_LIVE + 30000), CHANNEL, KL_LIVE + 30060)
+    assert svc.db.periods(ROOM)[0]["wanted"] == 1
+    make_service(tmp_path, extractor=ex)  # (and a second start finds the columns there)
 
 
 # ---- jobs -----------------------------------------------------------------------------------------

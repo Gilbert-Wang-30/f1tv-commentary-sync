@@ -1,4 +1,7 @@
-FROM python:3.12-alpine
+# An exact base and exact Python packages (constraints.txt): a rebuild of the same commit gets the
+# same Python and libraries (apk's ffmpeg and tesseract follow Alpine 3.24's fixes).
+# docs/releasing.md says how to move them on.
+FROM python:3.12.16-alpine3.24
 LABEL org.opencontainers.image.title="fone" \
       org.opencontainers.image.description="fone's server: a streamer's recorded commentary in step with F1 TV, live timing, danmaku" \
       org.opencontainers.image.source="https://github.com/Gilbert-Wang-30/f1tv-commentary-sync" \
@@ -6,8 +9,8 @@ LABEL org.opencontainers.image.title="fone" \
 # ffmpeg: audio extraction, video remux, ad/backfill decoding. tesseract: screen clock OCR.
 RUN apk add --no-cache ffmpeg tzdata tesseract-ocr tesseract-ocr-data-eng
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir -c constraints.txt -r requirements.txt
 COPY fone ./fone
 ENV PYTHONUNBUFFERED=1
 # The release's version (release.yml passes the tag's); /api/health reports it. Last, so a new

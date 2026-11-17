@@ -197,8 +197,9 @@ Docker containers and volume, the extension and the install paths all go by that
 **Around it** (the server)
 - **Recording gate:** keeps the Bilibili recorder to F1 streams by their title. Game streams are
   stopped and their stubs deleted (`GATE_ACTION=stop`; until then it only logs what it would stop).
-- **Backfill:** when the recorder missed part of a stream, the server waits for the streamer's
-  official replay (直播回放), downloads it and places it on the wall clock to fill the gap.
+- **Backfill:** when the recorder missed part of an F1 stream (by the gate's titles), the server
+  waits for the streamer's official replay (直播回放), downloads it and places it on the wall
+  clock to fill the gap.
 - **Video handoff:** the recording's own picture and sound as HLS, to keep watching the streamer
   after F1 TV ends (FLV recordings only).
 - **Self-updating extension** for a self-hosted build, on Windows (loaded from a network share)
@@ -381,7 +382,8 @@ docker compose up -d
   (deleting the seconds-long stub that leaves) and starts it again if the title turns F1. A
   streamer who tags their F1 streams is best caught by the tag: `GATE_RECORD` replaces the
   default, so keep the words in it, e.g. `GATE_RECORD='【MyStreamer】|F1|Formula|大奖赛|排位赛|正赛'`.
-  `python3 recorder/gate.py --check < titles.txt` tries a filter on titles.
+  `python3 recorder/gate.py --check < titles.txt` tries a filter on titles. The server's backfill
+  goes by the same filter: it fills by itself only a live with a title the gate keeps.
 - **fone-janitor** (with the `recorder` or the `streamlink` profile): deletes what fone's
   recorders write (`<FONE_RECORDINGS>/fone/`) and backfill's imports 21 days after they end
   (`FONE_KEEP_DAYS`), hourly. It never touches another recorder's folders.
@@ -509,7 +511,8 @@ where its player happened to start.
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |
 | `COMPOSE_PROFILES` | | optional services `docker compose up -d` starts too: `recorder` (fone-recorder, its gate, the janitor), `streamlink` (fone-streamlink, the janitor), `ext-update` (fone-ext, [Advanced](#advanced-a-self-hosted-update-channel)) |
 | `FONE_UID`, `FONE_GID` | `1000` | the user the recorders write as |
-| `GATE_RECORD`, `GATE_SKIP` | F1 words | the gate's title regexes (Python, case-insensitive): titles to record, titles never to |
+| `GATE_RECORD`, `GATE_SKIP` | F1 words | the gate's title regexes (Python, case-insensitive): titles to record, titles never to; backfill's too |
+| `FONE_BACKFILL_RECORD`, `FONE_BACKFILL_SKIP` | the gate's | the titles of the lives backfill fills by itself, if not the gate's (one imported by hand is any) |
 | `GATE_ACTION` | `log` | `stop`: the gate stops a recording whose title isn't F1; `log`: it only says so |
 | `FONE_STREAMS` | | fone-streamlink's `channel=URL …` |
 | `FONE_STREAMS_QUALITY`, `FONE_STREAMS_RECORD` | audio only; any | its stream names, first available wins; a title regex (`grep -E`) to wait for |
@@ -637,8 +640,9 @@ docker run --rm -v $PWD/server:/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
 docker run --rm -v $PWD:/r -w /r/extension node:22-alpine \
   sh -c 'for t in *.test.js; do echo "== $t"; node "$t" || exit 1; done'
 
-# the recorder gate's title filter and actions (stdlib only)
-docker run --rm -v $PWD/recorder:/r -w /r python:3.12-alpine python -m unittest -v
+# the recorder gate's title filter and actions (stdlib only; in the whole checkout: one test
+# reads the server's backfill words)
+docker run --rm -v $PWD:/r:ro -w /r/recorder python:3.12-alpine python -m unittest -v
 
 # lint (its rules in ruff.toml), and the release checks CI runs
 docker run --rm -v $PWD:/w -w /w python:3.12-alpine sh -c 'pip install -q ruff==0.17.5 && ruff check server recorder tools'
@@ -752,8 +756,8 @@ extension/             Chrome extension (Manifest V3)
   background.js          relay, self-update, the platforms' header rules; dashproxy.js reads the server for pages
   options.*              the settings page
   testdata/              synthetic streams for the demuxer tests
-recorder/              the 录播姬 config template (seed.sh fills in FONE_ROOMS) and the F1-only gate
-                       (test_gate.py); streamlink/: the any-site recorder
+recorder/              the 录播姬 config template (seed.sh fills in FONE_ROOMS: test_seed.py) and the
+                       F1-only gate (test_gate.py); streamlink/: the any-site recorder
 docker-compose.yml     the server and the recorders, settings from .env (.env.example)
 e2e/                   end-to-end suites (Playwright in Docker)
 tools/                 the release's packager and checks (build_ext.sh, check_version.py,

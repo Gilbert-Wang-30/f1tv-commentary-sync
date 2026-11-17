@@ -172,3 +172,77 @@ def test_answers_that_arent_json_or_of_another_shape_are_a_failed_lookup(tmp_pat
         new.http = httpx.AsyncClient(transport=httpx.MockTransport(page))
         out = asyncio.run(new.content("1000011024"))
         assert out["contentId"] == "1000011024" and (out.get("error") or out["anchor"] == "preroll"), (what, out)
+
+
+# ---- no session of F1's own: F1 Academy, F2, F3 ----------------------------------------------------
+
+MISSING = object()
+
+
+def feeder_metadata(cid, session, key=MISSING, series="F1 ACADEMY"):
+    """F1 TV's metadata for a feeder series' session, from the qualifying's: the same meeting and
+    schedule fields, but no session of F1's own to look up (MeetingSessionKey absent, empty or
+    null). As the server's cache holds one: '2026 United States GP - F1A Reverse Grid Race',
+    sessionKey null, kind race, anchor preroll."""
+    d = load("f1tv_1000011024.json")
+    m = d["resultObj"]["containers"][0]["metadata"]
+    m.update(contentId=int(cid), title=f"2026 Bahrain GP in Malaysia - {session}", externalId=None,
+             additionalStreams=[])
+    emf = m["emfAttributes"]
+    emf.update(Series=series, Global_Title=f"2616 Bahrain GP - {session}")
+    for k in ("MeetingSessionKey", "multipartEventMainMSK", "multipartEventMainHouseId", "multipartEventNextHouseId"):
+        emf.pop(k)
+    if key is not MISSING:
+        emf["MeetingSessionKey"] = key
+    return d
+
+
+def feeder_mapper(tmp_path, pages):
+    """A mapper whose F1 TV knows these contents; every other request is noted (none is expected:
+    with no session key there's no MultiViewer session to ask)."""
+    asked = []
+
+    def handler(request):
+        url = str(request.url)
+        if "f1tv.formula1.com" in url:
+            cid = url.split("/VIDEO/")[1].split("/")[0]
+            return httpx.Response(200, json=pages[cid]) if cid in pages else httpx.Response(404)
+        asked.append(url)
+        return httpx.Response(404)
+
+    m = F1Mapper(Store(tmp_path / "db.sqlite3"))
+    m.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return m, asked
+
+
+def test_a_feeder_series_session_uses_the_preroll_of_its_kind(tmp_path):
+    start = 1791014400.0  # (the fixture's sessionStartDate)
+    cases = {"1000077801": ("F1A Reverse Grid Race", MISSING, "race"),
+             "1000077802": ("F2 Sprint Race", "", "sprint"),
+             "1000077803": ("F3 Qualifying", None, "qualifying"),
+             "1000077804": ("F2 Feature Race", MISSING, "race"),
+             "1000077805": ("F1A Practice", MISSING, "practice")}
+    m, asked = feeder_mapper(tmp_path, {cid: feeder_metadata(cid, name, key) for cid, (name, key, _) in cases.items()})
+    for cid, (name, _, kind) in cases.items():
+        out = asyncio.run(m.content(cid))
+        assert out["sessionKey"] is None and out["meetingKey"] == 1308 and out["subtype"] == "REPLAY", name
+        assert (out["sessionName"], out["kind"], out["isSessionFeed"]) == (name, kind, False)
+        assert out["anchor"] == "preroll" and out["scheduledStart"] == start
+        assert out["p0"] == start + PREROLL[kind], name
+        assert "error" not in out and "startedUtc" not in out and "channelOffsets" not in out  # (no MultiViewer)
+        # what /api/f1tv/{cid} sends (the extension reads a missing session key as null)
+        sent = json.loads(json.dumps(out))
+        assert sent["sessionKey"] is None and sent["anchor"] == "preroll"
+    assert asked == []
+
+
+def test_a_feeder_video_that_isnt_a_session_has_no_anchor(tmp_path):
+    # (highlights: F1 TV titles them after the place, as the server's cache has 'F1A Race 1
+    # Highlights - United States'; no kind, no guess)
+    d = feeder_metadata("1000078525", "x")
+    d["resultObj"]["containers"][0]["metadata"].update(title="F1A Race 1 Highlights - United States",
+                                                       contentSubtype="RACE HIGHLIGHTS")
+    m, asked = feeder_mapper(tmp_path, {"1000078525": d})
+    out = asyncio.run(m.content("1000078525"))
+    assert out["sessionKey"] is None and out["kind"] is None and out["anchor"] is None and out["p0"] is None
+    assert asked == []

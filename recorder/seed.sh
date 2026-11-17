@@ -7,7 +7,7 @@
 #
 # After that the file is 录播姬's own (rooms added through its API stay) and this leaves it
 # alone, unless it has no room at all and FONE_ROOMS now names one: then it's written again
-# (the old one kept as config.json.bak). With no config.json and no room in FONE_ROOMS nothing
+# (the old one kept as config.json.bak). With no room in config.json nor in FONE_ROOMS nothing
 # is written and the recorder doesn't start (it would record nothing): its log says what to set.
 # To seed it again from FONE_ROOMS by hand, stop fone-recorder, delete
 # <FONE_RECORDINGS>/fone/config.json and start it.
@@ -28,6 +28,9 @@ for pair in ${FONE_ROOMS:-}; do
       echo "seed: skipping '$pair' in FONE_ROOMS: not a room number (room=channel, or the room alone)" >&2
       continue ;;
   esac
+  # 0123 is room 123, as the server reads it (and a JSON number has no leading zero)
+  id=${id#"${id%%[!0]*}"}
+  id=${id:-0}
   case ",$ids," in *",$id,"*) continue ;; esac
   ids="$ids${ids:+,}$id"
   rooms="$rooms${rooms:+, }{\"RoomId\": {\"HasValue\": true, \"Value\": $id}, \"AutoRecord\": {\"HasValue\": true, \"Value\": true}}"
@@ -38,9 +41,9 @@ if [ -f "$CONFIG" ]; then
   # (录播姬 writes its own JSON back without spaces: a room is a RoomId whatever the layout)
   grep -q '"RoomId"' "$CONFIG" && exit 0
   if [ -z "$rooms" ]; then
-    echo "seed: $CONFIG has no room and FONE_ROOMS names none: nothing is recorded." >&2
+    echo "seed: $CONFIG has no room and FONE_ROOMS names none, so fone-recorder has nothing to record and doesn't start." >&2
     echo "seed: set FONE_ROOMS=<room>=<channel> in .env (the room: the number in live.bilibili.com/<room>), then: docker compose up -d" >&2
-    exit 0
+    exit 1
   fi
   cp "$CONFIG" "$CONFIG.bak"
   echo "seed: $CONFIG has no room: writing it again from FONE_ROOMS (the old one is $CONFIG.bak)"

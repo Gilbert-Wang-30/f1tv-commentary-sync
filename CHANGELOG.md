@@ -47,8 +47,9 @@ image to run with your own streamer, recorder and storage.
   instead of creating it empty.
 - No streamer by default: a Bilibili room is watched only when `FONE_ROOMS` names it, and it is
   the one setting for the server and the recorder (`recorder/seed.sh` writes the recorder's
-  config from it, a folder per room number, which is that room's channel). With no room named
-  the recorder doesn't start, and its log says what to set.
+  config from it, a folder per room number, which is that room's channel; `0123` is room 123).
+  With no room named, in `FONE_ROOMS` or in the recorder's config, the recorder doesn't start,
+  and its log says what to set.
 - The recorder gate's default filter is any streamer's F1 titles, and it only logs what it would
   stop until `GATE_ACTION=stop`; `GATE_RECORD` replaces the default filter.
 - The bundled sponsor clips are matched only on the channel they were made from; other channels
@@ -57,6 +58,8 @@ image to run with your own streamer, recorder and storage.
   `tools/import_replay.py`); an unknown zone is an error, and a name and last write a whole
   number of hours apart are logged as a likely zone mismatch. An empty setting is its default.
 - fone-janitor also runs with the `streamlink` profile.
+- The server image is built from an exact Python (3.12.16 on Alpine 3.24) and exact package
+  versions (`server/constraints.txt`), so rebuilding a release gives the same server.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
   what it can't use with the reason, and saves everything else; a first run's server is saved
   as the source. The panel's name before a channel is known is "Commentary".
@@ -65,6 +68,11 @@ image to run with your own streamer, recorder and storage.
   packages through `tools/build_ext.sh`, the release's packager.
 
 ### Fixed
+- Backfill no longer downloads the replay of a stream the recorder gate keeps out (a game
+  stream it stopped read as one long gap): it fills by itself only a live with a title, while
+  live, that the gate's filter keeps (`GATE_RECORD` / `GATE_SKIP`, passed to the server as
+  `FONE_BACKFILL_RECORD` / `FONE_BACKFILL_SKIP`; empty: the gate's F1 words). An import asked
+  for by hand takes any live; `/api/backfill/status` says why a live was left alone.
 - Bilibili replays: the clock on the streamer's screen and sync by sound no longer pull the
   commentary back and forth when the streamer's delay steps (a pause no longer counts against
   sound's look again); no swapping between two replays in a restart's gap; a backward seek no
@@ -97,7 +105,7 @@ image to run with your own streamer, recorder and storage.
   (its origin, or no origin and `X-Fone: 1`) or a script sending `X-Fone: 1`
   (`curl -H 'X-Fone: 1' …`), on plain http too; a page's `<img>`, link, form or fetch gets 403.
   CORS allows the extension's origins only. Update the extension before the server: an older
-  one gets 403 on those routes.
+  one gets 403 on those routes, whose JSON `error` says to update it.
 
 ## [0.5.4] - 2026-11-17
 

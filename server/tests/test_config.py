@@ -91,6 +91,14 @@ def test_a_room_alone_is_its_own_channel_and_what_isnt_a_room_is_said(env, caplo
     assert cfg.rooms == {} and "skipping 'MyStreamer'" in caplog.text and "names no Bilibili room" in caplog.text
 
 
+def test_a_room_with_leading_zeros_is_that_room(env):
+    # (recorder/seed.sh writes 0123 as room 123, which fone-recorder records in folder 123)
+    cfg = env(FONE_ROOMS="0123, 0456=Name")
+    assert cfg.rooms == {123: "123", 456: "Name"}
+    assert cfg.channel_aliases == {"123": "123", "456": "Name"}
+    assert config.parse_rooms("0123=A, 123=A") == {123: "A"}  # (one room)
+
+
 def test_backfill_reads_the_rooms_as_the_server_does():
     from fone import backfill
     assert backfill.parse_rooms is config.parse_rooms
