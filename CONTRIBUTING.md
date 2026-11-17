@@ -37,16 +37,20 @@ docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine \
   sh -c 'for t in *.test.js; do echo "== $t"; node "$t" || exit 1; done'
 ```
 
-**2. Server tests** (pytest, in the server's Docker image, which has ffmpeg and tesseract):
+**2. Server and recorder tests** (pytest: the server's in its Docker image, which has ffmpeg
+and tesseract; the recorder gate's, `recorder/test_*.py`, need only Python):
 
 ```bash
 docker build -t fone:dev server
 docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
   fone:dev sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
+docker run --rm -v "$PWD/recorder":/r -w /r -e PYTHONDONTWRITEBYTECODE=1 python:3.12-alpine \
+  sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -p no:cacheprovider'
 ```
 
-240+ tests; the ones that need a real recording (`-rs` lists them as skipped) run only
-when one is mounted, see the README's Development section for the `FONE_*` switches.
+240+ server tests; the ones that need a real recording (`-rs` lists them as skipped) run only
+when it's mounted into the container: the recordings folder at `/rec`, or the `FONE_*`
+switches in the README's Development section.
 
 **Checks** (CI's "release checks" and the extension job; seconds each):
 
@@ -56,9 +60,11 @@ docker run --rm -v "$PWD":/r -w /r node:22-alpine \
 tools/build_ext.sh "$(mktemp -d)"   # the release zip: fails on a file the extension loads that's missing
 python3 tools/check_version.py      # the manifest's version has its CHANGELOG.md section
 tools/check_public.sh               # nothing from one install's own setup
-python3 tools/test_release.py       # the release tools themselves
+python3 tools/test_release.py       # the release tools themselves (needs git, bash, rsync)
 docker run --rm -v "$PWD":/w:ro -w /w python:3.12-alpine \
-  sh -c 'pip install -q ruff==0.17.5 && ruff check --no-cache server'   # errors and pyflakes; no formatter
+  sh -c 'pip install -q ruff==0.17.5 && ruff check --no-cache server recorder tools'   # ruff.toml: errors and pyflakes; no formatter
+docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color   # the workflows
+shellcheck -S warning tools/build_ext.sh tools/check_public.sh tools/publish_ext.sh
 ```
 
 Most of the extension (`offscreen.js`, `content.js`, `page.js`, `dashboard.js`) runs only in

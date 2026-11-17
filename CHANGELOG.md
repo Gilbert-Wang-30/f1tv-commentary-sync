@@ -30,9 +30,10 @@ image to run with your own streamer, recorder and storage.
   the manifest and this file, tested, packaged, smoke-run and published; run by hand it is a
   dry run that builds both architectures and publishes nothing.
 - Checks on every push: each extension script parsed, every file the manifest and the pages
-  load present in the zip, ruff on the server, the version and this file in step, and no
-  personal configuration committed (`tools/check_public.sh`: home-network addresses,
-  Tailscale names, NAS paths, a filled-in `extension/local.js`).
+  load present in the zip, the recorder gate's tests, ruff on the server, the recorder and the
+  tools, the version and this file in step, and no personal configuration committed
+  (`tools/check_public.sh`: Tailscale names and NAS paths anywhere, home-network addresses
+  outside the docs and `*.example` files, a filled-in `extension/local.js`, a `.env`).
 
 ### Changed
 - Your own setup, not the author's: `docker-compose.yml` reads your recordings folder, rooms

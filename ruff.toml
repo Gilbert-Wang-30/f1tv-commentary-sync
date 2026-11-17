@@ -1,0 +1,21 @@
+# ruff check server recorder tools (CI; ruff 0.17.5): one rule set for the Python here, errors and
+# pyflakes only (E4/E7/E9/F), not the much larger set newer ruff enables without a config. No line
+# length and no formatter: the code's lines run long where a table or a call reads better on one.
+target-version = "py312"
+extend-exclude = ["server/tests/fixtures"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# These tests take a fixture imported from another test module as an argument, which pyflakes
+# reads as a redefinition. Everywhere else F811 stays on: it is what catches a second
+# `def test_x` hiding the first, which then never runs.
+"server/tests/test_backfill_dedup.py" = ["F811"]
+"server/tests/test_backfill_service.py" = ["F811"]
+"server/tests/test_backfill_start.py" = ["F811"]
+"server/tests/test_backfill_writer.py" = ["F811"]
+"server/tests/test_integration.py" = ["F811"]
+"server/tests/test_timing_livefeed.py" = ["F811"]
+# small lambdas standing in for fakes
+"server/tests/test_backfill_bili.py" = ["E731"]
