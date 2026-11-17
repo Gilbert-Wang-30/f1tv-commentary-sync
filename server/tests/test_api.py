@@ -328,3 +328,17 @@ def test_health_says_what_the_setup_leaves_out(server, monkeypatch):
     monkeypatch.setattr(fone.app, "vodclock", SimpleNamespace(missing=["tesseract"]))
     assert client.get("/api/health").json()["notes"] == [
         "No tesseract on the server: Bilibili replays aren't placed by the clock on the streamer's screen"]
+
+
+def test_health_says_which_service_couldnt_start(server, monkeypatch):
+    """A setting it can't use (a bad FONE_BACKFILL_SKIP regex) leaves the service out; the notes
+    say so, not only the log's traceback."""
+    client, _ = server
+    import fone.app
+
+    monkeypatch.setattr(fone.app, "FAILED", {})
+    monkeypatch.setenv("FONE_BACKFILL_SKIP", "F1 (")
+    assert fone.app._build("backfill", fone.app._backfill) is None
+    (note,) = [n for n in client.get("/api/health").json()["notes"] if n.startswith("backfill")]
+    assert note.startswith("backfill is off: it couldn't start (FONE_BACKFILL_SKIP='F1 (' isn't a regex: ")
+    assert note.endswith("); the server's log has the details")

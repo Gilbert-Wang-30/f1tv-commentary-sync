@@ -96,14 +96,16 @@ def _build(name, build):
         return None
     try:
         svc, router = build()
-    except Exception:
+    except Exception as e:
         log.exception("%s disabled: failed to initialise", name)
+        FAILED[name] = str(e) or type(e).__name__
         return None
     routers.append(router)
     return svc
 
 
 routers: list = []
+FAILED: dict[str, str] = {}  # (a service that's on but couldn't start: why, for /api/health's notes)
 timing = _build("timing", _timing)
 ads = _build("ads", _ads)
 screenclock = _build("screenclock", _screenclock)
@@ -278,6 +280,8 @@ def _notes() -> list[str]:
     (config.notes, also logged at start: no room, a folder that isn't there) and the tools'.
     The options page's Test connection and the status page show them."""
     out = config.notes(cfg)
+    out += [f"{name} is off: it couldn't start ({why}); the server's log has the details"
+            for name, why in FAILED.items()]
     if vodclock is not None and vodclock.missing:
         out.append(f"No {' or '.join(vodclock.missing)} on the server: Bilibili replays aren't placed by the clock on "
                    "the streamer's screen")
