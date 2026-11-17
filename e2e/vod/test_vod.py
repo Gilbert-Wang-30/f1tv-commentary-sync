@@ -345,6 +345,26 @@ async def main():
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.3, 30, "after a seek")
         E.check(True, f"F1 TV 2 min on: the commentary with it ({placed(st) * 1000:+.0f} ms)")
 
+        # ---- the panel dragged by its head: left where you put it, a click still opens or closes it ----
+        WRAP = f"() => {{ const w = {E.PANEL}.querySelector('.wrap'), r = w.getBoundingClientRect(); return [r.left, r.top, w.classList.contains('collapsed')]; }}"
+        HEAD = f"() => {{ const r = {E.PANEL}.getElementById('head').getBoundingClientRect(); return [r.left + 12, r.top + r.height / 2]; }}"
+        w0, hd = await page.evaluate(WRAP), await page.evaluate(HEAD)
+        await page.mouse.move(hd[0], hd[1])
+        await page.mouse.down()
+        await page.mouse.move(hd[0] - 300, hd[1] + 200, steps=10)
+        await page.mouse.up()
+        await asyncio.sleep(0.5)
+        w1, kept = await page.evaluate(WRAP), await page.evaluate("() => localStorage.getItem('fone.panelPos')")
+        hd = await page.evaluate(HEAD)
+        await page.mouse.click(hd[0], hd[1])
+        await asyncio.sleep(0.5)
+        w2 = await page.evaluate(WRAP)
+        await page.mouse.click(hd[0], hd[1])  # (and back)
+        await asyncio.sleep(0.5)
+        E.check(abs(w1[0] - (w0[0] - 300)) < 3 and abs(w1[1] - (w0[1] + 200)) < 3 and w1[2] == w0[2] and kept and w2[2] != w0[2]
+                and abs(w2[1] - w1[1]) < 3,
+                f"the panel dragged by its head: where it was left ({w0[:2]} -> {w1[:2]}, kept {kept}); a click still opens or closes it")
+
         # ---- opened again (another tab: the engine starts over): where it was, at once ----
         await page.close()
         page = await ctx.new_page()
@@ -353,6 +373,11 @@ async def main():
         st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s)) < 0.3, 60, "placed again")
         E.check((st.get("vod") or {}).get("how") == "kept" and time.time() - t1 < 30,
                 f"opened again: where it was, at once ({time.time() - t1:.0f}s, {placed(st) * 1000:+.0f} ms, {st['vod']['how']})")
+        # (by the side it was left nearer: there the same, whatever its width now)
+        w3 = await page.evaluate(f"""() => {{ const r = {E.PANEL}.querySelector('.wrap').getBoundingClientRect(),
+            p = JSON.parse(localStorage.getItem('fone.panelPos') || 'null');
+            return p && [p.l != null ? r.left - p.l : window.innerWidth - r.right - p.r, r.top - p.t]; }}""")
+        E.check(w3 and abs(w3[0]) < 3 and abs(w3[1]) < 3, f"…the panel where it was left too (off by {w3})")
         await ctx.close()
     srv.shutdown()
     print(f"== {E.passed} passed")

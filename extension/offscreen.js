@@ -1063,7 +1063,7 @@ function goLive(held = false, chase = false, pMax = null) {
 // a step of more than SND.JUMP_LATER s (minutes of easing, out of sync all along). No sure match
 // for SND.LOST s: lost, the delay holds and it listens again. A nudge of yours on top of where the
 // sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
-const SND = { EVERY: 15, WIN: 25, WIDE: 25, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
+const SND = { EVERY: 15, WIN: 25, WIDE: 25, FAR: 240, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
   VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0, SOON: 5, QUICK: 3, RESYNC_MAX: 90 };
 // (SOON: the look after one that found it moved; QUICK: looks this often while a resync asked for
 // looks for it, given up after RESYNC_MAX s)
@@ -1251,7 +1251,11 @@ async function sndMeasure(t, vn) {
   if (!pl || !src || !r || r.x.length < WIN * SND.SR) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
   if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
   sn.seen = { r, n: r.n };
-  const wide = sn.target == null || t - sn.wideAt > SND.REWIDE || sn.miss >= SND.MISSES, R = wide ? SND.WIDE : SND.NEAR;
+  // (a replay whose start is only a guess till it's found: F1 TV's F1 Academy, F2, F3 videos, no
+  // session of F1's own to anchor them, F1's pre-roll borrowed: ±SND.FAR s. The streamer passes
+  // those broadcasts on whole, picture and sound, so their sound is found strongly there)
+  const guess = !pl.live && !S.timeline?.vod && S.clock === 'preroll' && S.content?.sessionKey == null && sn.target == null;
+  const wide = sn.target == null || t - sn.wideAt > SND.REWIDE || sn.miss >= SND.MISSES, R = wide ? (guess ? SND.FAR : SND.WIDE) : SND.NEAR;
   // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
   // a replay, the delay's mapping at p: it changes at the server's file boundaries)
   const cAt = (p) => {
