@@ -2,10 +2,12 @@
 # Records live streams with streamlink (YouTube, Twitch, Douyin, Huya, Kick, …: for Bilibili use
 # fone-recorder, BililiveRecorder) into the layout the fone server scans: one folder per
 # channel, each recording named for the moment it started, to the microsecond, in this
-# container's time zone (TZ: make it the server's FONE_FILENAME_TZ):
+# container's time zone (TZ: docker-compose.yml sets it from FONE_FILENAME_TZ, the zone the
+# server reads the names in; run elsewhere, set it the same):
 #   /rec/<channel>/<yyyyMMdd-HHmmss-ffffff>-<title>.ts   (MPEG-TS, the site's own audio and video)
 #
-#   STREAMS       "channel=URL", several separated by spaces or newlines (required)
+#   STREAMS       "channel=URL", several separated by spaces or newlines (required; FONE_STREAMS
+#                 in .env)
 #   QUALITY       streamlink's stream names, the first one there wins (default: audio only if
 #                 the site has it, else a small video: the server keeps only the audio)
 #   GATE_RECORD   only start recording while the stream's title matches this extended regex
