@@ -270,10 +270,23 @@ async def _measured(cid: str, channel: str) -> dict | None:
 # ---- routes ----------------------------------------------------------------
 
 
+def _notes() -> list[str]:
+    """What this server's setup leaves out that a viewer may wonder about (the options page's
+    Test connection shows them)."""
+    out = []
+    if not cfg.rooms:
+        out.append("No Bilibili room on the server (FONE_ROOMS is empty): fine for a streamer elsewhere; for a Bilibili "
+                   "one, no live straight from the room, ↗ Live page, 弹幕, backfill or Bilibili replays")
+    if vodclock is not None and vodclock.missing:
+        out.append(f"No {' or '.join(vodclock.missing)} on the server: Bilibili replays aren't placed by the clock on "
+                   "the streamer's screen")
+    return out
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "version": VERSION, "recDir": str(cfg.rec_dir), "files": len(extractor.files),
-            "now": time.time(), "services": sorted(SERVICES)}
+            "now": time.time(), "services": sorted(SERVICES), "notes": _notes()}
 
 
 @app.get("/api/channels")

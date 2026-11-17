@@ -276,3 +276,19 @@ def test_health_says_the_servers_version(server, monkeypatch):
     monkeypatch.setattr(fone.app, "VERSION", "1.0.1")
     assert client.get("/api/health").json()["version"] == "1.0.1"
 
+
+def test_health_says_what_the_setup_leaves_out(server, monkeypatch):
+    """(the options page's Test connection shows these)"""
+    client, _ = server
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import fone.app
+
+    monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={}))
+    assert [n for n in client.get("/api/health").json()["notes"] if "FONE_ROOMS" in n]
+    monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={23954427: CHANNEL}))
+    assert client.get("/api/health").json()["notes"] == []
+    monkeypatch.setattr(fone.app, "vodclock", SimpleNamespace(missing=["tesseract"]))
+    assert client.get("/api/health").json()["notes"] == [
+        "No tesseract on the server: Bilibili replays aren't placed by the clock on the streamer's screen"]
