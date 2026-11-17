@@ -207,10 +207,11 @@ def test_sidx():
 
 
 class FakeHttp:
-    """A CDN: 206 and just the range asked for; one 'ignoring-range' answers 200, the whole file."""
+    """A CDN: 206 and just the range asked for; one 'ignoring-range' answers 200, the whole file.
+    `down`: no connection; `refuse`: that status, and nothing (an expired URL's 403)."""
 
     def __init__(self, video: bytes):
-        self.video, self.ranges, self.sent, self.down = video, [], 0, False
+        self.video, self.ranges, self.sent, self.down, self.refuse = video, [], 0, False, None
 
     @asynccontextmanager
     async def stream(self, method, url, headers=None, timeout=None):
@@ -218,6 +219,9 @@ class FakeHttp:
         self.ranges.append((a, b))
         if self.down:
             raise ConnectionError("the CDN refuses")
+        if self.refuse:
+            yield SimpleNamespace(status_code=self.refuse, aiter_bytes=None)
+            return
         whole = "ignoring-range" in url
         body = self.video if whole else self.video[a:b + 1]
 
@@ -241,6 +245,8 @@ class FakeBili:
 
     async def pagelist(self, bvid):
         self.pagelists += 1
+        if getattr(self, "risk_control", False):
+            raise RuntimeError("Bilibili: -352 risk control")
         return [{"page": 1, "cid": 7, "duration": 9068}]
 
     async def playurl(self, bvid, cid):
@@ -324,10 +330,12 @@ async def settled(svc: vc.VodClockService, *args) -> dict:
     return {x: v for x, v in svc.state[(BV, KEY)].items() if x != "seen"}
 
 
-def far_E(c: vc.Clock) -> float:
-    """A moment the first frames are nowhere near: where the extension is, in Q1."""
-    first = [START + vc.content_of(PAGES, 1, a) for _p, a in vc.plan(c, PAGES, SLOT)[:vc.PAR]]
-    return next(t for t in (c.when(s, part=1)[0] for s in range(1070, 0, -30)) if all(abs(t - f) > vc.NEAR_E + 60 for f in first))
+def far_E(c: vc.Clock, avoid=()) -> float:
+    """A moment the first frames (and `avoid`) are nowhere near: where the extension is, in Q1
+    (or a later part)."""
+    first = [START + vc.content_of(PAGES, 1, a) for _p, a in vc.plan(c, PAGES, SLOT)[:vc.PAR]] + list(avoid)
+    return next(ts[0] for part in (1, 2, 3) for s in range(1070, 0, -30) if (ts := c.when(s, part=part))
+                and all(abs(ts[0] - f) > vc.NEAR_E + 60 for f in first))
 
 
 def test_service_reads_agrees_then_near_E(tmp_path, monkeypatch):
@@ -365,8 +373,9 @@ def test_service_reads_agrees_then_near_E(tmp_path, monkeypatch):
 
 def test_a_frame_that_fails_fails_alone(tmp_path, monkeypatch):
     """A frame whose reading raises is that frame unread, the job goes on. One that can't be
-    downloaded isn't a frame read, nor a reason for 'none': the video's URLs (maybe stale) are
-    dropped and it's tried again later."""
+    downloaded isn't a frame read, nor a reason for 'none'. Near E, that moment isn't asked for
+    again at the extension's every ask (20 s: a pagelist, a playurl and every mirror each
+    time), nor another before a backoff."""
     rig = Rig(tmp_path, monkeypatch)
     rig.unreadable = {round(a) for _p, a in vc.plan(rig.c, PAGES, SLOT)[:1]}
     E = far_E(rig.c)
@@ -379,14 +388,36 @@ def test_a_frame_that_fails_fails_alone(tmp_path, monkeypatch):
         seen = svc.state[(BV, KEY)]["seen"]
         bad = [s for s in seen if round(s["at"]) in rig.unreadable]
         assert st["status"] == "ok" and len(bad) == 1 and bad[0]["shown"] is None and len(seen) > 1, (st, seen)
-        # the CDN refusing: nothing read near E, nor taken as looked for there in vain
+        # the CDN down: nothing read near E; the video's URLs (not what failed) kept
         bili.http.down = True
         n = len(seen)
         st = await settled(svc, E)
-        assert st["status"] == "ok" and len(seen) == n and not svc._video_cache and not st.get("tried")
+        assert st["status"] == "ok" and len(seen) == n and svc._video_cache and st["tried"] == [E] and st["near_fails"] == 1
+        assert st["near_again"] - time.time() == pytest.approx(vc.RETRY, abs=5)
+        asked = (bili.pagelists, bili.playurls, len(bili.http.ranges))
+        E2 = far_E(rig.c, avoid=[E] + [r["wall"] for r in st["readings"]])
+        for e in (E, E + 5, E2):  # (that moment again; another, before the backoff is over)
+            assert not svc.get(BV, KEY, SLOT, e).get("more") and not svc.tasks
+        assert (bili.pagelists, bili.playurls, len(bili.http.ranges)) == asked
+        # still down after it: the next wait twice as long
+        svc.state[(BV, KEY)]["near_again"] = 0
+        st = await settled(svc, E2)
+        assert st["near_fails"] == 2 and st["near_again"] - time.time() == pytest.approx(2 * vc.RETRY, abs=5)
+        # back: another moment read, the misses forgotten
         bili.http.down = False
-        st = await settled(svc, E)
-        assert len(seen) == n + 3 and any(abs(r["wall"] - E) < 10 for r in st["readings"])
+        svc.state[(BV, KEY)]["near_again"] = 0
+        E3 = far_E(rig.c, avoid=[E, E2] + [r["wall"] for r in st["readings"]])
+        st = await settled(svc, E3)
+        assert len(seen) == n + 3 and any(abs(r["wall"] - E3) < 10 for r in st["readings"])
+        assert "near_fails" not in st and "near_again" not in st and st["tried"] == [E, E2, E3]
+        # Bilibili's risk control refusing the pagelist: a miss as well, no job at the next ask
+        bili.risk_control = True
+        svc.state[(BV, KEY)]["near_again"] = 0
+        E4 = far_E(rig.c, avoid=[E, E2, E3] + [r["wall"] for r in st["readings"]])
+        st = await settled(svc, E4)
+        assert st["status"] == "ok" and st["near_fails"] == 1 and E4 in st["tried"]
+        assert not svc.get(BV, KEY, SLOT, E4 + 5).get("more") and not svc.tasks
+        bili.risk_control = False
         # no video at all for the first frames: an error (asked again later), not a 'none'
         down = rig.bili()
         down.http.down = True
@@ -395,6 +426,32 @@ def test_a_frame_that_fails_fails_alone(tmp_path, monkeypatch):
         await svc2.start()
         st = await settled(svc2)
         assert st["status"] == "error" and "the CDN refuses" in st["why"] and not svc2.state[(BV, KEY)]["seen"], st
+
+    asyncio.run(run())
+
+
+def test_a_refused_url_is_asked_for_anew_a_mirror_down_is_not(tmp_path, monkeypatch):
+    """Bilibili's signed URLs expire (a 403 then): those are dropped and a new playurl asked for
+    next time. A mirror down or slow says nothing about them: kept."""
+    rig = Rig(tmp_path, monkeypatch)
+
+    async def run():
+        bili = rig.bili()
+        svc = rig.service(bili)
+        await svc.start()
+        assert (await settled(svc))["status"] == "ok" and bili.playurls == 1 and svc._video_cache
+        page = {"page": 1, "cid": 7}
+        bili.http.down = True
+        with pytest.raises(RuntimeError, match="the CDN refuses"):
+            await svc._fragment(BV, page, 100.0)
+        assert svc._video_cache
+        bili.http.down, bili.http.refuse = False, 403
+        with pytest.raises(vc.Refused, match="HTTP 403"):
+            await svc._fragment(BV, page, 100.0)
+        assert not svc._video_cache
+        bili.http.refuse = None
+        mp4, _ = await svc._fragment(BV, page, 100.0)
+        assert mp4[:100] == b"I" * 100 and bili.playurls == 2
 
     asyncio.run(run())
 

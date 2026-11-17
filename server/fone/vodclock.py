@@ -477,6 +477,11 @@ def decode_frame(mp4: bytes, at: float, timeout: float = 60.0) -> np.ndarray | N
     return sm._read_pgm(io.BytesIO(r.stdout)) if r.returncode == 0 and r.stdout else None
 
 
+class Refused(RuntimeError):
+    """A mirror refused the replay's signed URL (403, 404, 410): expired, likely. Anything else
+    (a mirror down, slow, a connection cut) leaves the URLs as good as they were."""
+
+
 @dataclass
 class Video:
     urls: list[str]
@@ -541,7 +546,7 @@ class VodClockService:
             again = status == "working" or (status == "error" and now >= st.get("again", 0)) \
                 or (status == "none" and now - st.get("at", 0) > NONE_TTL) \
                 or (status in ("ok", "none") and st.get("timing") != self._timing_of(key))
-            want_near = status == "ok" and E is not None and self._wants(st, E)
+            want_near = status == "ok" and E is not None and now >= st.get("near_again", 0) and self._wants(st, E)
             if again or want_near:
                 if again:
                     st.update(status="working", why="starting")
@@ -605,6 +610,8 @@ class VodClockService:
                     self._sem = asyncio.Semaphore(2)
                 async with self._sem:
                     await self._read(k, bvid, slot, E, clock)
+            elif st.get("status") == "ok" and E is not None:
+                self._near_missed(st, E)  # (its timing gone since: nothing to read by)
             if st["status"] in ("ok", "none"):
                 st.pop("fails", None)
                 st.pop("again", None)
@@ -614,6 +621,8 @@ class VodClockService:
             log.exception("%s (session %s) failed", bvid, key)
             if st.get("status") != "ok":
                 self._fail(k, f"{type(e).__name__}: {e}"[:200])
+            elif E is not None:  # (more near E: what's known stands)
+                self._near_missed(st, E)
         finally:
             st["at"] = time.time()
             st.pop("more", None)
@@ -622,6 +631,17 @@ class VodClockService:
 
     def _say(self, k: tuple[str, int], **fields) -> None:
         self.state.setdefault(k, {}).update(fields)
+
+    @staticmethod
+    def _near_missed(st: dict, E: float) -> None:
+        """No reading near E to be had (no video, a pagelist refused): that moment isn't looked
+        for again, nor another before RETRY, doubling with each miss in a row (up to NONE_TTL).
+        The extension asks every 20 s while it has none near: each ask was a pagelist, a
+        playurl and every mirror tried again."""
+        if E not in st.setdefault("tried", []):
+            st["tried"].append(E)
+        n = st.get("near_fails", 0) + 1
+        st.update(near_fails=n, near_again=time.time() + min(RETRY * 2 ** (n - 1), NONE_TTL))
 
     def _fail(self, k: tuple[str, int], why: str) -> None:
         """An error: asked again after RETRY, doubling with each in a row (Bilibili's risk control
@@ -659,6 +679,7 @@ class VodClockService:
         """Bytes a..b of the video, from the first mirror that sends just those. Streamed: one
         that ignores Range would send the whole page's video (GBs) before it could be refused."""
         err: Exception | None = None
+        refused = False
         n = b - a + 1
         for u in urls:
             try:
@@ -666,7 +687,7 @@ class VodClockService:
                     async with self.bili.http.stream("GET", u, timeout=30, headers={
                             "User-Agent": bb.UA, "Referer": "https://www.bilibili.com/", "Range": f"bytes={a}-{b}"}) as r:
                         if r.status_code != 206:
-                            raise RuntimeError(f"HTTP {r.status_code}")
+                            raise (Refused if r.status_code in (403, 404, 410) else RuntimeError)(f"HTTP {r.status_code}")
                         got = bytearray()
                         async for chunk in r.aiter_bytes():
                             got += chunk
@@ -676,8 +697,8 @@ class VodClockService:
                     return bytes(got)
                 err = RuntimeError(f"{len(got)} bytes for {n}")
             except Exception as e:  # the next mirror
-                err = e
-        raise RuntimeError(f"the replay's video: {err}")
+                err, refused = e, refused or isinstance(e, Refused)
+        raise (Refused if refused else RuntimeError)(f"the replay's video: {err}")
 
     async def _video(self, bvid: str, page: dict) -> Video:
         pk = (bvid, int(page["cid"]))
@@ -701,8 +722,8 @@ class VodClockService:
         seg = next((s for s in v.segs if s[0] <= at < s[0] + s[1]), v.segs[-1])
         try:
             data = await self._range(v.urls, seg[2], seg[2] + seg[3] - 1)
-        except Exception:
-            self._video_cache.pop((bvid, int(page["cid"])), None)  # (its signed URLs may be what failed)
+        except Refused:
+            self._video_cache.pop((bvid, int(page["cid"])), None)  # (its signed URLs, expired: new ones next time)
             raise
         return v.init + data, at - seg[0]
 
@@ -757,11 +778,15 @@ class VodClockService:
             self._say(k, status="ok", why=None)
         # then a reading near E, where the extension is: where the nearest says E is, and a bit on
         if E is not None and self._wants(st, E):
+            st.setdefault("tried", []).append(E)  # (read or not: looked for once, not at every ask)
             near = min(done(), key=lambda x: abs(x[1] - E))
             c = content_of(pages, near[0].page, near[0].at) + (E - near[1])
             spots = [pa for cc in (c, c + 4, c + 8) if (pa := page_at(pages, cc))]
             if any(await asyncio.gather(*(read(p, a) for p, a in spots))):
-                st.setdefault("tried", []).append(E)
+                st.pop("near_fails", None)
+                st.pop("near_again", None)
+            elif spots:  # (none downloaded)
+                self._near_missed(st, E)
             done()
 
 
