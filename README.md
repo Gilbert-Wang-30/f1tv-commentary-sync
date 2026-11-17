@@ -429,9 +429,9 @@ docker compose up -d
   Its `config.json` (in `<FONE_RECORDINGS>/fone/`) is written from `recorder/config.json` on its
   first start (`recorder/seed.sh`) and is 录播姬's own after that (rooms you add in it stay): to
   seed it again from `FONE_ROOMS`, stop fone-recorder, delete that file and start it. With no
-  room in its `config.json` nor in `FONE_ROOMS` it doesn't start (`docker logs fone-recorder`
-  says so) rather than record nothing; a `config.json` with no room is written again once
-  `FONE_ROOMS` names one. A room number alone (`FONE_ROOMS=12345678`) is a channel of that name.
+  room in its `config.json` nor in `FONE_ROOMS` it stops at once rather than record nothing, and
+  keeps restarting (Docker backs off, up to a minute apart; `docker logs fone-recorder` says
+  what to set); a `config.json` with no room is written again once `FONE_ROOMS` names one. A room number alone (`FONE_ROOMS=12345678`) is a channel of that name.
 - **fone-recorder-gate:** judges each stream by its title: F1 (`GATE_RECORD`; by default F1/F2/F3,
   Formula, Grand Prix, GP, FP1-3, Qualifying, Sprint, Race and the Chinese session names) or not
   (`GATE_SKIP` for titles never to record). Until `GATE_ACTION=stop` it only logs what it would

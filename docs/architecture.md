@@ -80,7 +80,8 @@ backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into
 template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone, and again only when
 the file has no room (no `RoomId`) and `FONE_ROOMS` names one (the old file kept as
 `config.json.bak`); with no room in the file (or no file) and none in `FONE_ROOMS` it exits 1
-with what to set, so the recorder restarts saying so instead of recording nothing. The gate
+with what to set, so the recorder keeps restarting (Docker backs off, up to a minute apart),
+saying so each time, instead of recording nothing. The gate
 (`recorder/gate.py`) only logs the streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
 profile (`recorder`, `streamlink`) and deletes files under `<FONE_RECORDINGS>/fone/` and
 `fone-import/` `FONE_KEEP_DAYS` (21) after their last write. The server image is

@@ -65,8 +65,8 @@ image to run with your own streamer, recorder and storage.
   the one setting for the server and the recorder (`recorder/seed.sh` writes the recorder's
   config from it, a folder per room number, which is that room's channel; `0123` is room 123).
   A room number alone (`FONE_ROOMS=12345678`) is a channel of that name. With no room named, in
-  `FONE_ROOMS` or in the recorder's config, fone-recorder doesn't start, and its log says what
-  to set.
+  `FONE_ROOMS` or in the recorder's config, fone-recorder stops at once and keeps restarting
+  (Docker backs off), its log saying what to set.
 - The recorder gate's default filter is any streamer's F1 titles, and it only logs what it would
   stop until `GATE_ACTION=stop`; `GATE_RECORD` replaces the default filter.
 - The bundled sponsor clips are matched only on the channel they were made from; other channels

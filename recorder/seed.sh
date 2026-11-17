@@ -8,7 +8,8 @@
 # After that the file is 录播姬's own (rooms added through its API stay) and this leaves it
 # alone, unless it has no room at all and FONE_ROOMS now names one: then it's written again
 # (the old one kept as config.json.bak). With no room in config.json nor in FONE_ROOMS nothing
-# is written and the recorder doesn't start (it would record nothing): its log says what to set.
+# is written and the recorder stops before it starts (it would record nothing): its log says what
+# to set, again at each of the restarts its restart policy makes (Docker backs off, up to a minute).
 # To seed it again from FONE_ROOMS by hand, stop fone-recorder, delete
 # <FONE_RECORDINGS>/fone/config.json and start it.
 set -eu
@@ -40,14 +41,14 @@ if [ -f "$CONFIG" ]; then
   # (录播姬 writes its own JSON back without spaces: a room is a RoomId whatever the layout)
   grep -q '"RoomId"' "$CONFIG" && exit 0
   if [ -z "$rooms" ]; then
-    echo "seed: $CONFIG has no room and FONE_ROOMS names none, so fone-recorder has nothing to record and doesn't start." >&2
+    echo "seed: $CONFIG has no room and FONE_ROOMS names none, so fone-recorder has nothing to record: it stops, and keeps restarting until it has one." >&2
     echo "seed: set FONE_ROOMS=<room>=<channel> in .env (the room: the number in live.bilibili.com/<room>), then: docker compose up -d" >&2
     exit 1
   fi
   cp "$CONFIG" "$CONFIG.bak"
   echo "seed: $CONFIG has no room: writing it again from FONE_ROOMS (the old one is $CONFIG.bak)"
 elif [ -z "$rooms" ]; then
-  echo "seed: FONE_ROOMS names no Bilibili room, so fone-recorder has nothing to record and doesn't start." >&2
+  echo "seed: FONE_ROOMS names no Bilibili room, so fone-recorder has nothing to record: it stops, and keeps restarting until it has one." >&2
   echo "seed: set FONE_ROOMS=<room>=<channel> in .env (the room: the number in live.bilibili.com/<room>), then: docker compose up -d" >&2
   echo "seed: (a streamer on another site: leave the recorder profile out of COMPOSE_PROFILES and use streamlink)" >&2
   exit 1
