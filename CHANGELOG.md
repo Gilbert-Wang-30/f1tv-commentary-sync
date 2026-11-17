@@ -86,7 +86,8 @@ image to run with your own streamer, recorder and storage.
   `bililive/recorder:2.18.0`, `python:3.12.16-alpine3.24` (fone-ext, the gate, fone-streamlink's
   base) and `alpine:3.24.4` (the janitor).
 - OpenF1 is asked a second apart (was half a second), and a 429's `Retry-After` is waited out
-  when it's longer than the backoff: OpenF1 rate-limits by address, which a server may share.
+  when it's longer than the backoff, by every session's rebuild and car positions, not only the
+  one it answered: OpenF1 rate-limits by address, which a server may share.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
   what it can't use with the reason, and *Save* keeps everything but a bad server list (and
   which source to use, which may depend on it, kept as it was); a first run's server is saved

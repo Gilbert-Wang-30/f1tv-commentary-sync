@@ -73,7 +73,7 @@ _STATUS = {"SESSION STARTED": "Started", "SESSION ABORTED": "Aborted", "SESSION 
 # Qualifying part lengths for a part that didn't run to its flag (otherwise measured): Q3 is
 # 13 minutes from 2026 (both 2026 qualifyings captured here).
 QUALI_MINUTES = {"Q": (18, 15, 12), "SQ": (12, 10, 8)}
-RETRY_AFTER_MAX = 120.0  # a 429's Retry-After waited for up to this; longer: given up for now
+RETRY_AFTER_MAX = 120.0  # a 429's Retry-After waited for up to this; longer: given up, not_before kept
 
 
 class OpenF1Error(Exception):
@@ -101,10 +101,13 @@ def retry_after(r: httpx.Response, now: float | None = None) -> float | None:
 class OpenF1:
     """OpenF1's REST API, gently: one request at a time, spaced, retried on 429 and 5xx with a
     doubling backoff, and after a 429's Retry-After when it says longer (the free tier is rate
-    limited: 429s were seen at 1-2 s apart from one address, which a server may share)."""
+    limited: 429s were seen at 1-2 s apart from one address, which a server may share).
+
+    `not_before` (time.monotonic()) is when it may ask next: the pace, a backoff, a Retry-After,
+    also one too long to wait out here. A client made for the next session starts from it."""
 
     def __init__(self, client: httpx.AsyncClient, base: str = BASE, pace: float = 1.0, retry: float = 2.0,
-                 tries: int = 4):
+                 tries: int = 4, not_before: float = 0.0):
         self.client = client
         self.base = base.rstrip("/")
         self.pace = pace
@@ -112,18 +115,18 @@ class OpenF1:
         self.tries = tries
         self.requests = 0
         self.bytes = 0
-        self._next = 0.0
+        self.not_before = not_before
 
     async def get(self, endpoint: str, **params: Any) -> list[dict]:
         """One table's rows; [] when OpenF1 has none (it answers 404 to an empty result)."""
         last = "no answer"
         for attempt in range(self.tries):
             if attempt:
-                self._next = max(self._next, time.monotonic() + min(60.0, self.retry * 2 ** (attempt - 1)))
-            wait = self._next - time.monotonic()
+                self.not_before = max(self.not_before, time.monotonic() + min(60.0, self.retry * 2 ** (attempt - 1)))
+            wait = self.not_before - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
-            self._next = time.monotonic() + self.pace
+            self.not_before = time.monotonic() + self.pace
             try:
                 r = await self.client.get(f"{self.base}/{endpoint}", params=params,
                                           timeout=httpx.Timeout(30, read=60))
@@ -143,10 +146,10 @@ class OpenF1:
             if r.status_code != 429 and r.status_code < 500:
                 break
             if r.status_code == 429 and (after := retry_after(r)) is not None:
+                self.not_before = max(self.not_before, time.monotonic() + after)
                 if after > RETRY_AFTER_MAX:
                     last += f", retry after {after:.0f} s"
                     break
-                self._next = max(self._next, time.monotonic() + after)
         raise OpenF1Error(f"{endpoint}: {last}")
 
 

@@ -223,8 +223,10 @@ cached calendar) or by the plan for one that just ended uncaptured, once it has 
 30 min; never over a capture or the archive (a complete archive, should F1 serve it again,
 still replaces a rebuild). OpenF1's tables (drivers, laps, intervals, position, stints, pit,
 race_control, weather, session_result, and each car's location within the session's window:
-~35 requests, one at a time 1 s apart, backing off on 429/5xx, after a 429's `Retry-After` when it says longer (over 2 min: given up until the session's next try); a race ~100 MB down, ~12 MB
-stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
+~35 requests, one at a time 1 s apart, also from one session to the next, backing off on
+429/5xx, after a 429's `Retry-After` when it says longer; over 2 min, the rebuild is given up
+and no session's rebuild or car positions ask OpenF1 until it's over; a race ~100 MB down,
+~12 MB stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
 feed would have shown it (a lap's time when the lap ends, a stint's tyre at the pit exit, the
 deleted laps after race control's message, Retired once the car has stopped), so the state at
 `t` never shows the future. Checked against the server's real archives of the 2026 Singapore

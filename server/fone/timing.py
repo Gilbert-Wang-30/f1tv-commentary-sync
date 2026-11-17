@@ -323,6 +323,7 @@ class TimingService:
         self._openf1_sem: asyncio.Semaphore | None = None
         self._openf1: dict[int, _Attempt] = {}  # last OpenF1 answer per session
         self._openf1_busy: set[int] = set()  # being rebuilt from OpenF1, or waiting their turn
+        self._openf1_not_before = 0.0  # (monotonic) OpenF1 asked no sooner, whichever session: _openf1_api
         self._fills: dict[int, _Attempt] = {}  # OpenF1's car positions for a capture that had none
         self._fill_tasks: dict[int, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -669,6 +670,16 @@ class TimingService:
         return time.time() - last.at >= wait
 
     # ---- OpenF1
+    def _openf1_api(self) -> timing_openf1.OpenF1 | str:
+        """OpenF1 for one rebuild or fill (under _openf1_sem), asking no sooner than the last one
+        left it: its pace, a backoff, a 429's Retry-After. While a Retry-After too long for a
+        rebuild to wait out (timing_openf1.RETRY_AFTER_MAX) runs, an error without asking."""
+        wait = self._openf1_not_before - time.monotonic()
+        if wait > timing_openf1.RETRY_AFTER_MAX:
+            return f"error: retry after {wait:.0f} s (an earlier 429's Retry-After)"
+        return timing_openf1.OpenF1(self._client(), self.settings.openf1_base, pace=self.settings.openf1_pace,
+                                    retry=self.settings.openf1_retry, not_before=self._openf1_not_before)
+
     async def fetch_openf1(self, key: int) -> str:
         """Rebuild a session from OpenF1 and install it, unless something is stored for it.
         Returns ok | stored | not over | no data | error: ..."""
@@ -683,9 +694,13 @@ class TimingService:
                 if sess and time.time() < sess.end + timing_openf1.SETTLE_SECONDS:
                     return "not over"
                 started = time.monotonic()
-                api = timing_openf1.OpenF1(self._client(), self.settings.openf1_base, pace=self.settings.openf1_pace,
-                                           retry=self.settings.openf1_retry)
-                tables = await timing_openf1.fetch(api, key, time.time())
+                api = self._openf1_api()
+                if isinstance(api, str):
+                    return api
+                try:
+                    tables = await timing_openf1.fetch(api, key, time.time())
+                finally:
+                    self._openf1_not_before = max(self._openf1_not_before, api.not_before)
                 if isinstance(tables, str):
                     return tables
                 staged = self.store.staging(key)
@@ -753,9 +768,13 @@ class TimingService:
                     return "not a finished capture"
                 if self._has_positions(key):
                     return "has positions"
-                api = timing_openf1.OpenF1(self._client(), self.settings.openf1_base, pace=self.settings.openf1_pace,
-                                           retry=self.settings.openf1_retry)
-                tables = await timing_openf1.fetch_positions(api, key, time.time())
+                api = self._openf1_api()
+                if isinstance(api, str):
+                    return api
+                try:
+                    tables = await timing_openf1.fetch_positions(api, key, time.time())
+                finally:
+                    self._openf1_not_before = max(self._openf1_not_before, api.not_before)
                 if isinstance(tables, str):
                     return tables
                 lines = await asyncio.to_thread(timing_openf1.position_lines, tables)

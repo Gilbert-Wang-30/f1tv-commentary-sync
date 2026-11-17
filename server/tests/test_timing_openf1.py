@@ -771,6 +771,40 @@ def test_openf1_is_asked_a_second_apart_and_waits_out_a_retry_after(monkeypatch)
             {"Retry-After": "-5"}, {"Retry-After": "nan"})] == [None, None, 0.0, None]
 
 
+def test_a_retry_after_holds_for_every_session_and_the_pace_runs_on(tmp_path, monkeypatch):
+    """Each rebuild or fill has its own client: one given up on a 429's Retry-After (3600 s,
+    too long to wait) leaves no other session or car positions asking OpenF1 before it's over,
+    and each starts at the pace the last one left (it asks no sooner after one that failed)."""
+    live_capture_without_positions(tmp_path)  # (RACE: a finished capture, no car positions)
+    fake = FakeOpenF1({RACE: race_world(), PRACTICE: practice_world(), QUALI: quali_world()})
+    hits, limited = [], [True]
+
+    def api(request):
+        hits.append(request.url.path)
+        return httpx.Response(429, headers={"Retry-After": "3600"}) if limited[0] else fake(request)
+
+    slept, real_sleep = [], asyncio.sleep
+
+    async def sleep(d, *a, **k):  # (time stands still: what would be waited is noted)
+        slept.append(d)
+        await real_sleep(0)
+
+    monkeypatch.setattr(timing_openf1.asyncio, "sleep", sleep)
+    svc = service(tmp_path, api, openf1_pace=30.0)
+    first = asyncio.run(svc.fetch_openf1(PRACTICE))
+    assert first.startswith("error:") and "HTTP 429, retry after 3600 s" in first and len(hits) == 1
+    limited[0] = False  # (OpenF1 would answer now: it isn't asked)
+    for got in (asyncio.run(svc.fetch_openf1(QUALI)), asyncio.run(svc.fill_positions(RACE))):
+        assert len(hits) == 1 and got.startswith("error: retry after 3"), got
+    assert slept == [] and svc._openf1_not_before > time.monotonic() + 3500
+    svc._openf1_not_before = time.monotonic() - 1  # (the hour over)
+    assert asyncio.run(svc.fill_positions(RACE)) == "ok" and len(hits) > 1
+    asked = len(hits)
+    slept.clear()
+    assert asyncio.run(svc.fetch_openf1(QUALI)) == "ok" and len(hits) > asked
+    assert 25 < slept[0] <= 30  # (its first request a pace after the fill's last)
+
+
 def live_capture_without_positions(tmp_path) -> dict:
     """The race as our own live capture of the anonymous feed would hold it: no Position.z."""
     d = tmp_path / "timing" / str(RACE)
