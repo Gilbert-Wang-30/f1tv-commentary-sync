@@ -42,11 +42,8 @@ jobs:
       - name: e2e/layout_run.sh (mock F1 TV page, no network)
         if: ${{ !cancelled() && contains(inputs.suites, 'layout') }}
         env:
-          FFMPEG_IMAGE: fone:e2e   # only its ffmpeg; the script's default is a production tag
           SHOTS: ${{ runner.temp }}/layout-shots
-        run: |
-          docker build -q -t fone:e2e server
-          ./e2e/layout_run.sh || { echo "::warning::e2e/layout failed once, again"; ./e2e/layout_run.sh; }
+        run: ./e2e/layout_run.sh || { echo "::warning::e2e/layout failed once, again"; ./e2e/layout_run.sh; }
       - name: layout screenshots
         if: ${{ !cancelled() && contains(inputs.suites, 'layout') }}
         uses: actions/upload-artifact@v4

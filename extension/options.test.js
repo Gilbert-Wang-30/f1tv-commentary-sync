@@ -18,7 +18,7 @@ function pure() {
   const [head] = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8').split('\nconst SERVERS');
   vm.runInContext(head, ctx); // (its first part: no page needed)
   const O = ctx.FoneOptions;
-  return { server: (s) => plain(O.server(s)), servers: (t) => plain(O.servers(t)), source: O.source };
+  return { server: (s) => plain(O.server(s)), servers: (t) => plain(O.servers(t)), source: O.source, versions: O.versions };
 }
 
 test('a server as typed: scheme and port filled in only where none was typed', () => {
@@ -59,11 +59,24 @@ test('the source kept: the chosen one, unless it is empty and the other is fille
   assert.equal(O.source('local', '', []), 'local');
 });
 
+test('versions: a line when the extension and the server are different releases, saying which to update', () => {
+  const O = pure();
+  assert.equal(O.versions('1.0.1', '1.0.1'), null);
+  assert.equal(O.versions('1.0.1', '1.0.3'), null); // (patches of one release work together)
+  assert.equal(O.versions('1.0.1-rc.1', '1.0.1'), null); // (a pre-release: its manifest's version_name)
+  assert.match(O.versions('1.0.1', '1.1.0'), /^⚠ The server is fone 1\.1\.0, this extension 1\.0\.1: update the extension/);
+  assert.match(O.versions('0.5.4', '1.0.1'), /update the extension/);
+  assert.match(O.versions('1.2.0', '1.0.1'), /^⚠ This extension is fone 1\.2\.0, the server 1\.0\.1: update the server/);
+  assert.match(O.versions('2.0.0', '1.9.9'), /update the server/);
+  assert.match(O.versions('1.10.0', '1.9.0'), /update the server/); // (numbers, not text)
+  for (const srv of ['dev', undefined, null, '', 'x.y']) assert.equal(O.versions('1.0.1', srv), null, String(srv));
+});
+
 // ---- the page --------------------------------------------------------------------------------
 
 const IDS = ['welcome', 'srcLocal', 'srcServer', 'localBox', 'serverBox', 'stream', 'bufferMin', 'testStream', 'outStream',
   'servers', 'channel', 'liveDirect', 'test', 'out', 'autoHold', 'soundSync', 'soundDuck', 'f1SoundFx', 'f1SoundEng',
-  'f1Subs', 'f1Pick', 'f1Intl', 'save', 'saved'];
+  'f1Subs', 'f1Pick', 'f1Intl', 'save', 'saved', 'versions'];
 
 function element(id) {
   const on = {};
@@ -79,7 +92,7 @@ function element(id) {
   };
 }
 
-async function page(stored = {}, answers = {}) {
+async function page(stored = {}, answers = {}, manifest = { version: '1.0.1' }) {
   const els = Object.fromEntries(IDS.map((id) => [id, element(id)]));
   els.channel.add({ text: '(most recent)', value: '' });
   const sync = { ...stored };
@@ -100,6 +113,7 @@ async function page(stored = {}, answers = {}) {
       return { json: async () => answers[hit] };
     },
     chrome: {
+      runtime: { getManifest: () => manifest },
       storage: {
         sync: {
           get: async (d) => ({ ...d, ...sync }),
@@ -150,7 +164,7 @@ test('a stream with a server for the stats keeps "This computer"', async () => {
   assert.equal(p.sync.stream, 'https://www.twitch.tv/name');
 });
 
-test('a server that can\'t be fetched isn\'t saved, and costs nothing else (F1 TV\'s sound is)', async () => {
+test('a server that can\'t be fetched isn\'t saved, nor the source; the rest is (F1 TV\'s sound)', async () => {
   const p = await page({ servers: ['http://fone.lan:8788'], source: 'server' });
   await p.type('servers', 'http://fone.lan:8788\nftp://nas');
   p.els.f1SoundFx.checked = false; p.els.f1SoundEng.checked = true;
@@ -162,7 +176,8 @@ test('a server that can\'t be fetched isn\'t saved, and costs nothing else (F1 T
   assert.equal(p.sync.f1Sound, 'eng');
   assert.equal(p.sync.f1Subs, true);
   assert.equal(p.els.servers.value, 'http://fone.lan:8788\nftp://nas'); // left to be fixed
-  assert.match(p.els.saved.textContent, /^Saved, except Server URLs, kept as they were: ftp:\/\/nas: only http.*Fix that line/);
+  assert.match(p.els.saved.textContent,
+    /^Saved, except the server list and which source to use, both kept as they were: ftp:\/\/nas: only http.*Fix that line first/);
 
   const q = await page(); // a first run: nothing to keep
   await q.type('servers', 'ftp://nas');
@@ -209,6 +224,42 @@ test('Test connection: the server\'s version, its channels, and whether it has t
   assert.equal(text.split(room).length, 2);
   assert.match(text, /⚠ No tesseract on the server/);
   assert.doesNotMatch(text, /No Bilibili room set on the server/);
+});
+
+test('the versions line: this extension\'s, the server\'s once Test connection reads it, and a different release said', async () => {
+  const answers = (version) => ({
+    '/api/health': { ok: true, files: 3, version, services: [] },
+    '/api/channels': [{ name: 'MyStreamer', files: 3, live: false }],
+  });
+  let p = await page({}, {}, { version: '1.0.1' });
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.0.1');
+  p = await page({}, {}, { version: '1.0.1', version_name: '1.0.1-rc.1' });
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.0.1-rc.1');
+
+  p = await page({ servers: ['http://s:8788'] }, answers('1.0.1'));
+  await p.els.test.fire('click');
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.0.1 · the server: fone 1.0.1');
+  assert.doesNotMatch(p.els.out.textContent, /⚠ .*update the/);
+
+  p = await page({ servers: ['http://s:8788'] }, answers('1.1.0'));
+  await p.els.test.fire('click');
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.0.1 · the server: fone 1.1.0');
+  assert.match(p.els.out.textContent, /⚠ The server is fone 1\.1\.0, this extension 1\.0\.1: update the extension/);
+
+  p = await page({ servers: ['http://s:8788'] }, answers('dev'), { version: '1.2.0' });
+  await p.els.test.fire('click');
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.2.0 · the server: fone dev');
+  assert.doesNotMatch(p.els.out.textContent, /⚠ .*update the/);
+
+  p = await page({ servers: ['http://s:8788'] }, {}); // nothing answers: no server version
+  await p.els.test.fire('click');
+  assert.equal(p.els.versions.textContent, 'This extension: fone 1.0.1');
+});
+
+test('the page links the releases', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  assert.match(html, /<a href="https:\/\/github\.com\/Gilbert-Wang-30\/f1tv-commentary-sync\/releases"[^>]*>Releases<\/a>/);
+  assert.match(html, /id="versions"/);
 });
 
 (async () => {

@@ -6,6 +6,11 @@
 #
 # Paths are long-syntax binds: one that doesn't exist is an error, not a new empty folder
 # made by docker as root (on the system disk, if a share isn't mounted).
+#
+# The project is "fone" whatever this folder is called (a clone, or a release's source archive,
+# which unpacks under another name): moving to another copy keeps the same containers and data
+# volume (fone_fone-data), and `docker compose` in any copy manages them.
+name: fone
 services:
   fone:
     # The released image. `docker compose build fone` builds it from ./server instead: give it
@@ -17,8 +22,12 @@ services:
     # A cap on the screen-clock OCR and the ffmpeg jobs (a one-off pass over existing recordings
     # after an upgrade), for a host that also runs the recorders. 0: none.
     cpus: ${FONE_CPUS:-0}
+    # On every interface (IPv4 and IPv6) unless FONE_BIND is set, for the browsers on your LAN.
+    # The server has no login: on a VPS or any host the internet reaches, FONE_BIND (.env) is a
+    # private address (a VPN's, or 127.0.0.1 and an SSH tunnel). Docker's published ports bypass
+    # ufw's rules.
     ports:
-      - "${FONE_PORT:-8788}:8788"
+      - "${FONE_BIND:+${FONE_BIND:-}:}${FONE_PORT:-8788}:8788"
     volumes:
       # All recorder output, read-only. Each streamer's folder becomes a channel, whichever
       # recorder wrote it (a 录播姬 you already run, or fone-recorder / fone-streamlink below).
@@ -71,7 +80,7 @@ services:
     profiles: ["ext-update"]
     restart: unless-stopped
     ports:
-      - "8789:8000"
+      - "${FONE_BIND:+${FONE_BIND:-}:}8789:8000"   # (the same address as the server's)
     volumes:
       - type: bind
         source: ${FONE_EXT_DIST:-./fone-dist}
@@ -110,16 +119,17 @@ services:
       FONE_ROOMS:
 
   # Streamers on other sites (YouTube, Twitch, Douyin, Huya, Kick, … anything streamlink plays):
-  # FONE_STREAMS in .env, then `docker compose --profile streamlink up -d --build fone-streamlink`
-  # (name the service: a bare --build also rebuilds fone from the working tree). Same folder
-  # layout as fone-recorder, so each channel shows up in the server like a Bilibili one, with the
-  # sync, the stats and sponsor muting (once its clips are in the reference set). No 弹幕 or
-  # backfill (those are Bilibili's), and no measured delay or video handoff: those read FLV
-  # recordings, and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has
-  # the options.
+  # FONE_STREAMS in .env, then `docker compose --profile streamlink up -d`. It's built here, not
+  # pulled (pull_policy: build): `docker compose pull` skips it, and each `up -d` builds it from
+  # this checkout (from cache when nothing changed, leaving it running). Same folder layout as
+  # fone-recorder, so each channel shows up in the server like a Bilibili one, with the sync, the
+  # stats and sponsor muting (once its clips are in the reference set). No 弹幕 or backfill
+  # (those are Bilibili's), and no measured delay or video handoff: those read FLV recordings,
+  # and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has the options.
   fone-streamlink:
     build: ./recorder/streamlink
     image: fone-streamlink:latest
+    pull_policy: build
     container_name: fone-streamlink
     profiles: ["streamlink"]
     restart: unless-stopped

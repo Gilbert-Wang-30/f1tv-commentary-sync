@@ -205,6 +205,9 @@ jobs:
 
           ## Install
 
+          **Upgrading: update the extension before the server.** A server can need what only its
+          own release's extension sends, and answer an older extension with 403.
+
           **Extension.** Download `fone-extension-@VERSION@.zip` below and extract it into a folder
           you'll keep (not Downloads): it holds one folder, `fone`. In Chrome open
           `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick that `fone`
@@ -223,7 +226,8 @@ jobs:
 
           **Server** (optional: replays, stats, 弹幕): `docker pull @IMAGE@:@VERSION@`
           (linux/amd64, linux/arm64). The README covers running it on your recordings with
-          `docker compose`.
+          `docker compose`, and updating it (once the extension is): `git pull`, then
+          `docker compose pull` and `docker compose up -d`.
 
           **Checking the download** against `SHA256SUMS`: `sha256sum -c SHA256SUMS` (Linux),
           `shasum -a 256 -c SHA256SUMS` (macOS), or on Windows

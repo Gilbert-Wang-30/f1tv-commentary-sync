@@ -260,7 +260,8 @@ replaces the old one's files (Windows: *Extract All…* → *Browse* to that fol
 `unzip -o fone-extension-<version>.zip -d <that folder>`), then click ↻ on fone's card in
 `chrome://extensions`. The same folder keeps the same extension, and with it your settings (a
 copy loaded from another folder is another extension, starting from scratch). A release
-install doesn't update itself: the repository's releases page says when there's a new one.
+install doesn't update itself: the repository's releases page says when there's a new one
+(fone's settings link it, beside the version you have).
 
 From source, the `extension` folder of a clone loads the same way (with its tests in it).
 
@@ -299,11 +300,12 @@ Bilibili's anonymous 超清, the lowest it offers logged out, can be 0.5–1.3 M
 ## Run a server
 
 The server records the streamer around the clock, so it runs on a machine that's on when they
-are live: a home server, a NAS, a small VPS. It needs Docker with Compose v2 and a folder for the
-recordings with room for a few weeks of them (fone's recorders' files are deleted 21 days after
-they end). The image is `ghcr.io/gilbert-wang-30/fone` for amd64 and arm64, from 1.0.1 on:
-`:<version>` for one release (`docker-compose.yml` names the one it came with), `:<major>.<minor>`
-and `:latest` for the newest. How a release is made: [docs/releasing.md](docs/releasing.md).
+are live: a home server, a NAS, a small VPS (on a VPS, bind it to a private address: below). It
+needs Docker with Compose v2 and a folder for the recordings with room for a few weeks of them
+(fone's recorders' files are deleted 21 days after they end). The image is
+`ghcr.io/gilbert-wang-30/fone` for amd64 and arm64, from 1.0.1 on: `:<version>` for one release
+(`docker-compose.yml` names the one it came with), `:<major>.<minor>` and `:latest` for the
+newest. How a release is made: [docs/releasing.md](docs/releasing.md).
 
 ### 1. The server
 
@@ -311,6 +313,7 @@ and `:latest` for the newest. How a release is made: [docs/releasing.md](docs/re
 git clone https://github.com/Gilbert-Wang-30/f1tv-commentary-sync fone && cd fone   # or a release's source archive
 cp .env.example .env                  # then edit it: FONE_RECORDINGS at least (below)
 mkdir -p /srv/recordings/fone /srv/recordings/fone-import    # your FONE_RECORDINGS, and these two in it
+sudo chown 1000:1000 /srv/recordings/fone /srv/recordings/fone-import   # FONE_UID:FONE_GID (1000 by default)
 docker compose up -d                  # the server alone, on port 8788
 ```
 
@@ -318,14 +321,43 @@ docker compose up -d                  # the server alone, on port 8788
 setup in it. `FONE_RECORDINGS` is the folder every recorder writes under, a folder per streamer:
 the server reads all of it (read-only), backfill writes into `fone-import/`, fone's own
 recorders into `fone/`. A folder that doesn't exist stops the container with an error rather
-than being created empty. `.env.example` says what each setting does; the
-[Configuration](#configuration) tables list them all.
+than being created empty. The two folders belong to `FONE_UID:FONE_GID` (`.env`, 1000:1000 by
+default), the user fone-streamlink and the recorder gate write as: in a folder they don't own
+they fail with *permission denied* (fone-recorder, 录播姬, sets its folder's owner itself).
+`.env.example` says what each setting does; the [Configuration](#configuration) tables list
+them all.
+
+Until the server image is on ghcr.io for everyone (a release's first days, or a fork that
+hasn't published its own), `docker compose up -d` says the pull was *denied* and builds
+`./server` instead: several minutes, and the server reports its version as `dev`. It runs the
+same. That build takes the release image's name, so `up -d` alone keeps it: once the image is
+out, `docker compose pull && docker compose up -d` replaces it.
 
 The status page is at `http://<host>:8788/`. The server keeps everything it computes in the
-`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. What the
-configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
-(`docker logs fone`), on the status page and in the settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
-then `docker compose build fone`.
+`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. It's
+`fone_fone-data` whatever the folder you run `docker compose` in is called (`docker-compose.yml`
+names the project `fone`), so a release's source archive, which unpacks under another name,
+carries on with the same one. What the configuration leaves out (no Bilibili room, a missing
+folder) is said in its log at start (`docker logs fone`), on the status page and in the
+settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev`
+in `.env`, then `docker compose build fone`.
+
+**Who can reach it.** The server has no login. Its port is published on every interface (IPv4
+and IPv6) unless `FONE_BIND` is set, for the browsers elsewhere on your LAN, and anything that
+reaches it can read its open routes ([Server API](#server-api)); the header the rest asks for
+(`X-Fone: 1`) keeps web pages out, not scripts. On a VPS, or any host the internet reaches, never
+expose 8788 to the internet: set `FONE_BIND` in `.env` to a private address, the host's Tailscale
+or WireGuard address (`tailscale ip -4`) so only your VPN reaches it, or `127.0.0.1` with an SSH
+tunnel from each browser's machine (`ssh -N -L 8788:127.0.0.1:8788 <host>`, then
+`http://localhost:8788` in fone's settings). A firewall on the host doesn't cover it: Docker's
+published ports bypass ufw's rules. A VPN's address must exist when Docker starts: a container
+published on an address the host doesn't have fails to start, and after a reboot Docker doesn't
+retry it. Either let the host bind it before it exists (the sysctl
+`net.ipv4.ip_nonlocal_bind=1`, in a file in `/etc/sysctl.d/`) or start Docker after the VPN
+(`sudo systemctl edit docker`, then `After=tailscaled.service` and `Wants=tailscaled.service`
+under `[Unit]`; WireGuard's is `wg-quick@wg0.service`). `127.0.0.1` with a tunnel doesn't have
+this problem. `FONE_BIND` is fone-ext's address too (port 8789,
+[Advanced](#advanced-a-self-hosted-update-channel)).
 
 ### 2. A recorder: configure your streamer
 
@@ -340,10 +372,33 @@ In fone's settings choose **A fone server** and enter its address, `http://<host
 (`192.168.1.20` or `my-server:8788` is read as that), one per line, tried in order: an address
 that works away from home first (a VPN name, say), the LAN one second. *Test connection* shows
 which one answers, the server's version, its channels, whether it has the channel's Bilibili
-room and what its setup leaves out. The page also sets the commentary channel, live auto-hold and whether live comes straight
-from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
-a `user:password@`), *Save* says which and why and keeps the server list as it was; the rest of
-the page is saved.
+room and what its setup leaves out; the extension's version is at the top of the page, with the
+server's once tested (and which to update when they're different releases) and a link to the
+releases. The page also sets the commentary channel, live auto-hold and whether live comes
+straight from the streamer's Bilibili room (on by default). With a server line it can't use
+(`ftp://…`, a `user:password@`), *Save* says which and why and keeps the server list and which
+source to use (*This computer* or *A fone server*) as they were; the rest of the page is saved.
+
+### Updating the server
+
+**Update the extension before the server** ([Install the extension](#install-the-extension)):
+since 1.0.1 the server answers most of its routes (the commentary's timeline, F1 TV's lookups,
+the delays, the stats) only to an extension of 1.0.1 or newer, which sends the header they ask
+for; an older one gets 403 from them and plays nothing from the server. The settings page shows
+both versions (*Test connection*) and links the releases. Then, in the folder with
+`docker-compose.yml`:
+
+```bash
+git pull                       # a release's source archive: unpack the new one, copy .env (and recorder/api.env) into it
+docker compose pull            # the server image docker-compose.yml now names, and the recorders'
+docker compose up -d           # recreates what changed; the data volume and the recordings stay
+```
+
+`docker-compose.yml` names its own release's image (`fone:<version>`), so a new checkout runs
+the new server. A `FONE_IMAGE` you set in `.env` stays as it is: bump its version there first
+(or remove it). A server you build yourself (`FONE_IMAGE=fone:dev`): `docker compose build fone`
+instead of the pull. With the `streamlink` profile, `pull` skips fone-streamlink (it's built
+here, not pulled) and `up -d` builds it from the new checkout.
 
 ## Configure your streamer
 
@@ -412,10 +467,11 @@ COMPOSE_PROFILES=streamlink
 ```
 
 ```bash
-docker compose --profile streamlink up -d --build fone-streamlink
+docker compose --profile streamlink up -d
 ```
 
-Name the service: without it, `--build` also builds the fone server from the working tree. The
+fone-streamlink is built here, not pulled: each `up -d` builds it from the checkout (when nothing
+changed, from cache, leaving a running one as it is), and `docker compose pull` skips it. The
 profile starts fone-janitor too, which deletes its recordings after `FONE_KEEP_DAYS` (21). Its
 recordings are MPEG-TS, audio only by default, in the same layout; see
 [Other streamers and platforms](#other-streamers-and-platforms) for what that leaves out.
@@ -508,6 +564,7 @@ where its player happened to start.
 | `FONE_RECORDINGS` | (required) | the recordings' folder on the host, a folder per streamer: mounted read-only at `/rec`, except `fone-import/` (backfill's); fone's recorders write into `fone/`. Both must exist |
 | `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.1` | the server image (`docker compose build fone` builds `./server` under this name) |
 | `FONE_PORT` | `8788` | the server's port on the host |
+| `FONE_BIND` | (every interface) | the host address the server's port (and fone-ext's) is published on: unset, every interface, IPv4 and IPv6; on a VPS a private one, a VPN's or `127.0.0.1` ([Run a server](#1-the-server)) |
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |
 | `COMPOSE_PROFILES` | | optional services `docker compose up -d` starts too: `recorder` (fone-recorder, its gate, the janitor), `streamlink` (fone-streamlink, the janitor), `ext-update` (fone-ext, [Advanced](#advanced-a-self-hosted-update-channel)) |
 | `FONE_UID`, `FONE_GID` | `1000` | the user the recorders write as |
@@ -628,10 +685,10 @@ gets 403, a web page included ([Privacy and security](#privacy-and-security)).
 ## Development
 
 ```bash
-# server: 250+ tests (8 skip without the real recordings, below); -rs lists the skipped ones
-docker build -t fone:dev server
+# server: 280+ tests (a few skip without the real recordings, below); -rs lists the skipped ones
+docker build -t fone:e2e server   # a test tag: a server of yours may run fone:dev or fone:latest
 docker run --rm -v $PWD/server:/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
-  fone:dev sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
+  fone:e2e sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
 
 # extension unit tests: sync maths, dashboard layout, danmaku, self-update, live positions,
 # the in-browser recorder (demuxers, buffer, playlists), sync by sound, F1 TV's settings, the
@@ -651,7 +708,8 @@ python3 tools/check_version.py && tools/check_public.sh
 # a live stream recorded for 30 s by the extension's own code, in Node (checks a platform works)
 docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https://live.bilibili.com/<room>
 
-# end to end, headless Chrome with the real extension
+# end to end, headless Chrome with the real extension; each suite builds server/ as E2E_IMAGE
+# (fone:e2e) first, E2E_IMAGE=<tag> E2E_BUILD=0 runs an image you built instead
 ./e2e/run.sh                  # real server + mock F1 TV player: replay, Tiledmedia, 2x, live, danmaku, onboards
 ./e2e/local/run.sh            # no server: the stream recorded in the browser (mock Bilibili, HLS) with a live F1 TV
 ./tools/platform_check.sh     # any day, no F1 session needed: a stream live right now on each platform (Bilibili,
@@ -771,8 +829,9 @@ CHANGELOG.md           what changed in each version (a release's notes)
 
 - **The server has no login.** Anything that can reach port 8788 can read its open routes, so
   keep it on your LAN or a private network (a VPN such as Tailscale), never open to the
-  internet. A web page you visit is refused everything but the open reads
-  ([Server API](#server-api)): the writes (`PUT /api/sync`, the `POST` routes) and the reads
+  internet: on a VPS, `FONE_BIND` publishes it on a private address only (Docker's published
+  ports bypass ufw's rules; [Run a server](#1-the-server)). A web page you visit is refused
+  everything but the open reads ([Server API](#server-api)): the writes (`PUT /api/sync`, the `POST` routes) and the reads
   that start work (a Bilibili replay's frames downloaded and read, an OpenF1 rebuild, old
   recordings extracted, F1 TV looked up) or hand out every viewer's playback history
   (`GET /api/diag`), whether it asks by `fetch` or with an `<img>`, a `<script>`, a link or a
