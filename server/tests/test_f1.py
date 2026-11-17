@@ -416,6 +416,32 @@ def test_a_session_that_started_late_is_anchored_on_its_start_not_the_schedule(t
     assert asyncio.run(m.content("1000010209"))["p0"] == sched + PREROLL["race"]
 
 
+def test_the_session_feed_is_known_by_multiviewers_sync_offsets_too(tmp_path):
+    """MultiViewer now names other videos as some sessions' content: the 2026 Italian GP race's
+    post-race show (1000011143), Singapore's 1000079710. Their sync_offsets still list the race's
+    own feed on the main channel (1025) for the session, and that makes it the session feed:
+    anchored, not left to the manual clock (which refuses its Bilibili replay)."""
+    sched = ts("2026-09-06T13:00:00")
+    started = 1788696000.0 + 3810.936  # (the OpenF1 rebuild's Started)
+    pages = {cid: session_page(cid, 1293, 11361, title, sched) for cid, title in (
+        ("1000010363", "2026 Italian Grand Prix"), ("1000010364", "2026 Italian GP - F1 Kids"),
+        ("1000010365", "2026 Italian Grand Prix - F1 LIVE"), ("1000010366", "2026 Italian Grand Prix"))}
+    mv = mv_session(1293, 11361, "1000011143", "Race", 518.26,
+                    listed=[("1000010363", 1025), ("1000010363", 1033), ("1000010365", 1033),
+                            ("1000010366", 1025, 11236)])  # (another session's: as for 11378, 11390)
+    m, w = world_mapper(tmp_path, pages=pages, mvs={(1293, 11361): mv})
+    w["timing"][11361] = started
+    out = asyncio.run(m.content("1000010363"))
+    assert out["isSessionFeed"] and (out["anchor"], out["kind"]) == ("timing", "race")
+    assert abs(out["p0"] - (sched - 307.324)) < 1e-3 and out["channelOffsets"] == {"1025": 0, "1033": 0}
+    # the F1 Kids feed isn't listed (as 2025 Abu Dhabi's 1000010480): manual, as before; nor are a
+    # feed listed on another channel only, or for another session
+    for cid in ("1000010364", "1000010365", "1000010366"):
+        out = asyncio.run(m.content(cid))
+        assert not out["isSessionFeed"] and out["anchor"] is None and out["p0"] is None, cid
+        assert "timingStarted" not in out
+
+
 def test_a_preroll_anchor_is_upgraded_once_the_servers_timing_has_the_start(tmp_path):
     """The capture (or OpenF1's rebuild) often has Started only after the replay was first looked
     up: the next lookup re-resolves at once, not 10 min on, and only once for each Started."""

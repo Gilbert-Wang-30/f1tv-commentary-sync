@@ -59,6 +59,8 @@ PDT_CHECK = 0.5
 # an exact anchor known is never traded for one further down.
 ANCHORS = ("multiviewer", "timing", "pdt", "preroll")
 EXACT = ANCHORS[:3]
+# MultiViewer's main feed (INTERNATIONAL) in its sync_offsets: the session's own video.
+MAIN_CHANNEL = 1025
 
 
 def _rank(anchor: str | None) -> int:
@@ -104,6 +106,21 @@ def _pdt(mv: dict) -> float | None:
         return _iso(mv["session_start_pdt"])
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def _lists_feed(mv: dict, cid: str, sk: int | None) -> bool:
+    """MultiViewer's sync_offsets list `cid` on the main channel for this session. Its
+    f1tv_content_id sometimes names another video of the session (2026 Italian GP race: the
+    post-race show 1000011143; Singapore's race: 1000079710) while its sync_offsets still list
+    the session's own feed (1000010363, 1000010398)."""
+    so = mv.get("sync_offsets")
+    rows = so.get("sync_offsets") if isinstance(so, dict) else None
+    for o in rows if isinstance(rows, list) else []:
+        sd = o.get("streamData") if isinstance(o, dict) else None
+        if isinstance(sd, dict) and str(sd.get("contentId")) == str(cid) \
+                and _int(sd.get("channelId")) == MAIN_CHANNEL and sk is not None and _int(sd.get("sessionKey")) == sk:
+            return True
+    return False
 
 
 def _streams(raw: list) -> list[dict]:
@@ -250,7 +267,7 @@ class F1Mapper:
         if mv is None and mk and sk:
             mv = await self._json(MV_SESSION.format(mk=mk, sk=sk))
 
-        is_main = bool(mv) and str(mv.get("f1tv_content_id")) == str(cid)
+        is_main = bool(mv) and (str(mv.get("f1tv_content_id")) == str(cid) or _lists_feed(mv, cid, sk))
         if mv and mv.get("session_info"):
             session_name = mv["session_info"].get("Name") or session_name
         out["sessionName"] = session_name
