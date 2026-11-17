@@ -1745,7 +1745,9 @@ async function vodSearch(V, gen, Q, scan = true) {
   const { x, pa } = Q;
   V.seen = { r: Q.run, n: Q.run.n };
   const E = C.eventTime(S.clock, S.content, pa, null, now(), { manualBase: S.manualBase });
-  const placed = V.state === 'placed';
+  const placed = V.state === 'placed', at0 = V.placedAt;
+  // (placed meanwhile, by the clock on the streamer's screen, say: this look was for before)
+  const gone = () => gen !== S.gen || S.vod !== V || V.placedAt !== at0;
   const sr = SND.SR / VOD.F, q = FoneSound.decimate(x, VOD.F), hits = [];
   const L = { E, pa, pb: pa + x.length / SND.SR, run: Q.run, q };
   const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100;
@@ -1755,7 +1757,7 @@ async function vodSearch(V, gen, Q, scan = true) {
     V.checks++;
     const ck = await FoneVod.checkLikely(V.cands, L, (r, a, len) => vodWindow(V, r, a, len).catch(() => null), FoneSound.locate,
       { sr, near: VOD.NEAR, fresh: VOD.FRESH, agree: VOD.AGREE, need: VOD.VERIFY, pause: vodBreath });
-    if (gen !== S.gen || S.vod !== V) return false;
+    if (gone()) return false;
     checked = ck.checked;
     const h = ck.hit;
     // (where the clock on the streamer's screen says, or it still being read: not elsewhere)
@@ -1785,12 +1787,12 @@ async function vodSearch(V, gen, Q, scan = true) {
     while (!stop && k < plan.length) {
       const ch = plan[k++];
       const got = await vodChunk(V, ch, !hour || hour.has(vodChunkKey(ch))).catch((e) => { err = e; return null; });
-      if (gen !== S.gen || S.vod !== V) { stop = true; return; }
+      if (gone()) { stop = true; return; }
       if (!got) continue;
       const res = FoneSound.locate(q, got.y, sr);
       done++;
       await vodBreath();
-      if (gen !== S.gen || S.vod !== V) { stop = true; return; }
+      if (gone()) { stop = true; return; }
       if (!placed) V.text = `Looking for this moment in ${vodWho()}'s Bilibili replay… ${Math.round((100 * done) / plan.length)}%`;
       if (!res || res.edge) continue;
       const h = { rep: ch.rep, m: got.m0 + res.lag / sr, score: res.score, next: res.next };
@@ -1799,7 +1801,7 @@ async function vodSearch(V, gen, Q, scan = true) {
     }
   };
   await Promise.all(Array.from({ length: VOD.PAR }, worker));
-  if (gen !== S.gen || S.vod !== V) return false;
+  if (gone()) return false;
   hits.sort((a, b) => b.score - a.score);
   const best = hits[0], rival = best ? rivalOf(best) : 0;
   diag('vod', { look: V.tries, full, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
