@@ -35,6 +35,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 import statistics
 import subprocess
@@ -516,23 +517,45 @@ class VodClockService:
 
     def get(self, bvid: str, key: int, slot: float | None, E: float | None = None) -> dict:
         """What's known (status working | ok | none | error, readings); a job started when
-        there's more to read: the first frames, or ones near event time E."""
+        there's more to read: the first frames (again, for an error once its wait is over, a
+        'none' after NONE_TTL), or ones near event time E."""
         k = (bvid, key)
         st = self.state.get(k)
         if st is None:
-            try:
-                st = json.loads(self._file(bvid, key).read_text())
-            except (OSError, ValueError):
-                st = {"status": "working", "why": "starting", "seen": []}
-            if st.get("status") in ("working", "error") or (st.get("status") == "none" and time.time() - st.get("at", 0) > NONE_TTL):
-                st.update(status="working", why="starting")
-            self.state[k] = st
-        want_near = st.get("status") == "ok" and E is not None and self._wants(st, E)
-        if k not in self.tasks and (st.get("status") == "working" or want_near):
-            if want_near:
-                st["more"] = True
-            self.tasks[k] = asyncio.create_task(self._job(bvid, key, slot, E))
+            st = self.state[k] = self._load(bvid, key)
+        if k not in self.tasks:
+            status, now = st.get("status"), time.time()
+            again = status == "working" or (status == "error" and now >= st.get("again", 0)) \
+                or (status == "none" and now - st.get("at", 0) > NONE_TTL)
+            want_near = status == "ok" and E is not None and self._wants(st, E)
+            if again or want_near:
+                if again:
+                    st.update(status="working", why="starting")
+                else:
+                    st["more"] = True
+                self.tasks[k] = asyncio.create_task(self._job(bvid, key, slot, E))
         return {x: v for x, v in st.items() if x != "seen"}
+
+    def _load(self, bvid: str, key: int) -> dict:
+        try:
+            st = json.loads(self._file(bvid, key).read_text())
+        except (OSError, ValueError):
+            st = None
+        if not isinstance(st, dict):
+            return {"status": "working", "why": "starting", "seen": []}
+        if st.get("status") in ("working", "error"):  # (a job a restart cut short; one that failed: on)
+            st.update(status="working", why="starting")
+        return st
+
+    def _save(self, bvid: str, key: int, st: dict) -> None:
+        """What's known, frames read included, for the asks after a restart."""
+        f = self._file(bvid, key)
+        try:
+            tmp = f.with_name(f.name + ".tmp")
+            tmp.write_text(json.dumps({x: v for x, v in st.items() if x != "more"}))
+            os.replace(tmp, f)
+        except OSError as e:
+            log.warning("%s (session %s) not saved: %s", bvid, key, e)
 
     @staticmethod
     def _wants(st: dict, E: float) -> bool:
@@ -546,38 +569,62 @@ class VodClockService:
 
     async def _job(self, bvid: str, key: int, slot: float | None, E: float | None) -> None:
         k = (bvid, key)
+        st = self.state[k]
         try:
-            if self._sem is None:
-                self._sem = asyncio.Semaphore(2)
-            async with self._sem:
-                await self._read(k, bvid, key, slot, E)
-            st = self.state[k]
-            st["at"] = time.time()
-            if st.get("status") in ("ok", "none"):
-                self._file(bvid, key).write_text(json.dumps(st))
+            # (the wait for the session's timing, up to TIMING_WAIT, holds no slot: only reading
+            # frames does, and a replay whose timing is there isn't kept waiting behind it)
+            clock = await self._clock(k, key)
+            if clock is not None:
+                if self._sem is None:
+                    self._sem = asyncio.Semaphore(2)
+                async with self._sem:
+                    await self._read(k, bvid, slot, E, clock)
+            if st["status"] in ("ok", "none"):
+                st.pop("fails", None)
+                st.pop("again", None)
             log.info("%s (session %s): %s, %d frames, %s", bvid, key, st["status"], len(st.get("seen", [])),
                      st.get("why") or [r["text"] for r in st.get("readings", [])])
-        except Exception as e:  # noqa: BLE001 - reported, asked again a minute later
+        except Exception as e:
             log.exception("%s (session %s) failed", bvid, key)
-            if self.state.get(k, {}).get("status") != "ok":
-                self._say(k, status="error", why=f"{type(e).__name__}: {e}"[:200])
-                asyncio.get_running_loop().call_later(60, lambda: self.state.pop(k, None))
+            if st.get("status") != "ok":
+                self._fail(k, f"{type(e).__name__}: {e}"[:200])
         finally:
-            self.state.get(k, {}).pop("more", None)
+            st["at"] = time.time()
+            st.pop("more", None)
+            self._save(bvid, key, st)
             self.tasks.pop(k, None)
 
     def _say(self, k: tuple[str, int], **fields) -> None:
         self.state.setdefault(k, {}).update(fields)
 
+    def _fail(self, k: tuple[str, int], why: str) -> None:
+        """An error: asked again after RETRY, doubling with each in a row (Bilibili's risk control
+        counts every ask), up to NONE_TTL."""
+        st = self.state[k]
+        n = st.get("fails", 0) + 1
+        st.update(status="error", why=why, fails=n, again=time.time() + min(RETRY * 2 ** (n - 1), NONE_TTL))
+
     async def _clock(self, k: tuple[str, int], key: int) -> Clock | None:
+        """The session's clock, or None and why: 'none' when there's no timing for the session
+        at all (nor any clock in it), an error, asked again later, while it may still come
+        (an OpenF1 rebuild queued or refused for now, the archive yet to publish)."""
         until = time.monotonic() + TIMING_WAIT
+        ok = self.state[k].get("status") == "ok"  # (more near E: what's known stands, whatever happens)
         while True:
             meta = self.timing.store.meta(key) if self.timing else None
             if meta and meta.get("t0") is not None:
-                return await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
+                clock = await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
+                if clock is None and not ok:
+                    self._say(k, status="none", why="no clock in the session's timing")
+                return clock
+            if ok:
+                return None
             why = await asyncio.to_thread(self.timing._missing_reason, key) if self.timing else "no timing service"
-            if time.monotonic() > until or why in ("no timing data for this session", "session has not started"):
-                self._say(k, why=f"the session's timing: {why}")
+            if why in ("no timing data for this session", "no timing service"):
+                self._say(k, status="none", why=f"the session's timing: {why}")
+                return None
+            if time.monotonic() > until or why == "session has not started":
+                self._fail(k, f"the session's timing: {why}")
                 return None
             self._say(k, why=f"waiting for the session's timing ({why})")
             await asyncio.sleep(5)
@@ -633,13 +680,9 @@ class VodClockService:
             raise
         return v.init + data, at - seg[0]
 
-    async def _read(self, k: tuple[str, int], bvid: str, key: int, slot: float | None, E: float | None) -> None:
+    async def _read(self, k: tuple[str, int], bvid: str, slot: float | None, E: float | None, clock: Clock) -> None:
         st = self.state[k]
         seen: list[dict] = st.setdefault("seen", [])
-        clock = await self._clock(k, key)
-        if clock is None:
-            self._say(k, status="none")
-            return
         pages = await self.bili.pagelist(bvid)
         by_page = {int(p["page"]): p for p in pages}
         st["running"] = clock.running()

@@ -13,6 +13,7 @@ import io
 import json
 import shutil
 import struct
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -275,10 +276,12 @@ class Rig:
         self.reads: list[float] = []  # the frames decoded (content s)
         self.unreadable: set[int] = set()  # frames (s into the replay) whose OCR fails
         self.meta: dict | None = {"t0": 1, "name": "Qualifying", "source": "openf1"}
+        self.untimed: set[int] = set()  # sessions with no timing stored (yet)
         self.reason = "downloading timing from OpenF1"
         monkeypatch.setattr(vc, "read_with", self.read_with)
         monkeypatch.setattr(vc.Clock, "load", classmethod(lambda cls, d, meta: self.c))
-        self.timing = SimpleNamespace(store=SimpleNamespace(meta=lambda k: self.meta, dir=lambda k: tmp_path),
+        self.timing = SimpleNamespace(store=SimpleNamespace(meta=lambda k: None if k in self.untimed else self.meta,
+                                                            dir=lambda k: tmp_path),
                                       _missing_reason=lambda k: self.reason)
 
     def words(self, img):
@@ -316,7 +319,7 @@ class Rig:
 async def settled(svc: vc.VodClockService, *args) -> dict:
     """What it knows once the job an ask started is done (not asking again)."""
     svc.get(BV, KEY, SLOT, *args)
-    while svc.tasks:
+    while (BV, KEY) in svc.tasks:
         await asyncio.sleep(0.01)
     return {x: v for x, v in svc.state[(BV, KEY)].items() if x != "seen"}
 
@@ -392,6 +395,65 @@ def test_a_frame_that_fails_fails_alone(tmp_path, monkeypatch):
         await svc2.start()
         st = await settled(svc2)
         assert st["status"] == "error" and "the CDN refuses" in st["why"] and not svc2.state[(BV, KEY)]["seen"], st
+
+    asyncio.run(run())
+
+
+def test_timing_not_there_yet_is_an_error_asked_again_later_not_a_lasting_none(tmp_path, monkeypatch):
+    """An OpenF1 rebuild refused for now (429) outlasting the wait was a 'none' kept for good (in
+    memory: NONE_TTL only applied to one read from disk) and for 6 h on disk."""
+    rig = Rig(tmp_path, monkeypatch)
+    rig.untimed = {KEY}
+    rig.reason = "timing unavailable (OpenF1: error: HTTP 429)"
+    monkeypatch.setattr(vc, "TIMING_WAIT", -1.0)
+
+    async def run():
+        bili = rig.bili()
+        svc = rig.service(bili)
+        await svc.start()
+        st = await settled(svc)
+        assert st["status"] == "error" and "429" in st["why"] and st["again"] - time.time() == pytest.approx(vc.RETRY, abs=5)
+        assert svc.get(BV, KEY, SLOT)["status"] == "error" and not svc.tasks  # (not before its time)
+        assert json.loads((tmp_path / "vodclock" / f"{BV}.{KEY}.json").read_text())["status"] == "error"
+        svc.state[(BV, KEY)]["again"] = 0
+        st = await settled(svc)
+        assert st["status"] == "error" and st["again"] - time.time() == pytest.approx(2 * vc.RETRY, abs=5)  # (doubling)
+        assert bili.pagelists == 0  # (nothing asked of Bilibili without the session's timing)
+        rig.untimed = set()
+        svc.state[(BV, KEY)]["again"] = 0
+        st = await settled(svc)
+        assert st["status"] == "ok" and "again" not in st and "fails" not in st
+        # no timing for the session anywhere: 'none', asked again after NONE_TTL (in memory too)
+        rig.untimed, rig.reason = {KEY + 1}, "no timing data for this session"
+        k2 = (BV, KEY + 1)
+        svc.get(BV, KEY + 1, SLOT)
+        while svc.tasks:
+            await asyncio.sleep(0.01)
+        assert svc.get(BV, KEY + 1, SLOT)["status"] == "none" and not svc.tasks
+        svc.state[k2]["at"] -= vc.NONE_TTL + 1
+        assert svc.get(BV, KEY + 1, SLOT)["status"] == "working" and svc.tasks
+        await svc.stop()
+
+    asyncio.run(run())
+
+
+def test_waiting_for_timing_holds_no_frame_slot(tmp_path, monkeypatch):
+    """Two replays waiting (up to TIMING_WAIT, 7 min) for a session's timing held both slots:
+    every other replay waited behind them, its timing there or not."""
+    rig = Rig(tmp_path, monkeypatch)
+    rig.untimed = {KEY + 1}
+
+    async def run():
+        svc = rig.service()
+        await svc.start()
+        for bv in ("BV1aaaaaaaaa", "BV1bbbbbbbbb", "BV1ccccccccc"):
+            svc.get(bv, KEY + 1, SLOT)
+        await asyncio.sleep(0.05)
+        assert all(s["status"] == "working" and "waiting for the session's timing" in s["why"] for s in svc.state.values())
+        st = await asyncio.wait_for(settled(svc), 5)  # (FakeBili's: its timing there)
+        assert st["status"] == "ok"
+        assert len(svc.tasks) == 3  # (the others still waiting)
+        await svc.stop()
 
     asyncio.run(run())
 
