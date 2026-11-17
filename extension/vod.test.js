@@ -434,6 +434,22 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.clockCheck(asked, null, L, 1119).says, null);
     assert.equal(V.clockCheck(asked, null, L, 1121).says, 'refuted');
     assert.equal(V.clockCheck({ ...asked, says: 'confirmed' }, look(1200, 10), L, 1300).says, 'confirmed'); // (said: kept)
+    // …2 min of its own: F1 TV paused (or seeking, at 2×) stops its clock, no look is made then.
+    // Asked at 1000, paused 1050-1300: still waiting at 1300 and at 1370, refuted past 1370
+    const tick = (chk, playing, t) => { const [c2, tc] = V.checkClock(chk, playing, t); return V.clockCheck(c2, null, L, tc); };
+    c = tick(asked, true, 1050);
+    assert.ok(c === asked, 'playing all along: as it was');
+    c = tick(c, false, 1050);
+    assert.equal(c.stillAt, 1050);
+    c = tick(c, false, 1300);
+    assert.ok(!c.says, 'paused 4 min: not refuted');
+    c = tick(c, true, 1301);
+    assert.ok(!c.says && c.still === 251 && c.stillAt == null);
+    assert.equal(tick(c, true, 1370).says, null);
+    assert.equal(tick(c, true, 1372).says, 'refuted');
+    // a look that says, made after the pause: counted as ever
+    const [c3, t3] = V.checkClock(c, true, 1310);
+    assert.equal(V.clockCheck(c3, look(1305, 70.05), L, t3).says, 'confirmed');
   });
 
   await test('the fight that was: the streamer\'s delay stepped 20 s after a reading, sync by sound and the clock each placing it', () => {

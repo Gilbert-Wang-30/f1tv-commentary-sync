@@ -311,6 +311,16 @@
     }
     return t - c.at > wait ? { ...c, says: 'refuted' } : c;
   }
+  // The look again's own clock: it stands still while F1 TV isn't playing at 1× (paused, seeking,
+  // another speed), since sound looks at nothing then; a pause past `wait` refuted a right lock,
+  // and the clock moved the commentary only for sound to put it back. chk.still: s it stood still
+  // before, chk.stillAt: since when it stands still. [the check, the t to give clockCheck].
+  function checkClock(chk, playing, t) {
+    let c = chk;
+    if (!playing && c.stillAt == null) c = { ...c, stillAt: t };
+    else if (playing && c.stillAt != null) c = { ...c, still: (c.still || 0) + t - c.stillAt, stillAt: null };
+    return [c, t - (c.still || 0) - (c.stillAt != null ? t - c.stillAt : 0)];
+  }
   // Where the clock puts it (k: clockAt's): its replay at its T0 with the delay at D0; your nudges
   // (`hand`) kept on top when it's the replay playing (`cur`), none on another.
   function clockPlace(k, cur, hand, D0) {
@@ -709,6 +719,6 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, checkClock, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
     placing, placeResets, recheckDue, backoff, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

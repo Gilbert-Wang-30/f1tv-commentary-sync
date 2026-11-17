@@ -1516,7 +1516,8 @@ async function vodBegin(gen, again = null) {
     if (again && !cands.length) return Object.assign(again, { at: now(), listAt });
     if (again) S.vod = V; // (found one since: on from here)
     V.listAt = listAt;
-    diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length, again: !!again || undefined });
+    // (retry, not `again`: that key is a likely place found again, which e2e/vod reads)
+    diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length, retry: !!again || undefined });
     if (!cands.length) return vodSay(V, 'none', `No recording covers this session, nor any Bilibili replay of ${vodWho()}'s`);
     const reps = await vodLoad(V, cands);
     if (gen !== S.gen || S.vod !== V) return;
@@ -1901,7 +1902,8 @@ function vodTick(t, v, outside = false) {
   }
   if (V && V.reps.length && !V.clockBusy && !v.seeking) {
     V.clockBusy = true;
-    vodClockStep(V, S.gen, E).catch(() => null).finally(() => { V.clockBusy = false; });
+    const playing = !v.paused && !v.waiting && Math.abs((v.rate || 1) - 1) <= 0.001; // (as sndCheck counts it)
+    vodClockStep(V, S.gen, E, playing).catch(() => null).finally(() => { V.clockBusy = false; });
   }
   if (!V || V.busy || !sn || v.paused || v.seeking || v.waiting) return;
   const since = V.lastTryAt == null ? Infinity : t - V.lastTryAt;
@@ -2008,16 +2010,17 @@ function vodClockOff(V, E) {
 // Placed by the clock (FoneVod.clockRule): when not placed yet, or off it by more than VOD.TRUST (a
 // reading near E), VOD.BOUND (only further ones: the streamer's delay may have moved since; sync by
 // sound has it). Sync by sound locked more than VOD.TRUST off a near reading, within its wide look:
-// it looks again, widely (seeing both places), soon; moved only when that doesn't find the lock.
-// Moved on the same replay: your nudges kept on top.
-function vodClockPlace(V, E) {
+// it looks again, widely (seeing both places), soon; moved only when that doesn't find the lock
+// (its time counted only while F1 TV plays at 1×: `playing`). Moved on the same replay: your
+// nudges kept on top.
+function vodClockPlace(V, E, playing = true) {
   const k = vodClockAt(V, E), sn = S.snd, t = now(), r1 = (v) => Math.round(Math.min(v, 1e6) * 10) / 10;
   const off = vodClockOff(V, E), placed = V.state === 'placed', lock = placed ? sn?.target ?? null : null;
   let act = FoneVod.clockRule(k, off, { placed, lock, check: V.check, ...VOD_CLOCK });
   if (act === 'stay') V.check = null;
   if (act === 'wait') { // (what sound's looks since say)
-    const was = V.check;
-    V.check = FoneVod.clockCheck(was, sn.last, { target: lock, bias: sn.bias }, t, { tries: VOD.CHECK_TRIES, wait: VOD.CHECK_WAIT });
+    const [was, tc] = FoneVod.checkClock(V.check, playing, t);
+    V.check = FoneVod.clockCheck(was, sn.last, { target: lock, bias: sn.bias }, tc, { tries: VOD.CHECK_TRIES, wait: VOD.CHECK_WAIT });
     if (V.check.says) {
       diag('vod', { clockCheck: V.check.says, off: r1(off), looks: V.check.looks });
       act = V.check.says === 'confirmed' ? 'held' : 'move';
@@ -2036,7 +2039,7 @@ function vodClockPlace(V, E) {
   vodPlace(V, P.rep, P.T0, P.delay, 'clock', P.hand);
 }
 // Each tick: ask the server while it reads (or for a reading near a moment it has none near), then place.
-async function vodClockStep(V, gen, E) {
+async function vodClockStep(V, gen, E, playing = true) {
   const key = S.content?.sessionKey;
   if (!vodClockCan()) return;
   const asks = FoneVod.clockAsks(V.reps, E, now(), { poll: VOD.CLOCK_POLL, again: VOD.CLOCK_AGAIN, near: VOD.CLOCK_NEAR });
@@ -2056,7 +2059,7 @@ async function vodClockStep(V, gen, E) {
     }
   }));
   if (gen !== S.gen || S.vod !== V || E == null) return;
-  vodClockPlace(V, E);
+  vodClockPlace(V, E, playing);
   if (V.state !== 'placed' && vodClockPending(V))
     V.text = `Finding this moment by the clock on ${vodWho()}'s screen in their replay…`;
 }
