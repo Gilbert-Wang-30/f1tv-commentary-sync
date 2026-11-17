@@ -365,6 +365,7 @@
       <div class="row" id="picRow"><button id="pic" title="The streamer's picture, in step with the commentary: a window over F1 TV you can move and size (key V)">📺 Streamer</button><button id="picPop" title="The streamer's picture in a window of its own">⧉</button><button id="picPage" hidden title="The streamer's live page on their platform, in a new tab">↗ Live page</button></div>
       <div class="f1" id="f1Box" hidden>
         <div class="row"><span class="lbl" title="F1 TV's own sound, under the commentary: F1 TV's mute button silences it">F1 TV</span><button data-fs="fx" title="F1 TV's commentary-free track: the circuit's sound under the commentary (team radio isn't filled in yet)">Track FX</button><button data-fs="eng" title="F1 TV's international English commentary (English Int.), not F1 TV's own (English F1 Live)">English Int.</button><span class="hint" id="f1Info"></span></div>
+        <div class="row"><span class="lbl" title="F1 TV's own sound while fone plays the stream's copy of it (a Bilibili replay, or locked by sound): off so it isn't heard twice, or kept on">Own sound</span><button data-own="auto" title="Off while the stream carries F1 TV's sound (its copy plays, in step with the commentary)">auto off</button><button data-own="on" title="F1 TV's own sound kept on under the commentary, always (heard twice where the stream carries it too): for when the stream's copy isn't right">on</button><span class="hint" id="ownInfo"></span></div>
         <div class="row"><span class="lbl" title="F1 TV's own subtitles (kept and handed to F1 TV's page; not switched in its player yet)">Subtitles</span><button data-cc="on">on</button><button data-cc="off">off</button><span class="hint" id="ccInfo"></span></div>
         <div class="row"><span class="lbl" title="How sharp F1 TV's picture is. auto: F1 TV's own choice (it adapts to your connection); best: its sharpest quality, pinned (F1 TV's own ⚙ menu has a Quality list too)">Picture</span><button data-pq="auto">auto</button><button data-pq="best">best</button><span class="hint" id="pqInfo"></span></div>
       </div>
@@ -473,8 +474,12 @@
     const tp = au?.tap, f1off = !!tp?.ducked;
     const how = !pick ? 'left to F1 TV' : !au ? '' : au.manual ? `your pick${au.cur ? `: ${au.cur}` : ''}` : au.err ? au.err
       : au.due > 20000 ? 'waiting for the player…' : settings.f1Sound === 'eng' && au.cur && au.cur !== 'English Int.' ? au.cur : '';
-    $('f1Info').textContent = [f1off ? "🔇 its own sound off: the stream's copy plays" : bySound && tp?.copying ? '🔊 its own sound on' : '', how,
-      au?.muted ? "muted with F1 TV's button" : au?.own ? 'muted in F1 TV' : ''].filter(Boolean).join(' · ');
+    $('f1Info').textContent = [how, au?.muted ? "muted with F1 TV's button" : au?.own ? 'muted in F1 TV' : ''].filter(Boolean).join(' · ');
+    // its own sound: off while the stream carries it (auto), or kept on
+    const keepOn = settings.soundDuck === false;
+    root.querySelectorAll('button[data-own]').forEach((b) => b.classList.toggle('on', (b.dataset.own === 'on') === keepOn));
+    $('ownInfo').textContent = f1off ? "🔇 off now: the stream's copy plays" : keepOn && duckOn ? '🔊 kept on (the stream has it too)'
+      : bySound && tp?.copying ? '🔊 on' : '';
     $('antRow').hidden = s.delaySource !== 'measured';
     $('anticipate').checked = !!settings.anticipate;
     // the player not taking the speed for a while (2026-10-11: 7 minutes at 1x, silently): fone
@@ -640,6 +645,11 @@
   root.querySelectorAll('button[data-fs]').forEach((b) => b.addEventListener('click', () => { save({ f1Sound: b.dataset.fs, f1Pick: true }); syncPage(true); }));
   root.querySelectorAll('button[data-cc]').forEach((b) => b.addEventListener('click', () => { save({ f1Subs: b.dataset.cc === 'on' }); syncPage(true); }));
   root.querySelectorAll('button[data-pq]').forEach((b) => b.addEventListener('click', () => { save({ f1Best: b.dataset.pq === 'best' }); syncPage(true); }));
+  root.querySelectorAll('button[data-own]').forEach((b) => b.addEventListener('click', () => {
+    save({ soundDuck: b.dataset.own !== 'on' });
+    syncPage(true);
+    toast(b.dataset.own === 'on' ? "F1 TV's own sound kept on" : "F1 TV's own sound off while the stream carries it");
+  }));
   root.querySelectorAll('button[data-sync]').forEach((b) => b.addEventListener('click', () => { save({ soundSync: b.dataset.sync === 'sound' }); syncPage(true); push(true); }));
   $('resync').addEventListener('click', () => resync());
   $('anticipate').addEventListener('change', (e) => { save({ anticipate: e.target.checked }); push(true); });

@@ -480,7 +480,8 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   button works as it always has, fone out of it. page.js hands the copy over every second
   (`fone-f1audio`, Int16 base64) while content.js asks (`tap`: live, `soundSync` on), content.js
   passes it to the engine (`f1audio`).
-- **Ducking** (setting `soundDuck`, on): while sync by sound is locked, the streamer's stream
+- **Ducking** (setting `soundDuck`, on; the panel's *Own sound: auto off / on*, and the
+  settings page): while sync by sound is locked (or a Bilibili replay plays), the streamer's stream
   carries F1 TV's sound in step with the commentary, so F1 TV's own copy would only double it
   (two copies a few ms apart sound like a flanger). content.js asks page.js (`duck` in the
   'audio' command; off again 10 s after the lock is lost) and audiotap.js turns the captured
