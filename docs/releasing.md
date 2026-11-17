@@ -7,7 +7,8 @@ Release with:
   `SHA256SUMS` beside it;
 - the server image `ghcr.io/gilbert-wang-30/fone:<version>` (also `:<major>.<minor>` and
   `:latest`), for linux/amd64 and linux/arm64;
-- notes: the version's section of [CHANGELOG.md](../CHANGELOG.md), then how to install.
+- notes: the version's section of [CHANGELOG.md](../CHANGELOG.md), then how to install and
+  update (the extension before the server).
 
 It needs no secrets: the workflow's own `GITHUB_TOKEN`, with `packages: write` for the image
 job and `contents: write` for the release job only.
