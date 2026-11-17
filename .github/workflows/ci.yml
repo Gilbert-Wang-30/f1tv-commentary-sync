@@ -90,7 +90,8 @@ jobs:
       - name: ruff
         run: |
           pip install -q ruff==0.17.5
-          ruff check --output-format=github server tools/check_version.py tools/test_release.py
+          ruff check --output-format=github server
+          ruff check --output-format=github --config server/ruff.toml tools/check_version.py tools/test_release.py
       - name: release tools
         run: python3 tools/test_release.py
       - name: actionlint (these workflows)
