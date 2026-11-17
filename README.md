@@ -736,7 +736,8 @@ as `E2E_CONTENT_SEED=<file.json> E2E_NO_TIMING=1 ./e2e/run.sh`. The seed is a JS
 `{content id: the server's /api/f1tv answer}` for both fixtures, e.g. taken from a server's
 content cache: `1000011024` (the replay, for its `p0`) and `1000011022` (the race, which
 `run.sh` seeds as LIVE; its `anchor` must be `multiviewer`). `E2E_NO_TIMING=1` skips the one
-check that needs the archive's timing data (the dashboard's tower). `e2e/local/run.sh` talks to
+check that needs the archive's timing data (the dashboard's tower), and the server under test
+doesn't rebuild that timing from OpenF1 instead (`FONE_TIMING_OPENF1=0`). `e2e/local/run.sh` talks to
 no real platform: its platforms are mocks under the real host names. `tools/platform_check.sh`
 does talk to them (logged out, public streams): what only the real ones show (their APIs as
 they are today, their CDNs' rules, Twitch's stitched ads, Douyin's cookie); `e2e/local/run.sh
