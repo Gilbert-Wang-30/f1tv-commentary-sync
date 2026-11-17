@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 SH = ZoneInfo("Asia/Shanghai")
 CHANNEL = "胡闹P房"
+SCRIPT = {"X-Fone": "1"}  # what a script sends for the routes only the extension and scripts may use
 
 
 def make_flv(path, seconds, realtime=False):
@@ -46,7 +47,7 @@ def server(tmp_path, monkeypatch):
     import fone.app
 
     app_mod = importlib.reload(fone.app)
-    with TestClient(app_mod.app) as client:
+    with TestClient(app_mod.app, headers=SCRIPT) as client:  # (as curl and tools/ ask)
         yield client, rec / CHANNEL
 
 
@@ -202,51 +203,69 @@ def test_sync_takes_only_a_finite_delay(server):
 
 
 EVIL = {"Origin": "https://example.com"}  # a page the viewer happens to visit
-IMG = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"}  # its <img src=…>
+EXT = {"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
 
 
 def test_web_pages_can_neither_write_nor_start_work(server):
     client, _ = server
     tl = {"channel": CHANNEL, "from": 0, "to": 1e12}  # (every recording extracted, were there any)
     q = {"channel": CHANNEL, "clock": "multiviewer"}
-    # the extension's pages (an Origin of theirs, or none from Chrome's fetch() to a host it may
-    # reach) and curl: as before
-    assert client.get("/api/timeline", params=tl, headers={"Origin": "chrome-extension://abcdefgh"}).status_code == 200
-    assert client.get("/api/timeline", params=tl, headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}).status_code == 200
+    # scripts (X-Fone: 1, as this client sends) and the extension (its Origin, or X-Fone: Chrome's
+    # fetch() GET to a host it may reach can come with no Origin)
     assert client.get("/api/timeline", params=tl).status_code == 200
     assert client.put("/api/sync/123", json={**q, "delay": 41}).status_code == 200
-    # a page: neither by its fetch() (its Origin) nor by an <img>/<script>/link/form (no Origin)
-    r = client.get("/api/timeline", params=tl, headers=EVIL)
-    assert r.status_code == 403 and r.headers["access-control-allow-origin"] == "*"  # (readable as such)
-    assert client.get("/api/timeline", params=tl, headers=IMG).status_code == 403
-    assert client.head("/api/timeline", params=tl, headers=IMG).status_code == 403
-    assert client.get("/api/f1tv/1000011024", params={"refresh": True}, headers={"Origin": "null"}).status_code == 403
-    assert client.get("/api/sync/123", params=q, headers=EVIL).status_code == 403
+    del client.headers["X-Fone"]
+    assert client.get("/api/timeline", params=tl, headers=EXT).status_code == 200
+    assert client.put("/api/sync/123", json={**q, "delay": 41}, headers=EXT).status_code == 200
+    # a page: by its fetch() (its Origin, X-Fone or not), or by an <img>, <script>, link, form or
+    # no-cors fetch(), which on a plain-http server come with no Origin and no Sec-Fetch-* at all
+    work = (("/api/timeline", tl), ("/api/f1tv/1000011024", {"refresh": True}), ("/api/sync/123", q), ("/api/diag", {}),
+            ("/api/vod/clock", {"bvid": "BV1ATbL6dEp9", "key": 11357}), ("/api/timing/session/11730/state", {"t": 1}),
+            ("/api/timing/content/1000011024", {}), ("/api/video/abc/info", {}))
+    for path, params in work:
+        for h in ({}, EVIL, {**EVIL, **SCRIPT}, {"Origin": "null"}, {"X-Fone": "0"},
+                  {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},  # (https)
+                  {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}):  # (typed in: tools/diag.py reads diag)
+            r = client.get(path, params=params, headers=h)
+            assert r.status_code == 403 and "access-control-allow-origin" not in r.headers, (path, h, r.status_code)
+        assert client.head(path, params=params).status_code == 403
+    assert client.put("/api/sync/123", json={**q, "delay": 1}).status_code == 403
     assert client.put("/api/sync/123", json={**q, "delay": 1}, headers=EVIL).status_code == 403
-    assert client.get("/api/diag", headers=EVIL).status_code == 403  # (every viewer's playback)
-    assert client.get("/api/sync/123", params=q).json()["delay"] == 41
-    # an address typed in, the server's own page: fine
-    assert client.get("/api/diag", headers={"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}).status_code == 200
-    assert client.get("/api/diag", headers={"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}).status_code == 200
-    # other reads stay open to anyone (CORS *)
-    assert client.get("/api/health", headers=EVIL).status_code == 200
-    assert client.get("/api/channels", headers=IMG).status_code == 200
-    assert client.options("/api/timeline", headers={**EVIL, "Access-Control-Request-Method": "GET"}).status_code == 200
+    assert client.post("/api/diag", json={"client": "x", "events": []}, headers=EVIL).status_code == 403
+    assert client.get("/api/sync/123", params=q, headers=SCRIPT).json()["delay"] == 41
+    # its fetch() can't add X-Fone: the preflight is refused; the extension's passes
+    pre = {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-fone",
+           "Access-Control-Request-Private-Network": "true"}
+    assert client.options("/api/timeline", headers={**EVIL, **pre}).status_code == 400
+    r = client.options("/api/timeline", headers={**EXT, **pre})
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == EXT["Origin"]
+    assert "x-fone" in r.headers["access-control-allow-headers"].lower() and r.headers["access-control-allow-private-network"] == "true"
+    r = client.options("/api/sync/123", headers={**EXT, "Access-Control-Request-Method": "PUT",
+                                                 "Access-Control-Request-Headers": "content-type,x-fone"})
+    assert r.status_code == 200
+    # other reads stay open to anyone, readable across origins by the extension alone
+    r = client.get("/api/health", headers=EVIL)
+    assert r.status_code == 200 and "access-control-allow-origin" not in r.headers
+    assert client.get("/api/health", headers=EXT).headers["access-control-allow-origin"] == EXT["Origin"]
+    assert client.get("/api/channels").status_code == 200
+    assert client.get("/").status_code == 200
 
 
-def test_the_gets_that_start_work(server):
+def test_what_is_open_to_anyone(server):
     import fone.app
 
-    work = fone.app.RefuseWebPageWrites.WORK
+    gate = fone.app.RefuseWebPages
     for path in ("/api/vod/clock", "/api/timing/session/11730/state", "/api/timing/session/11730/positions",
                  "/api/timing/session/11730/track", "/api/timing/content/1000011024", "/api/timeline",
-                 "/api/f1tv/1000011024", "/api/video/abc/info", "/api/video/abc/index.m3u8", "/api/sync/123",
-                 "/api/diag"):
-        assert work.match(path), path
+                 "/api/f1tv/1000011024", "/api/video/abc/info", "/api/video/abc/index.m3u8", "/api/video/abc/seg/x.ts",
+                 "/api/sync/123", "/api/diag", "/docs", "/openapi.json",
+                 "/api/diagnostics", "/api/timelines", "/api/health/x", "/api/hls/a/b", "/hls/a/b/c"):  # (and what's new)
+        assert gate.gated("GET", path) and gate.gated("HEAD", path), path
     for path in ("/", "/api/health", "/api/channels", "/api/playlist.m3u8", "/hls/abc/seg_00000.ts",
                  "/api/danmaku", "/api/danmaku/status", "/api/timing/status", "/api/backfill/status",
-                 "/api/screenclock/abc", "/api/ads/abc", "/api/diagnostics", "/api/timelines"):
-        assert not work.match(path), path
+                 "/api/screenclock/abc", "/api/ads/abc"):
+        assert not gate.gated("GET", path), path
+    assert gate.gated("PUT", "/api/sync/1") and gate.gated("POST", "/api/health") and not gate.gated("OPTIONS", "/api/diag")
 
 
 def test_health_says_the_servers_version(server, monkeypatch):
@@ -256,3 +275,4 @@ def test_health_says_the_servers_version(server, monkeypatch):
     assert client.get("/api/health").json()["version"] == (os.environ.get("FONE_VERSION") or "dev")  # (a checkout: dev)
     monkeypatch.setattr(fone.app, "VERSION", "1.0.1")
     assert client.get("/api/health").json()["version"] == "1.0.1"
+

@@ -38,8 +38,14 @@ async function pickServer(servers) {
   throw new Error('fone server unreachable — check the extension options');
 }
 
+// On every request to the server: what says it's the extension's, not a web page's (a page's
+// <img> or link to the server can't carry a header; its fetch() can't add one without the CORS
+// preflight the server refuses it). Chrome's fetch() GET to a host the extension may reach
+// can come with no Origin of ours to tell by.
+const FONE_HEADERS = { 'X-Fone': '1' };
+
 async function api(path, opts = {}) {
-  const r = await fetch(S.base + path, { signal: AbortSignal.timeout(10000), ...opts });
+  const r = await fetch(S.base + path, { signal: AbortSignal.timeout(10000), ...opts, headers: { ...FONE_HEADERS, ...opts.headers } });
   if (!r.ok) throw new Error(`${path.split('?')[0]} → HTTP ${r.status}`);
   return r.json();
 }
@@ -787,7 +793,7 @@ if (picFetch) picFetch.onmessage = async (e) => {
   const answer = (o) => picFetch.postMessage({ type: 'got', id: q.id, ...o });
   if (!S.base || typeof q.url !== 'string' || !q.url.startsWith(`${S.base}/api/video/`)) return answer({ ok: false, status: 0, error: 'not the server' });
   try {
-    const r = await fetch(q.url, { signal: AbortSignal.timeout(20000) });
+    const r = await fetch(q.url, { headers: FONE_HEADERS, signal: AbortSignal.timeout(20000) });
     answer({ ok: r.ok, status: r.status, body: q.text ? await r.text() : await r.arrayBuffer() });
   } catch (err) {
     answer({ ok: false, status: 0, error: err.message || String(err) });
@@ -2142,7 +2148,7 @@ function flushDiag(t) {
   }
   fetch(`${S.base}/api/diag`, {
     method: 'POST', credentials: 'omit', signal: AbortSignal.timeout(8000),
-    headers: { 'content-type': 'application/json' }, body,
+    headers: { 'content-type': 'application/json', ...FONE_HEADERS }, body,
   }).then((r) => {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     DG.sent += events.length;
@@ -2586,7 +2592,7 @@ function saveServerDelay(delay, wait = 0) {
     fetch(`${base}/api/sync/${cid}`, {
       signal: AbortSignal.timeout(10000),
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...FONE_HEADERS },
       body: JSON.stringify({ channel, clock: clock === 'edge' ? 'edge2' : clock, delay: Math.round(delay * 1000) / 1000 }), // (serverSync)
     }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
       .catch((e) => { S.error = `save failed: ${e.message}`; });

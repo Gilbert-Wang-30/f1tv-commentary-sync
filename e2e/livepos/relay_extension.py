@@ -110,7 +110,8 @@ async def main() -> int:
         await asyncio.sleep(2)
         later = [f for f in mock("/_mock/log")["fone"] if f["at"] > stopped_at and "/positions" in f["path"]]
         check("detach stops the relay: no more positions posted", not later, later[:2])
-        cars = json.load(urllib.request.urlopen(f"{FONE}/api/timing/session/{SESSION}/positions?from=1791017843&to=1791017960"))["cars"]
+        cars = json.load(urllib.request.urlopen(urllib.request.Request(
+            f"{FONE}/api/timing/session/{SESSION}/positions?from=1791017843&to=1791017960", headers={"X-Fone": "1"})))["cars"]
         check("fone serves the relayed positions back", len(cars) >= 20, {k: len(v) for k, v in cars.items()})
         await ctx.close()
     total = 9

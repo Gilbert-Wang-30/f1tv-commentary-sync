@@ -489,7 +489,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
 
 def api(path, data=None, method=None):
     req = urllib.request.Request(SERVER + path, data=json.dumps(data).encode() if data else None,
-                                 method=method, headers={"content-type": "application/json"})
+                                 method=method, headers={"content-type": "application/json", "X-Fone": "1"})
     return json.load(urllib.request.urlopen(req, timeout=20))
 
 

@@ -4,9 +4,10 @@ read afterwards instead of reproduced.
 
 POST /api/diag   {"client", "build", "platform", "events": [{"t", "type", ...}, ...]}
                  (from the extension's audio engine every few seconds; refused from web
-                 pages like every other write, see app.RefuseWebPageWrites)
+                 pages like every other write, see app.RefuseWebPages)
 GET  /api/diag?client=&type=&since=&limit=   newest last; plus every client's last report
-                 (every viewer's playback: refused to web pages as well)
+                 (every viewer's playback: the extension's and scripts' alone, X-Fone: 1;
+                 tools/diag.py reads it)
 
 Playback state only: positions, speeds, sync drift, seeks, buffering, player errors. Kept
 in memory (the last 20000 events) and in <data_dir>/diag/<day>.jsonl for 7 days.

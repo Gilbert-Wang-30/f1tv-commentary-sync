@@ -31,6 +31,7 @@ import urllib.request
 from playwright.async_api import async_playwright
 
 SERVER = os.environ.get("DASH_SERVER", "http://localhost:8788")
+FONE = {"X-Fone": "1"}  # (a script's, which the server answers its timing and F1 TV lookups to)
 ONLY = os.environ.get("DASH_ONLY", "")
 PROXY = os.environ.get("DASH_NOPROXY", "0") != "1"
 FAKE_PORT = int(os.environ.get("DASH_FAKE_PORT", "8798"))  # dev ports: 8795-8799
@@ -91,7 +92,7 @@ SCENARIOS = [
 
 
 def get(path):
-    return json.load(urllib.request.urlopen(SERVER + path, timeout=20))
+    return json.load(urllib.request.urlopen(urllib.request.Request(SERVER + path, headers=FONE), timeout=20))
 
 
 # What a race looks like on the tower: lap counter, gaps to the leader with lapped cars, pit
@@ -166,7 +167,7 @@ class Forward(http.server.BaseHTTPRequestHandler):
                 upstream = self.path.replace(f"/{RACE}/", f"/{SQ}/") if race else self.path
                 if content and content.group(1) == PLAIN_CID:
                     upstream = f"/api/f1tv/{CID}"
-                with urllib.request.urlopen(SERVER + upstream, timeout=20) as r:
+                with urllib.request.urlopen(urllib.request.Request(SERVER + upstream, headers=FONE), timeout=20) as r:
                     status, body = r.status, r.read()
         except urllib.error.HTTPError as e:
             status, body = e.code, e.read()

@@ -20,6 +20,7 @@ from test_ads_detect import B, C, clip, talk, write_wav  # (the reel references,
 
 SH = ZoneInfo("Asia/Shanghai")
 CHANNEL = "胡闹P房"
+SCRIPT = {"X-Fone": "1"}  # (the routes only the extension and scripts may use: as curl and tools/ ask)
 SR8 = 8000
 
 
@@ -159,7 +160,7 @@ def test_imports_only_fill_what_the_recorder_missed(boot, nested):
     for path, start, dur in ((a, t + 60, 30), (b, t + 150, 30), (i, t + 30, 180), (j, t + 65, 20)):
         make_flv(path, dur)
         place(path, start, dur)
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         tl = all_done(client, t - 100, t + 400, 4)
         playlist = client.get(tl["playlist"]).text
     files = {f["name"]: f for f in tl["files"]}
@@ -200,7 +201,7 @@ def test_mutes_come_from_ads_in_what_is_played(boot, synth_refs):
     rec_dur = flv_with_audio(r, rec_audio, t)
     # the replay: an earlier stretch the recorder missed, then the same audio as the recording
     flv_with_audio(i, np.concatenate([pre, rec_audio]), t - pre_s)
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         tl = all_done(client, t - 600, t + 600, 2, ads_done=True)
     files = {f["source"]: f for f in tl["files"]}
     fr, fi = files["recorder"], files["import"]
@@ -228,7 +229,7 @@ def test_sync_priority_manual_measured_channel_default(boot):
     make_flv(r, 60)
     place(r, t, 60)
     q = {"channel": CHANNEL, "clock": "multiviewer"}
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         fid = all_done(client, t - 600, t + 600, 1)["files"][0]["id"]
         sc = app.screenclock
         # session (scheduled) 40 s before its commentary, which this recording holds
@@ -267,7 +268,7 @@ def test_sync_priority_manual_measured_channel_default(boot):
 
 def test_every_service_is_mounted_and_each_can_be_switched_off(boot):
     app, _, imp = boot(start=(), FONE_ROOMS="23954427=胡闹P房")
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         assert client.get("/api/health").json()["services"] == ["ads", "backfill", "danmaku", "screenclock", "timing", "video",
                                                                 "vodclock"]
         assert client.get("/api/ads/nope").json() == {"detail": "unknown file"}
@@ -284,7 +285,7 @@ def test_every_service_is_mounted_and_each_can_be_switched_off(boot):
         assert client.get("/api/danmaku", params={"channel": CHANNEL, "from": 0, "to": 1}).json()["items"] == []
 
     app, _, _ = boot(start=(), FONE_VIDEO="0", FONE_ADS="off", FONE_BACKFILL="false", FONE_DANMAKU="0", FONE_VODCLOCK="0")
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         assert client.get("/api/health").json()["services"] == ["screenclock", "timing"]
         assert client.get("/api/vod/clock", params={"bvid": "BV1ATbL6dEp9", "key": 1}).status_code == 404
         assert client.get("/api/ads/nope").json() == {"detail": "Not Found"}
@@ -302,7 +303,7 @@ def test_a_broken_service_does_not_take_the_server_down(boot):
         raise RuntimeError("no refs")
 
     app.ads.start = boom  # fails to start
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         health = client.get("/api/health").json()
         assert health["ok"] and "screenclock" not in health["services"]
         assert client.get("/api/screenclock/nope").json() == {"detail": "Not Found"}
@@ -337,7 +338,7 @@ def test_live_recording_with_every_local_service_running(boot, tmp_path):
     frozen = open(tmp_path / "frozen-server-stacks.txt", "w")
     faulthandler.dump_traceback_later(150, exit=True, file=frozen)
     try:
-        with TestClient(app.app) as client:
+        with TestClient(app.app, headers=SCRIPT) as client:
             writer = make_realtime_flv(path, 16, realtime=True)
             try:
                 tl = wait_for(lambda: (t := timeline(client, started - 600, started + 600))["live"]
@@ -389,15 +390,16 @@ def test_a_wholly_overlapped_growing_file_keeps_the_timeline_incomplete(boot, mo
     monkeypatch.setattr(app.recordings, "scan", lambda *a: recs)  # the scanner keeps "finding" them
     monkeypatch.setattr(app.extractor, "pieces", pieces)
     monkeypatch.setattr(app.extractor, "is_growing", lambda rec, now=None: rec.id == "b")
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         tl = timeline(client, t - 60, t + 300)
     assert [f["inPlaylist"] for f in tl["files"]] == [True, False]
     assert not tl["complete"]
 
 
 def test_web_pages_cannot_change_anything(boot):
-    """CORS * plus private-network access lets any page you visit reach this server.
-    Reads stay open; writes only from the extension (or curl, which sends no Origin)."""
+    """Private-network access lets any page you visit reach this server. Writes only from the
+    extension (its Origin) or scripts (X-Fone: 1); other reads stay open, the extension alone
+    reads them across origins."""
     app, _, _ = boot(start=(), FONE_ROOMS="23954427=胡闹P房")
     q = {"channel": CHANNEL, "clock": "multiviewer"}
     body = {**q, "delay": 12.0}
@@ -405,7 +407,7 @@ def test_web_pages_cannot_change_anything(boot):
     ext = {"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
     pos = {"messages": [{"Timestamp": "2026-10-03T08:00:00.000Z",
                          "Entries": {"1": {"X": 1, "Y": 2, "Z": 0, "Status": "OnTrack"}}}]}
-    with TestClient(app.app) as client:
+    with TestClient(app.app, headers=SCRIPT) as client:
         for h in (evil, {"Origin": "null"}):
             assert client.put("/api/sync/123", json=body, headers=h).status_code == 403
             assert client.post("/api/timing/session/11731/positions", json=pos, headers=h).status_code == 403
@@ -413,13 +415,15 @@ def test_web_pages_cannot_change_anything(boot):
         assert client.get("/api/sync/123", params=q).json()["source"] == "default"
         assert not (app.cfg.data_dir / "timing" / "11731").exists()
         assert client.get("/api/backfill/status").json()["jobs"] == []
-        # the preflight still answers (the browser then gets the 403 above, with CORS headers)
-        pre = client.options("/api/sync/123", headers={**evil, "Access-Control-Request-Method": "PUT"})
-        assert pre.status_code == 200
-        r = client.put("/api/sync/123", json=body, headers=evil)
-        assert r.headers.get("access-control-allow-origin") == "*"
-        # reads from anywhere, writes from the extension and from scripts
+        # a page's preflight is refused (its PUT never goes), the extension's passes
+        pre = {"Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "content-type"}
+        assert client.options("/api/sync/123", headers={**evil, **pre}).status_code == 400
+        assert client.options("/api/sync/123", headers={**ext, **pre}).headers["access-control-allow-origin"] == ext["Origin"]
+        assert "access-control-allow-origin" not in client.put("/api/sync/123", json=body, headers=evil).headers
+        # reads from anywhere, writes from the extension and from scripts saying so
         assert client.get("/api/health", headers=evil).status_code == 200
         assert client.put("/api/sync/123", json=body, headers=ext).status_code == 200
         assert client.put("/api/sync/456", json=body).status_code == 200
-        assert client.get("/api/sync/123", params=q).json() == {"delay": 12.0, "source": "content"}
+        del client.headers["X-Fone"]
+        assert client.put("/api/sync/789", json=body).status_code == 403  # (curl without it)
+        assert client.get("/api/sync/123", params=q, headers=SCRIPT).json() == {"delay": 12.0, "source": "content"}

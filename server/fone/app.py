@@ -152,23 +152,32 @@ async def lifespan(_: FastAPI):
     await mapper.close()
 
 
-class RefuseWebPageWrites:
-    """Requests that change something come from the extension's own pages (Origin
-    chrome-extension://…) or from no browser at all (curl, scripts: no Origin). Any other
-    web page is refused: with CORS * and private-network access granted below, a page you
-    merely visit could otherwise re-tune your delays, write fake car positions into a live
-    session or start replay downloads (GBs, over the recorders' connection, into the NAS).
+EXTENSION_ORIGIN = r"(chrome|moz)-extension://[^/]+"  # the extension's pages (Chrome's, Firefox's)
 
-    Some GETs are writes too: they start work (WORK: frames of a Bilibili replay downloaded
-    and read, an OpenF1 rebuild of any session key, old recordings extracted or indexed, F1
-    TV looked up and stored) or hand out every viewer's playback history (/api/diag). They're
-    held to the same rule. A page's <img>, <script>, link or form sends no Origin, but the
-    browser says where it comes from (Sec-Fetch-Site): from another site, refused as well.
-    The extension's own requests are all fetch()es (mode cors). Other reads stay open."""
 
-    EXTENSION = re.compile(r"^(chrome|moz)-extension://")
-    SAFE = frozenset({"GET", "HEAD", "OPTIONS"})
-    WORK = re.compile(r"^/api/(vod/|timing/session/|timing/content/|timeline$|f1tv/|video/|sync/|diag$)")
+class RefuseWebPages:
+    """What changes something, starts work or hands out what viewers did is for the extension
+    (an Origin of its own, chrome-extension://…) and for scripts (no Origin, and the header
+    X-Fone: 1, which curl, tools/ and the e2e harnesses send). A web page you merely visit is
+    refused: it could otherwise re-tune your delays, write fake car positions into a live
+    session, start replay downloads (GBs, over the recorders' connection, into the NAS) and
+    OpenF1 rebuilds of any session, extract old recordings, or read every viewer's playback.
+
+    A page can pass for neither. Its fetch() carries its own Origin. Its <img>, <script>, link,
+    form GET or no-cors fetch() carry no Origin, but no header of its choosing either; a fetch()
+    that adds one is a CORS request, whose preflight is refused (CORS below allows the
+    extension's origins only). Sec-Fetch-Site can't tell them apart: Chrome sends it only to
+    https and localhost, and a fone server is mostly plain http on the LAN or a VPN. (DNS
+    rebinding, a page's own name pointed at the server, makes its requests same-origin: that
+    isn't stopped here, Chrome's asking before a site reaches the local network is.)
+
+    Open to anyone (OPEN): GETs that start nothing (status, the channels) and the recordings'
+    audio for hls.js. The extension sends X-Fone on all of its requests anyway."""
+
+    EXTENSION = re.compile(EXTENSION_ORIGIN)
+    READ = frozenset({"GET", "HEAD"})
+    OPEN = re.compile(r"^/(|api/(health|channels|playlist\.m3u8|danmaku|danmaku/status|timing/status|backfill/status"
+                      r"|ads/[^/]+|screenclock/[^/]+)|hls/[^/]+/[^/]+)$")
 
     def __init__(self, app):
         self.app = app
@@ -176,27 +185,29 @@ class RefuseWebPageWrites:
     @classmethod
     def trusted(cls, headers: dict[bytes, bytes]) -> bool:
         origin = headers.get(b"origin")
-        if origin is not None:
-            return bool(cls.EXTENSION.match(origin.decode("latin-1")))
-        # (no Origin: curl and scripts send no Sec-Fetch-* either; this server's own page is
-        # same-origin, an address typed in 'none'; Chrome's fetch() from the extension, which
-        # may send no Origin on a GET to a host it has permission for, is mode cors)
-        return headers.get(b"sec-fetch-site") in (None, b"none", b"same-origin") or headers.get(b"sec-fetch-mode") == b"cors"
+        if origin is not None:  # (a page's, "null" included; a script sends none)
+            return bool(cls.EXTENSION.fullmatch(origin.decode("latin-1")))
+        return headers.get(b"x-fone") == b"1"
+
+    @classmethod
+    def gated(cls, method: str, path: str) -> bool:
+        # (an OPTIONS here is no preflight, CORS answered those: FastAPI's 405)
+        return method != "OPTIONS" and not (method in cls.READ and cls.OPEN.match(path))
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and (scope["method"] not in self.SAFE
-                                        or scope["method"] != "OPTIONS" and self.WORK.match(scope["path"])):
-            if not self.trusted(dict(scope["headers"])):
-                resp = PlainTextResponse("only the fone extension may ask for this", status_code=403)
-                return await resp(scope, receive, send)
+        if scope["type"] == "http" and self.gated(scope["method"], scope["path"]) and not self.trusted(dict(scope["headers"])):
+            resp = PlainTextResponse("only the fone extension may ask for this (a script: send the header X-Fone: 1)",
+                                     status_code=403)
+            return await resp(scope, receive, send)
         await self.app(scope, receive, send)
 
 
 app = FastAPI(title="fone", lifespan=lifespan)
-app.add_middleware(RefuseWebPageWrites)  # inside CORS, so its 403 still carries CORS headers
-# allow_private_network: Chrome preflights requests from public origins to LAN hosts.
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-                   allow_private_network=True)
+app.add_middleware(RefuseWebPages)  # inside CORS, so its 403 carries the extension's CORS headers
+# Only the extension's pages may read answers across origins, or send X-Fone. allow_private_network:
+# Chrome preflights requests from a public origin to a LAN host.
+app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN, allow_methods=["GET", "HEAD", "PUT", "POST"],
+                   allow_headers=["Content-Type", "X-Fone"], allow_private_network=True)
 for _router in routers:
     app.include_router(_router)
 
