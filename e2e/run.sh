@@ -98,9 +98,11 @@ EOF
 
 # The live fixture is the 2026-10-04 race (content 1000011022), which F1 TV now lists as a
 # REPLAY: keep its real data (anchor, p0) but seed it as LIVE in the server's content cache.
+# Phase B's replay (1000010385) is put just past the growing recording's edge by its delay: seeded
+# with the race's data and p0 now, so that delay is minutes (PUT /api/sync takes a day at most).
 echo "== seeding the race fixture as LIVE"
 docker run --rm $CAP -v "$WORK/data":/data -v "$WORK/seed":/seed "$IMAGE" python3 -c '
-import asyncio, json, os
+import asyncio, json, os, time
 from pathlib import Path
 from fone.f1 import F1Mapper
 from fone.store import Store
@@ -113,6 +115,7 @@ async def main():
     d = await m.content("1000011022"); await m.close()
     assert d.get("anchor") == "multiviewer", d
     d["subtype"] = "LIVE"; s.put_content("1000011022", d)
+    s.put_content("1000010385", {**d, "contentId": "1000010385", "title": "2026 Azerbaijan GP - Race", "subtype": "REPLAY", "p0": time.time()})
 asyncio.run(main())'
 
 docker network create $NET >/dev/null
