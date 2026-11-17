@@ -186,6 +186,18 @@ def build_pieces(segs: list[Segment], lags: list[tuple[int, float]], fallback_la
     return pieces
 
 
+def zone_offset(lag: float, name_time: float) -> float | None:
+    """Hours between the start a file's last write gives (lag: mtime - duration) and the one
+    its name gives, when that looks like a time zone and not a later touch: an hour or more,
+    a whole quarter-hour within two minutes (zones are whole quarter-hours apart). The name is
+    read in FONE_FILENAME_TZ, so a recorder writing names in another zone is off by just that."""
+    d = name_time - lag
+    q = round(d / 900)
+    if abs(d) < 3540 or abs(d - q * 900) > 120:
+        return None
+    return q / 4
+
+
 class Extractor:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -438,6 +450,10 @@ class Extractor:
             lo = rec.name_time - 30
             hi = rec.name_time + rec.name_precision + 30
             if not lo <= lag <= hi:  # mtime was touched later; trust the filename instead
+                if (hours := zone_offset(lag, rec.name_time)) is not None:
+                    log.warning("%s: its name puts its start %+g h from where its last write does: is "
+                                "FONE_FILENAME_TZ (%s) the zone its recorder writes names in? Trusting the name",
+                                rec.relpath, hours, self.cfg.filename_tz.key)
                 lag = rec.name_time + (rec.name_precision / 2 if rec.name_precision >= 60 else 0)
         return lag
 

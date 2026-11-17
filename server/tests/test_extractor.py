@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from fone import config
-from fone.extractor import LAG_QUANTILE, RUN_FILE, Extractor, FileState, Segment, build_pieces, live_lags
+from fone.extractor import (LAG_QUANTILE, RUN_FILE, Extractor, FileState, Segment, build_pieces, live_lags,
+                            zone_offset)
 from fone.recordings import Recording
 
 
@@ -346,3 +347,27 @@ def test_ensure_from_a_worker_thread_hands_the_job_to_the_loop(tmp_path, monkeyp
 
     asyncio.run(run())
     assert started and started[-1] == "old" and st.status == "done"
+
+
+def test_zone_offset_tells_a_file_name_zone_from_a_later_touch():
+    t = 1_790_000_000.0
+    assert zone_offset(t + 8 * 3600 + 4, t) == -8.0  # names in UTC read as Beijing time: 8 h early
+    assert zone_offset(t - 3600 - 30, t) == 1.0
+    assert zone_offset(t - 5.5 * 3600 + 3, t) == 5.5  # (India: half hours)
+    assert zone_offset(t + 25 * 60, t) is None  # under an hour: a touch, a copy
+    assert zone_offset(t + 3 * 3600 + 7 * 60, t) is None  # not a whole quarter-hour
+    assert zone_offset(t, t) is None
+
+
+def test_end_lag_warns_of_a_file_name_zone_mismatch(tmp_path, caplog):
+    ex = Extractor(replace(config.load(), data_dir=tmp_path))
+    t = 1_790_000_000.0
+    r = replace(rec("tz"), name_time=t, name_precision=0.001)
+    caplog.clear()  # (config.load()'s notes)
+    with caplog.at_level("WARNING", logger="fone.extractor"):
+        assert ex._end_lag(r, t + 10, 8) == pytest.approx(t + 2)  # mtime agrees: the write's lag
+        assert not caplog.records
+        # The recorder wrote the name in UTC, the server reads it in Asia/Shanghai: the name still
+        # wins (a touched mtime is far likelier), but the log says why the file sits 8 h off.
+        assert ex._end_lag(r, t + 8 * 3600 + 10, 8) == t
+    assert "-8 h" in caplog.text and "FONE_FILENAME_TZ (Asia/Shanghai)" in caplog.text
