@@ -1,126 +1,176 @@
-# Standalone: merge it into a compose stack you already run if you prefer.
+# fone's server, and the recorders it can use. What's yours (where the recordings are, the
+# streamer, your uid) comes from .env next to this file: `cp .env.example .env` and fill it in.
+# `docker compose up -d` starts the server alone; the recorders and the extension's update
+# channel are profiles (COMPOSE_PROFILES in .env, or --profile). Standalone: merge it into a
+# compose stack you already run if you prefer.
+#
+# Paths are long-syntax binds: one that doesn't exist is an error, not a new empty folder
+# made by docker as root (on the system disk, if a share isn't mounted).
 services:
   fone:
+    # The released image. `docker compose build fone` builds it from ./server instead: give it
+    # a name of your own (FONE_IMAGE=fone:dev) so a local build never passes for a release.
+    image: ${FONE_IMAGE:-ghcr.io/gilbert-wang-30/fone:1.0.1}
     build: ./server
-    image: fone:latest
     container_name: fone
     restart: unless-stopped
-    # the host also runs the recorders and the media stack: the screen-clock OCR and ffmpeg jobs
-    # (a one-off pass over existing recordings after an upgrade) stay within 3 cores.
-    cpus: 3
+    # A cap on the screen-clock OCR and the ffmpeg jobs (a one-off pass over existing recordings
+    # after an upgrade), for a host that also runs the recorders. 0: none.
+    cpus: ${FONE_CPUS:-0}
     ports:
-      - "8788:8788"
+      - "${FONE_PORT:-8788}:8788"
     volumes:
-      # All recorder output, read-only. Each streamer's folder becomes a channel,
-      # whichever recorder wrote it (your bililive_recorder or fone-recorder below).
-      - /mnt/nas/media/library/recordings:/rec:ro
+      # All recorder output, read-only. Each streamer's folder becomes a channel, whichever
+      # recorder wrote it (a 录播姬 you already run, or fone-recorder / fone-streamlink below).
+      - type: bind
+        source: ${FONE_RECORDINGS:?set FONE_RECORDINGS in .env (cp .env.example .env)}
+        target: /rec
+        read_only: true
+        bind: { create_host_path: false }
       # The one writable spot: backfill drops imported replays here (<channel>/<name>.flv),
-      # where the scanner picks them up like any recording. Create the folder first
-      # (mkdir -p /mnt/nas/media/library/recordings/fone-import), or docker makes it as root.
-      - /mnt/nas/media/library/recordings/fone-import:/rec/fone-import
+      # where the scanner picks them up like any recording. Create it first.
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone-import
+        target: /rec/fone-import
+        bind: { create_host_path: false }
       - fone-data:/data
     environment:
-      - FONE_FILENAME_TZ=Asia/Shanghai   # recorders render filename times in Beijing time
-      - FONE_DEFAULT_DELAY=40
-      # 录播姬 names folders after the account (马莎拉车); show them as the 胡闹P房 channel
-      - FONE_CHANNEL_ALIASES=马莎拉车=胡闹P房
-      # Live-status log, replay backfill and danmaku: room id = channel (as named after the alias)
-      - FONE_ROOMS=23954427=胡闹P房
-      - FONE_IMPORT_DIR=/rec/fone-import
-      # Optional services, all on by default: FONE_TIMING / FONE_ADS / FONE_SCREENCLOCK /
-      # FONE_VIDEO / FONE_BACKFILL / FONE_DANMAKU=0 switches one off.
+      FONE_IMPORT_DIR: /rec/fone-import
+      # the zone the recorders write file-name times in (the ones below: TZ, from the same setting)
+      FONE_FILENAME_TZ: ${FONE_FILENAME_TZ:-Asia/Shanghai}
+      # From .env when set there (README → Configuration); unset, the server's defaults.
+      FONE_ROOMS:
+      FONE_CHANNEL_ALIASES:
+      FONE_DEFAULT_DELAY:
+      FONE_REACTION_SECONDS:
+      FONE_ADS_CHANNELS:
+      FONE_SCREENCLOCK_TZ:
+      # Optional services, all on by default: =0 switches one off.
+      FONE_TIMING:
+      FONE_ADS:
+      FONE_SCREENCLOCK:
+      FONE_VIDEO:
+      FONE_BACKFILL:
+      FONE_DANMAKU:
+      FONE_VODCLOCK:
 
-  # The extension's update channel (tools/publish_ext.sh fills the folder): build.json, which
-  # installed copies poll to know a new build is out, the build as fone-extension.tar.gz and
-  # the Mac scripts (install-mac.sh, fone-sync.sh), on port 8789. Reached over Tailscale away
-  # from home.
+  # The extension's self-hosted update channel (tools/publish_ext.sh fills the folder): build.json,
+  # which installed copies of a build published that way poll to know a new build is out, the build
+  # as fone-extension.tar.gz and the Mac scripts (install-mac.sh, fone-sync.sh), on port 8789.
+  # Release installs don't use it. `--profile ext-update` (README → Advanced).
   fone-ext:
     image: python:3.12-alpine
     container_name: fone-ext
+    profiles: ["ext-update"]
     restart: unless-stopped
     ports:
       - "8789:8000"
     volumes:
-      - /mnt/nas/media/apps/fone-dist:/srv:ro
+      - type: bind
+        source: ${FONE_EXT_DIST:-./fone-dist}
+        target: /srv
+        read_only: true
+        bind: { create_host_path: false }
     command: ["python", "-m", "http.server", "-d", "/srv", "8000"]
 
-  # Dedicated recorder for commentary streams: `docker compose --profile recorder up -d`.
-  # Separate from a recorder you already run on purpose (its webhooks and upload jobs
-  # should not see these rooms). This one has no webhook, records original quality and
-  # stamps filenames to the millisecond.
+  # Dedicated recorder for Bilibili commentary streams: `--profile recorder`, for the rooms in
+  # FONE_ROOMS. Separate from a recorder you already run on purpose (its webhooks and upload jobs
+  # should not see these rooms). This one has no webhook, records original quality and stamps
+  # filenames to the millisecond, in a folder per room (<FONE_RECORDINGS>/fone/<room>/).
   fone-recorder:
     image: bililive/recorder:latest
     container_name: fone-recorder
     profiles: ["recorder"]
     restart: unless-stopped
     # The HTTP API is only reachable on this compose network (no published port), for the gate.
-    entrypoint: ["/bin/sh", "-c", "[ -f /rec/config.json ] || cp /seed/config.json /rec/config.json; exec /usr/local/bin/docker-entrypoint.sh run --bind http://*:2356 /rec"]
+    # Its config.json is written on the first start (recorder/seed.sh), then left to 录播姬.
+    entrypoint: ["/bin/sh", "-c", "/bin/sh /seed/seed.sh && exec /usr/local/bin/docker-entrypoint.sh run --bind http://*:2356 /rec"]
     volumes:
-      - /mnt/nas/media/library/recordings/fone:/rec
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone
+        target: /rec
+        bind: { create_host_path: false }
       - ./recorder/config.json:/seed/config.json:ro
+      - ./recorder/seed.sh:/seed/seed.sh:ro
     # BREC_HTTP_BASIC_USER/PASS for the API (generated, mode 600, shared with the gate).
     env_file: ./recorder/api.env
     environment:
-      - PUID=1000
-      - PGID=1000
-      - UMASK=002
-      - TZ=Asia/Shanghai
+      PUID: ${FONE_UID:-1000}
+      PGID: ${FONE_GID:-1000}
+      UMASK: "002"
+      TZ: ${FONE_FILENAME_TZ:-Asia/Shanghai}
+      FONE_ROOMS:
 
   # Streamers on other sites (YouTube, Twitch, Douyin, Huya, Kick, … anything streamlink plays):
-  # `docker compose --profile streamlink up -d --build fone-streamlink` (name the service: a bare
-  # --build also rebuilds and restarts fone from the working tree). Same folder layout as
-  # fone-recorder, so each channel below shows up in the server like a Bilibili one, with the sync,
-  # the stats and sponsor muting (once its clips are in the reference set). No 弹幕 or backfill
-  # (those are Bilibili's), and no measured delay or video handoff: those read FLV recordings,
-  # and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has the options.
+  # FONE_STREAMS in .env, then `docker compose --profile streamlink up -d --build fone-streamlink`
+  # (name the service: a bare --build also rebuilds fone from the working tree). Same folder
+  # layout as fone-recorder, so each channel shows up in the server like a Bilibili one, with the
+  # sync, the stats and sponsor muting (once its clips are in the reference set). No 弹幕 or
+  # backfill (those are Bilibili's), and no measured delay or video handoff: those read FLV
+  # recordings, and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has
+  # the options.
   fone-streamlink:
     build: ./recorder/streamlink
     image: fone-streamlink:latest
     container_name: fone-streamlink
     profiles: ["streamlink"]
     restart: unless-stopped
-    user: "1000:1000"
+    user: "${FONE_UID:-1000}:${FONE_GID:-1000}"
     volumes:
-      - /mnt/nas/media/library/recordings/fone:/rec
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone
+        target: /rec
+        bind: { create_host_path: false }
     environment:
-      - TZ=Asia/Shanghai # = the server's FONE_FILENAME_TZ: the filenames are read in it
-      # channel=URL, several separated by spaces
-      - STREAMS=example=https://www.twitch.tv/example
-      # - QUALITY=audio_only,360p,480p,worst
-      # - GATE_RECORD=F1|Formula|Grand Prix
+      TZ: ${FONE_FILENAME_TZ:-Asia/Shanghai} # the filenames are read in it
+      STREAMS: ${FONE_STREAMS:-}
+      QUALITY: ${FONE_STREAMS_QUALITY:-audio_only,360p,480p,worst}
+      GATE_RECORD: ${FONE_STREAMS_RECORD:-}
 
-  # Keeps fone-recorder to F1: stops (and deletes the seconds-long stub of) any recording
-  # whose stream title isn't F1, e.g. game streams, and restarts it if the title turns F1.
-  # If the gate is down the recorder simply records everything, as before.
+  # Keeps fone-recorder to F1 by the stream's title (recorder/gate.py). GATE_ACTION=stop: stops
+  # (and deletes the seconds-long stub of) any recording whose title isn't F1, e.g. game
+  # streams, and restarts it if the title turns F1; by default it only logs what it would do.
+  # If the gate is down the recorder simply records everything.
   fone-recorder-gate:
     image: python:3.12-alpine
     container_name: fone-recorder-gate
     profiles: ["recorder"]
     restart: unless-stopped
-    user: "1000:1000"
+    user: "${FONE_UID:-1000}:${FONE_GID:-1000}"
     depends_on: [fone-recorder]
     command: ["python", "-u", "/gate.py"]
     volumes:
       - ./recorder/gate.py:/gate.py:ro
-      - /mnt/nas/media/library/recordings/fone:/rec
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone
+        target: /rec
+        bind: { create_host_path: false }
     env_file: ./recorder/api.env
     environment:
-      - TZ=Asia/Shanghai
-      # Optional regex overrides: GATE_RECORD (titles to record) / GATE_SKIP (never record).
+      TZ: ${FONE_FILENAME_TZ:-Asia/Shanghai}
+      GATE_RECORD:
+      GATE_SKIP:
+      GATE_ACTION:
 
-  # Deletes fone-recorder's recordings and backfill's imports 3 weeks after they end
-  # (hourly sweep; an import's mtime is the end of the stream it replays). Scoped to
-  # recordings/fone and recordings/fone-import; never touches your other recorder's files.
+  # Deletes fone-recorder's and fone-streamlink's recordings and backfill's imports 3 weeks after
+  # they end (hourly sweep; an import's mtime is the end of the stream it replays). Scoped to
+  # <FONE_RECORDINGS>/fone and fone-import; never touches your other recorder's files.
   fone-janitor:
     image: alpine:latest
     container_name: fone-janitor
-    profiles: ["recorder"]
+    profiles: ["recorder", "streamlink"]
     restart: unless-stopped
     volumes:
-      - /mnt/nas/media/library/recordings/fone:/rec
-      - /mnt/nas/media/library/recordings/fone-import:/rec-import
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone
+        target: /rec
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${FONE_RECORDINGS}/fone-import
+        target: /rec-import
+        bind: { create_host_path: false }
     environment:
-      - KEEP_DAYS=21
+      KEEP_DAYS: ${FONE_KEEP_DAYS:-21}
     command:
       - sh
       - -c

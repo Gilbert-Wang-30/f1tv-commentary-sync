@@ -1,6 +1,9 @@
 # secrets: the recorder API's basic-auth credentials (see README → Recording)
 recorder/api.env
 
+# your settings for docker-compose.yml (.env.example is the template)
+.env
+
 # build output (tools/publish_ext.sh)
 *.zip
 *.tar.gz
