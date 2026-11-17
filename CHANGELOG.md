@@ -74,6 +74,8 @@ image to run with your own streamer, recorder and storage.
   `tools/import_replay.py`); an unknown zone is an error, and a name and last write a whole
   number of hours apart are logged as a likely zone mismatch. An empty setting is its default.
 - fone-janitor also starts with the `streamlink` profile, not only `recorder`.
+- fone-streamlink is built by `docker compose up -d` (from cache when nothing changed) and
+  skipped by `docker compose pull`, which used to fail on it with that profile on.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
   what it can't use with the reason, and *Save* keeps everything but a bad server list (and
   which source to use, which may depend on it, kept as it was); a first run's server is saved

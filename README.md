@@ -395,8 +395,9 @@ docker compose up -d           # recreates what changed; the data volume and the
 
 `docker-compose.yml` names its own release's image (`fone:<version>`), so a new checkout runs
 the new server. A `FONE_IMAGE` you set in `.env` stays as it is: bump its version there first
-(or remove it). With the `streamlink` profile, `docker compose up -d --build fone-streamlink`
-rebuilds its recorder from the new checkout too.
+(or remove it). A server you build yourself (`FONE_IMAGE=fone:dev`): `docker compose build fone`
+instead of the pull. With the `streamlink` profile, `pull` skips fone-streamlink (it's built
+here, not pulled) and `up -d` builds it from the new checkout.
 
 ## Configure your streamer
 
@@ -464,10 +465,11 @@ COMPOSE_PROFILES=streamlink
 ```
 
 ```bash
-docker compose --profile streamlink up -d --build fone-streamlink
+docker compose --profile streamlink up -d
 ```
 
-Name the service: without it, `--build` also builds the fone server from the working tree. The
+fone-streamlink is built here, not pulled: each `up -d` builds it from the checkout (when nothing
+changed, from cache, leaving a running one as it is), and `docker compose pull` skips it. The
 profile starts fone-janitor too, which deletes its recordings after `FONE_KEEP_DAYS` (21). Its
 recordings are MPEG-TS, audio only by default, in the same layout; see
 [Other streamers and platforms](#other-streamers-and-platforms) for what that leaves out.

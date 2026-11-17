@@ -115,16 +115,17 @@ services:
       FONE_ROOMS:
 
   # Streamers on other sites (YouTube, Twitch, Douyin, Huya, Kick, … anything streamlink plays):
-  # FONE_STREAMS in .env, then `docker compose --profile streamlink up -d --build fone-streamlink`
-  # (name the service: a bare --build also rebuilds fone from the working tree). Same folder
-  # layout as fone-recorder, so each channel shows up in the server like a Bilibili one, with the
-  # sync, the stats and sponsor muting (once its clips are in the reference set). No 弹幕 or
-  # backfill (those are Bilibili's), and no measured delay or video handoff: those read FLV
-  # recordings, and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has
-  # the options.
+  # FONE_STREAMS in .env, then `docker compose --profile streamlink up -d`. It's built here, not
+  # pulled (pull_policy: build): `docker compose pull` skips it, and each `up -d` builds it from
+  # this checkout (from cache when nothing changed, leaving it running). Same folder layout as
+  # fone-recorder, so each channel shows up in the server like a Bilibili one, with the sync, the
+  # stats and sponsor muting (once its clips are in the reference set). No 弹幕 or backfill
+  # (those are Bilibili's), and no measured delay or video handoff: those read FLV recordings,
+  # and these are MPEG-TS, audio only by default. recorder/streamlink/record.sh has the options.
   fone-streamlink:
     build: ./recorder/streamlink
     image: fone-streamlink:latest
+    pull_policy: build
     container_name: fone-streamlink
     profiles: ["streamlink"]
     restart: unless-stopped
