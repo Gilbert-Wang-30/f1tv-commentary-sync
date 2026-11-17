@@ -13,6 +13,7 @@ import io
 import json
 import shutil
 import struct
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,6 +115,12 @@ def test_header_from_words():
     assert hd.clock[0] <= 75 and hd.clock[2] == 137  # (on to the next word: a last digit tesseract left out)
     assert hd.lap is not None and hd.lap[0] <= 176 <= hd.lap[2] and hd.session == "Race"
     assert vc.find_header([W("Wind", 1, 1, 9, 9)], (1080, 1920)) is None
+    # the line's text height from small words far along it, the title's boxes all much taller
+    # than that (a flag read into each): no text-height words left to place the title by
+    tall = [W("a", 900, 20, 6, 8), W("b", 960, 20, 6, 8), W("c", 1020, 20, 6, 8), W("Italian", 75, 10, 36, 30),
+            W("GP:", 113, 10, 20, 30), W("Race", 136, 10, 25, 30), W("1:58:31", 75, 37, 60, 13, ("2", "1", "1"))]
+    hd = vc.find_header(tall, (1080, 1920))
+    assert hd is not None and hd.session == "Race" and hd.clock[0] <= 75
 
 
 def frame_of(name: str, size: tuple[int, int]) -> np.ndarray:
@@ -199,28 +206,44 @@ def test_sidx():
 
 
 class FakeHttp:
-    def __init__(self, video: bytes):
-        self.video, self.ranges = video, []
+    """A CDN: 206 and just the range asked for; one 'ignoring-range' answers 200, the whole file."""
 
-    async def get(self, url, headers=None, timeout=None):
+    def __init__(self, video: bytes):
+        self.video, self.ranges, self.sent, self.down = video, [], 0, False
+
+    @asynccontextmanager
+    async def stream(self, method, url, headers=None, timeout=None):
         a, b = (int(x) for x in headers["Range"].split("=")[1].split("-"))
         self.ranges.append((a, b))
-        return SimpleNamespace(status_code=206, content=self.video[a:b + 1])
+        if self.down:
+            raise ConnectionError("the CDN refuses")
+        whole = "ignoring-range" in url
+        body = self.video if whole else self.video[a:b + 1]
+
+        async def chunks():
+            for i in range(0, len(body), 64):
+                self.sent += len(body[i:i + 64])
+                yield body[i:i + 64]
+
+        yield SimpleNamespace(status_code=200 if whole else 206, aiter_bytes=chunks)
 
     async def aclose(self):
         pass
 
 
 class FakeBili:
-    def __init__(self, video: bytes, init_end: int, index: tuple[int, int]):
+    def __init__(self, video: bytes, init_end: int, index: tuple[int, int], urls=("https://m1/v.m4s",)):
         self.http = FakeHttp(video)
-        self.dash = {"video": [{"codecid": 7, "height": 1080, "bandwidth": 1, "baseUrl": "https://m1/v.m4s", "backupUrl": [],
+        self.pagelists = self.playurls = 0
+        self.dash = {"video": [{"codecid": 7, "height": 1080, "bandwidth": 1, "baseUrl": urls[0], "backupUrl": list(urls[1:]),
                                 "segment_base": {"initialization": f"0-{init_end}", "index_range": f"{index[0]}-{index[1]}"}}]}
 
     async def pagelist(self, bvid):
+        self.pagelists += 1
         return [{"page": 1, "cid": 7, "duration": 9068}]
 
     async def playurl(self, bvid, cid):
+        self.playurls += 1
         return self.dash
 
     async def close(self):
@@ -236,20 +259,34 @@ def fake_video() -> tuple[bytes, int, tuple[int, int]]:
     return video, 99, (100, 100 + len(sidx) - 1)
 
 
-def test_service_reads_agrees_then_near_E(tmp_path, monkeypatch):
-    start = 1788614224.0  # the event time at the replay's content 0 (the streamer's screen)
-    pages = [{"page": 1, "duration": 9068}]
-    c = quali_clock()
-    video, init_end, index = fake_video()
+START = 1788614224.0  # the event time at the replay's content 0 (the streamer's screen)
+PAGES = [{"page": 1, "duration": 9068}]
+SLOT = 1788613200  # (21点场: the live began 13:00-14:00 UTC)
+BV, KEY = "BV1ATbL6dEp9", 11357
 
-    def decode(mp4: bytes, at: float):
-        assert mp4[:100] == b"I" * 100
-        return np.array([[struct.unpack(">d", mp4[100:108])[0] + at]])  # (the frame: just its time)
 
-    def words(img):
+class Rig:
+    """The service against a fake Bilibili whose frames show the header the streamer's screen
+    showed then (OCR stood in for: what its words say), and a fake timing service."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        self.tmp, self.c = tmp_path, quali_clock()
+        self.video, self.init_end, self.index = fake_video()
+        self.reads: list[float] = []  # the frames decoded (content s)
+        self.unreadable: set[int] = set()  # frames (s into the replay) whose OCR fails
+        self.meta: dict | None = {"t0": 1, "name": "Qualifying", "source": "openf1"}
+        self.reason = "downloading timing from OpenF1"
+        monkeypatch.setattr(vc, "read_with", self.read_with)
+        monkeypatch.setattr(vc.Clock, "load", classmethod(lambda cls, d, meta: self.c))
+        self.timing = SimpleNamespace(store=SimpleNamespace(meta=lambda k: self.meta, dir=lambda k: tmp_path),
+                                      _missing_reason=lambda k: self.reason)
+
+    def words(self, img):
         """The header the streamer's screen showed then: the session's clock at that event time."""
-        t = start + vc.content_of(pages, 1, float(img[0, 0]))
-        for s in c.segs:
+        if round(float(img[0, 0])) in self.unreadable:
+            raise ValueError("tesseract said something odd")
+        t = START + vc.content_of(PAGES, 1, float(img[0, 0]))
+        for s in quali_clock().segs:
             if s.run and s.a <= t < s.b:
                 shown, part = int(s.r - (t - s.a)), s.part
                 break
@@ -258,57 +295,119 @@ def test_service_reads_agrees_then_near_E(tmp_path, monkeypatch):
         return [W("Italian", 75, 17, 36, 9), W("GP:", 113, 17, 20, 9), W("Qualifying", 136, 17, 50, 9),
                 W(str(part), 190, 17, 6, 9), W(f"{shown // 60:02d}:{shown % 60:02d}", 75, 37, 46, 13, ("2", "1", "1"))]
 
-    reads = []
-
-    def read_with(img, hd):  # (OCR stood in for: what the words said)
-        ws = words(img)
+    def read_with(self, img, hd):
+        ws = self.words(img)
         return (f"Qualifying {ws[3]['text']}", vc.parse_clock(ws[4]["text"]), None, ws[4]["text"]) if ws else None
 
-    def frame(mp4, at):
-        img = decode(mp4, at)
-        reads.append(float(img[0, 0]))
+    def frame(self, mp4: bytes, at: float):
+        assert mp4[:100] == b"I" * 100
+        img = np.array([[struct.unpack(">d", mp4[100:108])[0] + at]])  # (the frame: just its time)
+        self.reads.append(float(img[0, 0]))
         return img
 
-    monkeypatch.setattr(vc, "read_with", read_with)
-    monkeypatch.setattr(vc.Clock, "load", classmethod(lambda cls, d, meta: c))
-    timing = SimpleNamespace(store=SimpleNamespace(meta=lambda k: {"t0": 1, "name": "Qualifying"}, dir=lambda k: tmp_path),
-                             _missing_reason=lambda k: "x")
-    # (a moment the first frames are nowhere near: where the extension is, in Q1)
-    first = [start + vc.content_of(pages, 1, a) for _p, a in vc.plan(c, pages, 1788613200)[:vc.PAR]]
-    E = next(t for t in (c.when(s, part=1)[0] for s in range(1070, 0, -30)) if all(abs(t - f) > vc.NEAR_E + 60 for f in first))
+    def bili(self, **kw) -> FakeBili:
+        return FakeBili(self.video, self.init_end, self.index, **kw)
+
+    def service(self, bili: FakeBili | None = None) -> vc.VodClockService:
+        return vc.VodClockService(SimpleNamespace(data_dir=self.tmp), self.timing, bili=bili or self.bili(),
+                                  words_fn=self.words, frame_fn=self.frame)
+
+
+async def settled(svc: vc.VodClockService, *args) -> dict:
+    """What it knows once the job an ask started is done (not asking again)."""
+    svc.get(BV, KEY, SLOT, *args)
+    while svc.tasks:
+        await asyncio.sleep(0.01)
+    return {x: v for x, v in svc.state[(BV, KEY)].items() if x != "seen"}
+
+
+def far_E(c: vc.Clock) -> float:
+    """A moment the first frames are nowhere near: where the extension is, in Q1."""
+    first = [START + vc.content_of(PAGES, 1, a) for _p, a in vc.plan(c, PAGES, SLOT)[:vc.PAR]]
+    return next(t for t in (c.when(s, part=1)[0] for s in range(1070, 0, -30)) if all(abs(t - f) > vc.NEAR_E + 60 for f in first))
+
+
+def test_service_reads_agrees_then_near_E(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    E = far_E(rig.c)
 
     async def run():
-        svc = vc.VodClockService(SimpleNamespace(data_dir=tmp_path), timing, bili=FakeBili(video, init_end, index),
-                                 words_fn=words, frame_fn=frame)
+        svc = rig.service()
         await svc.start()
-        st = svc.get("BV1ATbL6dEp9", 11357, 1788613200)
-        assert st["status"] == "working"
-        while svc.tasks:
-            await asyncio.sleep(0.01)
-        st = svc.get("BV1ATbL6dEp9", 11357, 1788613200)
+        assert svc.get(BV, KEY, SLOT)["status"] == "working"
+        st = await settled(svc)
         assert st["status"] == "ok" and len(st["readings"]) >= 2, st
-        assert len(reads) == vc.PAR  # (the first frames agreed: all read at once)
+        assert len(rig.reads) == vc.PAR  # (the first frames agreed: all read at once)
         for r in st["readings"]:  # each the event time its frame's clock showed
-            assert abs(r["wall"] - (start + vc.content_of(pages, 1, r["at"]))) < 1.0, r
+            assert abs(r["wall"] - (START + vc.content_of(PAGES, 1, r["at"]))) < 1.0, r
         # where the extension is: no reading near it yet -> three frames there, read once
-        st = svc.get("BV1ATbL6dEp9", 11357, 1788613200, E)
-        assert st.get("more") is True
-        while svc.tasks:
-            await asyncio.sleep(0.01)
-        st = svc.get("BV1ATbL6dEp9", 11357, 1788613200, E)
-        assert len(reads) == vc.PAR + 3 and not st.get("more")
+        assert svc.get(BV, KEY, SLOT, E).get("more") is True
+        st = await settled(svc, E)
+        assert len(rig.reads) == vc.PAR + 3 and not st.get("more")
         assert any(abs(r["wall"] - E) < 10 for r in st["readings"]), (E, st["readings"])
-        svc.get("BV1ATbL6dEp9", 11357, 1788613200, E + 30)
+        svc.get(BV, KEY, SLOT, E + 30)
         assert not svc.tasks  # (one near it already)
-        svc.get("BV1ATbL6dEp9", 11357, 1788613200, start + 60)  # (before the session: nothing to read there)
+        svc.get(BV, KEY, SLOT, START + 60)  # (before the session: nothing to read there)
         assert not svc.tasks
         await svc.stop()
         # kept: a new service answers at once from disk
-        svc2 = vc.VodClockService(SimpleNamespace(data_dir=tmp_path), timing, bili=FakeBili(video, init_end, index))
+        svc2 = rig.service()
         await svc2.start()
-        st2 = svc2.get("BV1ATbL6dEp9", 11357, 1788613200)
+        st2 = svc2.get(BV, KEY, SLOT)
         assert st2["status"] == "ok" and st2["readings"] == st["readings"] and not svc2.tasks
-        assert json.loads((tmp_path / "vodclock" / "BV1ATbL6dEp9.11357.json").read_text())["status"] == "ok"
+        assert json.loads((tmp_path / "vodclock" / f"{BV}.{KEY}.json").read_text())["status"] == "ok"
+
+    asyncio.run(run())
+
+
+def test_a_frame_that_fails_fails_alone(tmp_path, monkeypatch):
+    """A frame whose reading raises is that frame unread, the job goes on. One that can't be
+    downloaded isn't a frame read, nor a reason for 'none': the video's URLs (maybe stale) are
+    dropped and it's tried again later."""
+    rig = Rig(tmp_path, monkeypatch)
+    rig.unreadable = {round(a) for _p, a in vc.plan(rig.c, PAGES, SLOT)[:1]}
+    E = far_E(rig.c)
+
+    async def run():
+        bili = rig.bili()
+        svc = rig.service(bili)
+        await svc.start()
+        st = await settled(svc)
+        seen = svc.state[(BV, KEY)]["seen"]
+        bad = [s for s in seen if round(s["at"]) in rig.unreadable]
+        assert st["status"] == "ok" and len(bad) == 1 and bad[0]["shown"] is None and len(seen) > 1, (st, seen)
+        # the CDN refusing: nothing read near E, nor taken as looked for there in vain
+        bili.http.down = True
+        n = len(seen)
+        st = await settled(svc, E)
+        assert st["status"] == "ok" and len(seen) == n and not svc._video_cache and not st.get("tried")
+        bili.http.down = False
+        st = await settled(svc, E)
+        assert len(seen) == n + 3 and any(abs(r["wall"] - E) < 10 for r in st["readings"])
+        # no video at all for the first frames: an error (asked again later), not a 'none'
+        down = rig.bili()
+        down.http.down = True
+        svc2 = vc.VodClockService(SimpleNamespace(data_dir=tmp_path / "2"), rig.timing, bili=down,
+                                  words_fn=rig.words, frame_fn=rig.frame)
+        await svc2.start()
+        st = await settled(svc2)
+        assert st["status"] == "error" and "the CDN refuses" in st["why"] and not svc2.state[(BV, KEY)]["seen"], st
+
+    asyncio.run(run())
+
+
+def test_a_mirror_ignoring_range_is_refused_before_the_whole_file(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    rig.video += b"\x00" * 1_000_000  # (the page's whole video: big)
+
+    async def run():
+        bili = rig.bili(urls=("https://ignoring-range/v.m4s", "https://m1/v.m4s"))
+        svc = rig.service(bili)
+        await svc.start()
+        assert (await settled(svc))["status"] == "ok"
+        asked = bili.http.ranges
+        assert len(asked) >= 2 * (1 + vc.PAR) and len(asked) % 2 == 0  # (each from the first mirror, then the next)
+        assert bili.http.sent == sum(b - a + 1 for a, b in asked) // 2  # (nothing of the whole file)
 
     asyncio.run(run())
 

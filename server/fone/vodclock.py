@@ -64,7 +64,13 @@ NEAR_E = 240.0  # a reading this near (event s) where the extension is serves it
 PAR = 3  # frames read at once
 TIMING_WAIT = 420.0  # longest wait for the session's timing (an OpenF1 rebuild: ~1 min)
 NONE_TTL = 6 * 3600.0  # 'none' is asked again after this
+RETRY = 60.0  # an error is asked again after this, doubling with each in a row (up to NONE_TTL)
 URL_TTL = 90 * 60.0  # Bilibili's signed URLs: ~2 h
+RANGE_WAIT = 120.0  # longest download of one fragment
+MAX_KEPT = 500  # (replay, session)s kept in memory (all on disk)
+# What a frame's reading is (find_header, read_with): kept readings of another are read again.
+# Their wall times are worked out afresh every time, from the session's timing as it is then.
+OCR = 1
 CLOCKISH = re.compile(r"[\d:.]{3,9}")
 
 
@@ -261,7 +267,7 @@ def find_header(words: list[dict], size: tuple[int, int]) -> Header | None:
             b += 1
         line = line[a:b + 1]
         x0 = line[0]["x"]
-        ty = int(statistics.median(w["y"] for w in line if w["h"] <= 1.5 * th))
+        ty = int(statistics.median([w["y"] for w in line if w["h"] <= 1.5 * th] or [w["y"] for w in line]))
         # (the clock sits under the event's name: left of 'GP:', a flag maybe further left)
         under = [w for w in words if th * 0.5 < w["y"] - ty < th * 4 and x0 - th * 3 < w["x"] < gp["x"]
                  and CLOCKISH.fullmatch(w["text"])]
@@ -296,6 +302,11 @@ class Reading:
     def to_dict(self) -> dict:
         return {"page": self.page, "at": round(self.at, 3), "session": self.session, "shown": self.shown,
                 "lap": list(self.lap) if self.lap else None, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Reading:
+        return cls(int(d["page"]), float(d["at"]), str(d.get("session") or ""), d.get("shown"),
+                   tuple(d["lap"]) if d.get("lap") else None, str(d.get("text") or ""))
 
 
 def _ocr(img: np.ndarray, box: Box, scale: int, whitelist: str | None) -> str:
@@ -572,15 +583,26 @@ class VodClockService:
             await asyncio.sleep(5)
 
     async def _range(self, urls: list[str], a: int, b: int) -> bytes:
+        """Bytes a..b of the video, from the first mirror that sends just those. Streamed: one
+        that ignores Range would send the whole page's video (GBs) before it could be refused."""
         err: Exception | None = None
+        n = b - a + 1
         for u in urls:
             try:
-                r = await self.bili.http.get(u, headers={"User-Agent": bb.UA, "Referer": "https://www.bilibili.com/",
-                                                         "Range": f"bytes={a}-{b}"}, timeout=30)
-                if r.status_code == 206 and len(r.content) == b - a + 1:
-                    return r.content
-                err = RuntimeError(f"HTTP {r.status_code}")
-            except Exception as e:  # noqa: BLE001 - the next mirror
+                async with asyncio.timeout(RANGE_WAIT):
+                    async with self.bili.http.stream("GET", u, timeout=30, headers={
+                            "User-Agent": bb.UA, "Referer": "https://www.bilibili.com/", "Range": f"bytes={a}-{b}"}) as r:
+                        if r.status_code != 206:
+                            raise RuntimeError(f"HTTP {r.status_code}")
+                        got = bytearray()
+                        async for chunk in r.aiter_bytes():
+                            got += chunk
+                            if len(got) > n:
+                                break
+                if len(got) == n:
+                    return bytes(got)
+                err = RuntimeError(f"{len(got)} bytes for {n}")
+            except Exception as e:  # the next mirror
                 err = e
         raise RuntimeError(f"the replay's video: {err}")
 
@@ -600,11 +622,16 @@ class VodClockService:
         self._video_cache[pk] = v
         return v
 
-    async def _frame(self, bvid: str, page: dict, at: float) -> np.ndarray | None:
+    async def _fragment(self, bvid: str, page: dict, at: float) -> tuple[bytes, float]:
+        """The fragment holding `at` (with its init segment) and where `at` is in it."""
         v = await self._video(bvid, page)
         seg = next((s for s in v.segs if s[0] <= at < s[0] + s[1]), v.segs[-1])
-        data = await self._range(v.urls, seg[2], seg[2] + seg[3] - 1)
-        return await asyncio.to_thread(self.decode, v.init + data, at - seg[0])
+        try:
+            data = await self._range(v.urls, seg[2], seg[2] + seg[3] - 1)
+        except Exception:
+            self._video_cache.pop((bvid, int(page["cid"])), None)  # (its signed URLs may be what failed)
+            raise
+        return v.init + data, at - seg[0]
 
     async def _read(self, k: tuple[str, int], bvid: str, key: int, slot: float | None, E: float | None) -> None:
         st = self.state[k]
@@ -616,16 +643,27 @@ class VodClockService:
         pages = await self.bili.pagelist(bvid)
         by_page = {int(p["page"]): p for p in pages}
         st["running"] = clock.running()
-        found = [(Reading(**{x: (tuple(v) if x == "lap" and v else v) for x, v in r.items() if x != "cands"}), r["cands"])
-                 for r in seen]
+        found = [(Reading.from_dict(r), r["cands"]) for r in seen]
+        failed: list[Exception] = []
 
-        async def read(page: int, at: float) -> None:
-            img = await self._frame(bvid, by_page[page], at)
-            got = await asyncio.to_thread(read_frame, img, self.words) if img is not None else None
+        async def read(page: int, at: float) -> bool:
+            try:
+                mp4, off = await self._fragment(bvid, by_page[page], at)
+            except Exception as e:  # (the download: a later job tries again, it's no unreadable frame)
+                log.warning("%s p%d %.0f s: %s", bvid, page, at, e)
+                failed.append(e)
+                return False
+            try:
+                img = await asyncio.to_thread(self.decode, mp4, off)
+                got = await asyncio.to_thread(read_frame, img, self.words) if img is not None else None
+            except Exception:  # (this frame alone: unreadable, the others go on)
+                log.exception("%s p%d %.0f s: the frame", bvid, page, at)
+                got = None
             rd = Reading(page, at, *(got[:3] if got else ("", None, None)), got[3] if got else "")
             ts = candidates(clock, rd)
             found.append((rd, ts))
             seen.append({**rd.to_dict(), "cands": ts})
+            return True
 
         def done() -> list[tuple[Reading, float]]:
             ok = confirmed(found, pages, slot)
@@ -637,9 +675,12 @@ class VodClockService:
             todo = [pa for pa in plan(clock, pages, slot) if not any(s["page"] == pa[0] and abs(s["at"] - pa[1]) < 30 for s in seen)]
             while todo and len(seen) < MAX_FRAMES and not done():
                 batch, todo = todo[:PAR], todo[PAR:]
-                await asyncio.gather(*(read(p, a) for p, a in batch))
+                if not any(await asyncio.gather(*(read(p, a) for p, a in batch))):
+                    break  # (no video at all: asked again later)
                 self._say(k, why=f"{len(seen)} frames of the streamer's screen read")
             if not done():
+                if failed:  # (frames it couldn't download: no answer yet)
+                    raise RuntimeError(f"{len(failed)} frames not downloaded: {failed[-1]}")
                 why = "no MultiViewer clock on the streamer's screen" if not any(c for _r, c in found) \
                     else "the clock on the streamer's screen doesn't agree with the session's"
                 self._say(k, status="none", why=why)
@@ -647,11 +688,11 @@ class VodClockService:
             self._say(k, status="ok", why=None)
         # then a reading near E, where the extension is: where the nearest says E is, and a bit on
         if E is not None and self._wants(st, E):
-            st.setdefault("tried", []).append(E)
             near = min(done(), key=lambda x: abs(x[1] - E))
             c = content_of(pages, near[0].page, near[0].at) + (E - near[1])
             spots = [pa for cc in (c, c + 4, c + 8) if (pa := page_at(pages, cc))]
-            await asyncio.gather(*(read(p, a) for p, a in spots))
+            if any(await asyncio.gather(*(read(p, a) for p, a in spots))):
+                st.setdefault("tried", []).append(E)
             done()
 
 
