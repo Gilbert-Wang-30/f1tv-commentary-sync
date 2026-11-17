@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import email.utils
 import heapq
 import json
 import logging
@@ -72,17 +73,37 @@ _STATUS = {"SESSION STARTED": "Started", "SESSION ABORTED": "Aborted", "SESSION 
 # Qualifying part lengths for a part that didn't run to its flag (otherwise measured): Q3 is
 # 13 minutes from 2026 (both 2026 qualifyings captured here).
 QUALI_MINUTES = {"Q": (18, 15, 12), "SQ": (12, 10, 8)}
+RETRY_AFTER_MAX = 120.0  # a 429's Retry-After waited for up to this; longer: given up for now
 
 
 class OpenF1Error(Exception):
     pass
 
 
-class OpenF1:
-    """OpenF1's REST API, gently: one request at a time, spaced, retried on 429 and 5xx (the
-    free tier is rate limited)."""
+def retry_after(r: httpx.Response, now: float | None = None) -> float | None:
+    """A response's Retry-After in seconds (a number of them or an HTTP date), else None."""
+    v = (r.headers.get("Retry-After") or "").strip()
+    if not v:
+        return None
+    try:
+        s = float(v)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(v)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        s = when.timestamp() - (time.time() if now is None else now)
+    return max(0.0, s) if math.isfinite(s) else None
 
-    def __init__(self, client: httpx.AsyncClient, base: str = BASE, pace: float = 0.5, retry: float = 2.0,
+
+class OpenF1:
+    """OpenF1's REST API, gently: one request at a time, spaced, retried on 429 and 5xx with a
+    doubling backoff, and after a 429's Retry-After when it says longer (the free tier is rate
+    limited: 429s were seen at 1-2 s apart from one address, which a server may share)."""
+
+    def __init__(self, client: httpx.AsyncClient, base: str = BASE, pace: float = 1.0, retry: float = 2.0,
                  tries: int = 4):
         self.client = client
         self.base = base.rstrip("/")
@@ -98,7 +119,7 @@ class OpenF1:
         last = "no answer"
         for attempt in range(self.tries):
             if attempt:
-                await asyncio.sleep(min(60.0, self.retry * 2 ** (attempt - 1)))
+                self._next = max(self._next, time.monotonic() + min(60.0, self.retry * 2 ** (attempt - 1)))
             wait = self._next - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
@@ -121,6 +142,11 @@ class OpenF1:
             last = f"HTTP {r.status_code}"
             if r.status_code != 429 and r.status_code < 500:
                 break
+            if r.status_code == 429 and (after := retry_after(r)) is not None:
+                if after > RETRY_AFTER_MAX:
+                    last += f", retry after {after:.0f} s"
+                    break
+                self._next = max(self._next, time.monotonic() + after)
         raise OpenF1Error(f"{endpoint}: {last}")
 
 

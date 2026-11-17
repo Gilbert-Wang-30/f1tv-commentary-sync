@@ -97,7 +97,7 @@ class TimingSettings:
     live_base: str = livefeed.BASE
     openf1: bool = True  # rebuild uncaptured sessions from OpenF1
     openf1_base: str = timing_openf1.BASE
-    openf1_pace: float = 0.5  # seconds between OpenF1 requests (its free tier is rate limited)
+    openf1_pace: float = 1.0  # seconds between OpenF1 requests (its free tier is rate limited)
     openf1_retry: float = 2.0  # first backoff after a 429/5xx, doubling
 
     @classmethod

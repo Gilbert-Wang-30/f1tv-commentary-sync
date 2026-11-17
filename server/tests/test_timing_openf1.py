@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fone import timing_openf1
-from fone.timing import TimingService, _Attempt
+from fone.timing import TimingService, TimingSettings, _Attempt
 from fone.timing_openf1 import OpenF1, _repair_stints, build, fetch
 from fone.timing_state import SessionTimeline, iso, track_outline
 
@@ -726,6 +726,49 @@ def test_openf1_retries_when_rate_limited(tmp_path):
             return await OpenF1(client, pace=0, retry=0.01).get("sessions", session_key=7)
 
     assert asyncio.run(go()) == [{"session_key": 7}] and len(hits) == 3
+
+
+def test_openf1_is_asked_a_second_apart_and_waits_out_a_retry_after(monkeypatch):
+    """429s came at 1-2 s apart from one address (a server may share it with others asking):
+    a second between requests, the backoff doubling, and a 429's Retry-After waited out when
+    it says longer; one too long for a rebuild to wait is given up, for the session's next try."""
+    assert OpenF1(None).pace == 1.0 and TimingSettings().openf1_pace == 1.0
+    slept, real_sleep = [], asyncio.sleep
+
+    async def sleep(d, *a, **k):  # (time stands still: what would be waited is noted)
+        slept.append(round(d, 1))
+        await real_sleep(0)
+
+    monkeypatch.setattr(timing_openf1.asyncio, "sleep", sleep)
+    answers = []
+
+    def api(request):
+        return answers.pop(0)
+
+    async def go(retry=0.5):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
+            f1 = OpenF1(client, retry=retry)
+            return await f1.get("laps", session_key=7), await f1.get("stints", session_key=7)
+
+    answers[:] = [httpx.Response(429, headers={"Retry-After": "30"}), httpx.Response(429),
+                  httpx.Response(200, json=[1]), httpx.Response(200, json=[2])]
+    assert asyncio.run(go()) == ([1], [2])
+    # (Retry-After over the first backoff; then the backoff, doubled; then a second's pace)
+    assert slept == [30.0, 1.0, 1.0]
+    slept.clear()
+    answers[:] = [httpx.Response(429, headers={"Retry-After": "1"}), httpx.Response(200, json=[1]),
+                  httpx.Response(200, json=[2])]
+    assert asyncio.run(go(retry=4)) == ([1], [2]) and slept == [4.0, 1.0]  # (the backoff, longer)
+    answers[:] = [httpx.Response(429, headers={"Retry-After": "3600"})]
+    with pytest.raises(timing_openf1.OpenF1Error, match="HTTP 429, retry after 3600 s"):
+        asyncio.run(go())
+    assert answers == []  # (asked once)
+    # Retry-After as an HTTP date, or nonsense
+    now = 1790000000.0
+    date = datetime.fromtimestamp(now + 42, timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    assert timing_openf1.retry_after(httpx.Response(429, headers={"Retry-After": date}), now) == 42
+    assert [timing_openf1.retry_after(httpx.Response(429, headers=h)) for h in ({}, {"Retry-After": "soon"},
+            {"Retry-After": "-5"}, {"Retry-After": "nan"})] == [None, None, 0.0, None]
 
 
 def live_capture_without_positions(tmp_path) -> dict:
