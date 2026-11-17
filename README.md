@@ -365,8 +365,8 @@ that works away from home first (a VPN name, say), the LAN one second. *Test con
 which one answers, the server's version, its channels, whether it has the channel's Bilibili
 room and what its setup leaves out. The page also sets the commentary channel, live auto-hold and whether live comes straight
 from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
-a `user:password@`), *Save* says which and why and keeps the server list as it was; the rest of
-the page is saved.
+a `user:password@`), *Save* says which and why and keeps the server list and which source to use
+(*This computer* or *A fone server*) as they were; the rest of the page is saved.
 
 ### Updating the server
 

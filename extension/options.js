@@ -189,10 +189,11 @@ $('save').addEventListener('click', async () => {
   };
   $('bufferMin').value = rest.bufferMin;
   if (errors.length) {
-    // A line the server box can't use costs only the server list: it and the source stay as they
-    // were saved (the box keeps what was typed, to be fixed), the rest is saved.
+    // A line the server box can't use costs the server list and the source (which may depend on it):
+    // both stay as they were saved (the box keeps what was typed, to be fixed), the rest is saved.
     await chrome.storage.sync.set(rest);
-    say(`Saved, except Server URLs, kept as they were: ${errors.join('; ')}. Fix ${errors.length > 1 ? 'those lines' : 'that line'} and Save again.`);
+    say(`Saved, except the server list and which source to use, both kept as they were: ${errors.join('; ')}. `
+      + `Fix ${errors.length > 1 ? 'those lines' : 'that line'} first, then Save again.`);
     return;
   }
   const src = FoneOptions.source(source(), stream, list);

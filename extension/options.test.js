@@ -150,7 +150,7 @@ test('a stream with a server for the stats keeps "This computer"', async () => {
   assert.equal(p.sync.stream, 'https://www.twitch.tv/name');
 });
 
-test('a server that can\'t be fetched isn\'t saved, and costs nothing else (F1 TV\'s sound is)', async () => {
+test('a server that can\'t be fetched isn\'t saved, nor the source; the rest is (F1 TV\'s sound)', async () => {
   const p = await page({ servers: ['http://fone.lan:8788'], source: 'server' });
   await p.type('servers', 'http://fone.lan:8788\nftp://nas');
   p.els.f1SoundFx.checked = false; p.els.f1SoundEng.checked = true;
@@ -162,7 +162,8 @@ test('a server that can\'t be fetched isn\'t saved, and costs nothing else (F1 T
   assert.equal(p.sync.f1Sound, 'eng');
   assert.equal(p.sync.f1Subs, true);
   assert.equal(p.els.servers.value, 'http://fone.lan:8788\nftp://nas'); // left to be fixed
-  assert.match(p.els.saved.textContent, /^Saved, except Server URLs, kept as they were: ftp:\/\/nas: only http.*Fix that line/);
+  assert.match(p.els.saved.textContent,
+    /^Saved, except the server list and which source to use, both kept as they were: ftp:\/\/nas: only http.*Fix that line first/);
 
   const q = await page(); // a first run: nothing to keep
   await q.type('servers', 'ftp://nas');
