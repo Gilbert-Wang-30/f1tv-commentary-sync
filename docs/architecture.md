@@ -62,17 +62,32 @@ off with `FONE_<NAME>=0`, and one that fails to build or start is left out rathe
 the commentary sync down (`/api/health` lists the running ones).
 
 Configuration is environment variables only (`server/fone/config.py`; the README's
-Configuration table lists them).
+Configuration table lists them). An empty one is its default (`docker-compose.yml` passes the
+optional ones through from `.env`, empty where `.env` leaves them so). Nothing names a streamer
+by default: with no `FONE_ROOMS` no Bilibili room is watched, and `config.notes()` (logged as
+the configuration loads) says what that, or a missing recordings or import folder, leaves out.
+
+The compose file reads everything that's one setup's from `.env` (`.env.example`):
+`FONE_RECORDINGS` is mounted at `/rec` (read-only) with `fone-import/` in it writable for
+backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into its `fone/`;
+`FONE_FILENAME_TZ` is the server's zone for file names and the recorders' `TZ`.
+`recorder/seed.sh` writes fone-recorder's 录播姬 `config.json` on its first start from the
+template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone; the gate
+(`recorder/gate.py`) only logs the streams it would stop until `GATE_ACTION=stop`.
 
 ### Recordings and the data directory
 
 `FONE_REC_DIR` (`/rec`) is scanned recursively every `FONE_SCAN_INTERVAL` s. A recording's
-**channel is its parent folder** (BililiveRecorder's `{{ name }}/` template; `FONE_CHANNEL_ALIASES`
-renames folders), its start time is parsed from the file name (`yyyyMMdd-HHmmss-fff-title.flv`
-and the coarser variants in `recordings.py`) in `FONE_FILENAME_TZ`, and its `source` is
-`recorder`, or `import` for files under `FONE_IMPORT_DIR` (backfill's replays, which only ever
-fill gaps). A file still being written (mtime younger than `FONE_GROWING_IDLE_SECONDS`) is
-tailed into ffmpeg so its audio is playable seconds after it was recorded.
+**channel is its parent folder** (fone-recorder's `{{ roomId }}/` template, which `FONE_ROOMS`
+names; BililiveRecorder's `{{ name }}/` or a streamlink channel's; `FONE_CHANNEL_ALIASES`
+renames folders, and wins over `FONE_ROOMS`), its start time is parsed from the file name
+(`yyyyMMdd-HHmmss-fff-title.flv` and the coarser variants in `recordings.py`) in
+`FONE_FILENAME_TZ`, and its `source` is `recorder`, or `import` for files under
+`FONE_IMPORT_DIR` (backfill's replays, which only ever fill gaps). A finished file whose name and
+last write disagree by whole quarter-hours, an hour or more, is placed by its name and logged as
+a likely `FONE_FILENAME_TZ` mismatch (`extractor.zone_offset`). A file still being written (mtime
+younger than `FONE_GROWING_IDLE_SECONDS`) is tailed into ffmpeg so its audio is playable seconds
+after it was recorded.
 
 `FONE_DATA_DIR` (`/data`, the `fone-data` volume) holds everything computed:
 
@@ -205,7 +220,11 @@ login through `POST /positions` (the server never sees the token). `docs/f1-data
 has the endpoints and formats.
 
 **ads**: sponsor-reel detection per recording against the reference clips in
-`server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). Growing files are analysed segment by
+`server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). The clips are one streamer's, so only
+their channel's recordings are matched: the bundled set's on its own channel
+(`ads.BUNDLED_CHANNELS`, 胡闹P房), a set in `FONE_ADS_REFS` on every channel, or on those
+`FONE_ADS_CHANNELS` names (`*`: all). Another channel's files aren't decoded and have no ad state
+(`adsAnalyzedTo` null, no mutes). Growing files are analysed segment by
 segment as the extractor lists them (a clip is known 2–3 s into its audio); finished files
 once. The extension mutes while the target `m` is inside a `mutes` span (live from the stream
 itself, while the wall time of the target is inside one's `w` span, padded by 1 s). Live, each
@@ -782,9 +801,20 @@ rollback). `chrome.storage.local` (per machine): `layout`
 (`'split'` | `'off'`), `onboards` (the two picked drivers), and the self-update's `updateSeen`,
 `lastReload`, `refreshF1tv`.
 
+First run: the service worker opens the options page on install (`onInstalled`, reason
+`install`; not on an update or a self-reload), which with nothing set shows how to start; later
+the panel's ⚙ asks it to (`{target: 'background', type: 'open-options'}`: a content script
+can't open it), highlighted while there's nothing to play from. The options page's logic is
+`FoneOptions` (`options.js`, tested by `options.test.js`): a server as typed gets `http://`
+where no scheme was typed and `:8788` where no port either, anything but http(s) is refused,
+and a save keeps the source that has something in it (a first run's server saved with "This
+computer" still checked is the server). *Test connection* reads `/api/health` (the version,
+where the server has one), `/api/channels` and `/api/danmaku/status` (whether the channel has
+a Bilibili room).
+
 Self-update: a published build (`tools/publish_ext.sh`) carries `build.js` (read once at load),
-`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789) and
-reload into once it has been up for 75 s and no tab is playing, and `local.js` with that
-install's default servers (`self.FONE_LOCAL.servers`; the repository's copy is an empty
-placeholder, so a copy loaded straight from the repository asks for the server in its options
-page and never updates itself).
+`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789; the
+`ext-update` compose profile) and reload into once it has been up for 75 s and no tab is
+playing, and `local.js` with that install's default servers (`self.FONE_LOCAL.servers`; the
+repository's copy is an empty placeholder, so a release's zip or a copy loaded straight from the
+repository asks for the server in its options page and never updates itself).
