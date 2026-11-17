@@ -418,9 +418,9 @@ def test_a_session_that_started_late_is_anchored_on_its_start_not_the_schedule(t
 
 def test_the_session_feed_is_known_by_multiviewers_sync_offsets_too(tmp_path):
     """MultiViewer now names other videos as some sessions' content: the 2026 Italian GP race's
-    post-race show (1000011143), Singapore's 1000079710. Their sync_offsets still list the race's
-    own feed on the main channel (1025) for the session, and that makes it the session feed:
-    anchored, not left to the manual clock (which refuses its Bilibili replay)."""
+    post-race show (1000011143), Singapore's F1 Kids video (1000079710). Their sync_offsets still
+    list the race's own feed on the main channel (1025) for the session, and that makes it the
+    session feed: anchored, not left to the manual clock (which refuses its Bilibili replay)."""
     sched = ts("2026-09-06T13:00:00")
     started = 1788696000.0 + 3810.936  # (the OpenF1 rebuild's Started)
     pages = {cid: session_page(cid, 1293, 11361, title, sched) for cid, title in (
@@ -440,6 +440,59 @@ def test_the_session_feed_is_known_by_multiviewers_sync_offsets_too(tmp_path):
         out = asyncio.run(m.content(cid))
         assert not out["isSessionFeed"] and out["anchor"] is None and out["p0"] is None, cid
         assert "timingStarted" not in out
+
+
+def test_the_video_multiviewer_names_isnt_the_feed_when_its_sync_offsets_list_another(tmp_path):
+    """MultiViewer's f1tv_content_id for the 2026 Italian GP race (11361) and Singapore's (11388)
+    names F1 TV's post-race show and F1 Kids video, both filed under the race's own session key
+    (F1 TV's pages: 'Post-Race Show - Italy', 2501 s; '2026 Singapore GP - F1 Kids', 8163 s), and
+    its sync_offsets say as much (session_type "post_race_show", "f1_kids") while their rows list
+    only the race's feed. Neither video runs on the race feed's timeline (the show starts after the
+    race; the Kids video has its own), so neither gets an anchor, exact or not: manual, as the
+    F1 Kids feed always was. The race feeds get the exact one."""
+    def page(cid, mk, sk, title, start, duration, onboards=True):
+        d = session_page(cid, mk, sk, title, start)
+        d["resultObj"]["containers"][0]["metadata"].update(duration=duration)
+        if not onboards:
+            d["resultObj"]["containers"][0]["metadata"]["additionalStreams"] = []
+        return d
+
+    def mv(mk, sk, cid, session_type, start, pdt, feed):
+        out = mv_session(mk, sk, cid, "Race", start, pdt, listed=[(feed, ch) for ch in (1025, 1033, 1003, 1004)])
+        out["sync_offsets"].update(session_key=str(sk), session_type=session_type, meeting_key=str(mk))
+        return out
+
+    ita, sgp = ts("2026-09-06T13:00:00"), ts("2026-10-11T12:00:00")
+    pages = {"1000011143": page("1000011143", 1293, 11361, "Post-Race Show - Italy", ita, 2501, False),
+             "1000010363": page("1000010363", 1293, 11361, "2026 Italian Grand Prix", ita, 9192),
+             "1000079710": page("1000079710", 1296, 11388, "2026 Singapore GP - F1 Kids", sgp, 8163, False),
+             "1000010398": page("1000010398", 1296, 11388, "2026 Singapore Grand Prix", sgp, 8202)}
+    mvs = {(1293, 11361): mv(1293, 11361, "1000011143", "post_race_show", 518.26, None, "1000010363"),
+           (1296, 11388): mv(1296, 11388, "1000079710", "f1_kids", 526.46, "2026-10-11T12:03:46.940Z", "1000010398")}
+    for timing in (True, False):  # with the server's timing of both races (Started), and without
+        d = tmp_path / str(timing)
+        d.mkdir()
+        m, w = world_mapper(d, pages=pages, mvs=mvs)
+        if timing:
+            w["timing"].update({11361: ita + 210.936, 11388: ts("2026-10-11T12:03:39.077")})
+        for cid in ("1000011143", "1000079710"):
+            out = asyncio.run(m.content(cid))
+            assert (out["isSessionFeed"], out["anchor"], out["p0"]) == (False, None, None), (timing, cid)
+            assert out["kind"] == "race" and "timingStarted" not in out and "startedUtc" not in out
+        out = asyncio.run(m.content("1000010398"))
+        assert out["isSessionFeed"] and out["anchor"] == ("timing" if timing else "pdt")
+        assert abs(out["p0"] - 1791719692.617) < (1e-3 if timing else 0.02)  # (the archive's, cached before)
+        out = asyncio.run(m.content("1000010363"))
+        assert out["isSessionFeed"] and out["anchor"] == ("timing" if timing else "preroll")  # (no pdt)
+    # sync_offsets that list no video of the session's own (only another session's, as Singapore's
+    # FP1 11378; or none) leave it to f1tv_content_id, as before
+    for rows in ([("1000010188", 1025, 11236)], []):
+        d = tmp_path / f"rows{len(rows)}"
+        d.mkdir()
+        m, w = world_mapper(d, pages=pages, mvs={(1296, 11388): mv_session(1296, 11388, "1000010398", "Race", 526.46,
+                                                                           "2026-10-11T12:03:46.940Z", listed=rows)})
+        assert asyncio.run(m.content("1000010398"))["anchor"] == "pdt"
+        assert not asyncio.run(m.content("1000079710"))["isSessionFeed"]
 
 
 def test_a_preroll_anchor_is_upgraded_once_the_servers_timing_has_the_start(tmp_path):

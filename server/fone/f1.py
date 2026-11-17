@@ -108,19 +108,23 @@ def _pdt(mv: dict) -> float | None:
         return None
 
 
-def _lists_feed(mv: dict, cid: str, sk: int | None) -> bool:
-    """MultiViewer's sync_offsets list `cid` on the main channel for this session. Its
-    f1tv_content_id sometimes names another video of the session (2026 Italian GP race: the
-    post-race show 1000011143; Singapore's race: 1000079710) while its sync_offsets still list
-    the session's own feed (1000010363, 1000010398)."""
+def _listed_feeds(mv: dict, sk: int | None) -> set[str]:
+    """The content ids MultiViewer's sync_offsets list on the main channel for this session: the
+    session's own feed. Where they list one, that is the feed and MultiViewer's f1tv_content_id
+    isn't trusted, since it sometimes names another video of the session (2026 Italian GP race:
+    the post-race show 1000011143, its sync_offsets' session_type "post_race_show"; Singapore's
+    race: the F1 Kids video 1000079710, "f1_kids") while the list has the race's own feed
+    (1000010363, 1000010398). Some list only another session's video (Singapore's FP1, 11378, and
+    the United States' FP2, 11390: 1000010188 for 11236), or none: then f1tv_content_id says."""
     so = mv.get("sync_offsets")
     rows = so.get("sync_offsets") if isinstance(so, dict) else None
-    for o in rows if isinstance(rows, list) else []:
+    out = set()
+    for o in rows if isinstance(rows, list) and sk is not None else []:
         sd = o.get("streamData") if isinstance(o, dict) else None
-        if isinstance(sd, dict) and str(sd.get("contentId")) == str(cid) \
-                and _int(sd.get("channelId")) == MAIN_CHANNEL and sk is not None and _int(sd.get("sessionKey")) == sk:
-            return True
-    return False
+        if isinstance(sd, dict) and sd.get("contentId") is not None \
+                and _int(sd.get("channelId")) == MAIN_CHANNEL and _int(sd.get("sessionKey")) == sk:
+            out.add(str(sd["contentId"]))
+    return out
 
 
 def _streams(raw: list) -> list[dict]:
@@ -267,7 +271,8 @@ class F1Mapper:
         if mv is None and mk and sk:
             mv = await self._json(MV_SESSION.format(mk=mk, sk=sk))
 
-        is_main = bool(mv) and (str(mv.get("f1tv_content_id")) == str(cid) or _lists_feed(mv, cid, sk))
+        listed = _listed_feeds(mv, sk) if mv else set()
+        is_main = bool(mv) and (str(cid) in listed if listed else str(mv.get("f1tv_content_id")) == str(cid))
         if mv and mv.get("session_info"):
             session_name = mv["session_info"].get("Name") or session_name
         out["sessionName"] = session_name
