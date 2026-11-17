@@ -468,11 +468,12 @@
   // hold it (it starts in its slot's hour; the commentary dmin..dmax s after the event; a minute
   // for the repeats), or all of it (`full`); nearest a middle guess first. (dmax: the streamer's
   // delay is 40-55 s; 600 let a lap replayed after a session match 10 minutes before the slot)
-  function searchPlan(reps, E, { dmin = -120, dmax = 180, chunk = 200, win = 20, guess = 50, full = false } = {}) {
+  // `wider`: s more either side, E only a guess (lookWider).
+  function searchPlan(reps, E, { dmin = -120, dmax = 180, chunk = 200, win = 20, guess = 50, full = false, wider = 0 } = {}) {
     const out = [];
     for (const r of reps) {
-      const lo = full ? 0 : Math.max(0, E + dmin - (r.slot + 3600) - 60);
-      const hi = full ? r.total : Math.min(r.total, E + dmax - r.slot + 60 + win);
+      const lo = full ? 0 : Math.max(0, E + dmin - wider - (r.slot + 3600) - 60);
+      const hi = full ? r.total : Math.min(r.total, E + dmax + wider - r.slot + 60 + win);
       const mid = E + guess - (r.slot + 1800);
       let off = 0;
       for (let i = 0; i < r.pages.length; i++) {
@@ -487,6 +488,16 @@
     }
     return out.sort((x, y) => x.dist - y.dist);
   }
+
+  // How much wider a look over the hour is (searchPlan's `wider`, s either side): placed by the
+  // clock on the streamer's screen, or where it was put before (the clock's place, maybe), F1 TV's
+  // anchor only a guess (`guessed`, anchorGuessed's: the pre-roll's), `wider`; else 0. The hour
+  // is around F1 TV's event time, as far off as the guess is, the clock's place with it, and the
+  // moment may lie past the hour's last stretch for all of the video: the 2026 Japanese GP's race
+  // (F1 TV's guess 599 s before the screen's) had it at 3682 s into the replay, the hour's plan
+  // ending at 3632 (and holding it on the screen's event time). A look over all of each replay
+  // would find it, but placed the first is the sixth look again, ~50 min on (offscreen's vodFull).
+  const lookWider = ({ placed, how, guessed }, wider) => (placed && guessed && (how === 'clock' || how === 'kept') ? wider : 0);
 
   // What a look's hit h stands out from: its own runner-up, or the best of the others (another
   // replay, or more than 1 s from it).
@@ -774,7 +785,7 @@
   }
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
-    playlist, searchPlan, rivalOf, lookOver, keepLikely, foundAgain, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
+    playlist, searchPlan, lookWider, rivalOf, lookOver, keepLikely, foundAgain, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
     pageStart, anchorGuessed, clockAt, clockShift, shiftOn, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, checkClock, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
     placing, placeResets, recheckDue, backoff, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

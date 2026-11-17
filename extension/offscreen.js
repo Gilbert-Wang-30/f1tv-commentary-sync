@@ -1461,7 +1461,7 @@ function sndSteer(t, v) {
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
   WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
   CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, CHECK_TRIES: 3, CHECK_WAIT: 120,
-  RELOAD: 60, RELOAD_MAX: 1800, SCAN_WAIT: 30, SCAN_WAIT_MAX: 300, NONE_AGAIN: 300, PUBLISH: 12 * 3600 };
+  RELOAD: 60, RELOAD_MAX: 1800, SCAN_WAIT: 30, SCAN_WAIT_MAX: 300, NONE_AGAIN: 300, PUBLISH: 12 * 3600, WIDER: 1200 };
 // (RELOAD: a replay that wouldn't load tried again this many s on, twice as long each time to RELOAD_MAX)
 // (PUBLISH: a session's replays all on Bilibili this long after it ends: the streamer's show runs
 // on after it, and Bilibili publishes a 直播回放 a while after the live. A list read before then is
@@ -1475,7 +1475,9 @@ const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, C
 // near reading, within its wide look: asked to look again widely first (CHECK_TRIES looks,
 // CHECK_WAIT s at most), moved only if that doesn't find the lock: FoneVod.clockRule. F1 TV's
 // anchor only a guess, the pre-roll's: its place looked for again over the hour as sound's own
-// is, and a sure match it refuses, found there again, wins and puts it right: vodOverrule)
+// is, WIDER s more of it either side (the guess was 599 s off on the 2026 Japanese GP, the clock's
+// place as far: FoneVod.lookWider), and a sure match it refuses, found there again, wins and puts
+// it right: vodOverrule)
 // (AHEAD: repeats looked for this far ahead of what plays, SCAN s of the replay a look)
 // (a look that isn't sure keeps its likeliest places, FoneVod.keepLikely: each checked against
 // the F1 TV sound heard after it, VOD.FRESH s at least, VOD.VERIFY at where it says, as F1 TV
@@ -1831,7 +1833,10 @@ async function vodSearch(V, gen, Q, scan = true) {
     if (!placed && /^Not found/.test(V.text || '')) V.text = vodMissText(V);
     return false;
   }
-  const full = vodFull(V.tries), opts = { chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0 };
+  // (placed by the clock, or kept, on F1 TV's guessed anchor: the hour VOD.WIDER s wider either
+  // side, where the guess may put the moment: FoneVod.lookWider)
+  const wider = FoneVod.lookWider({ placed, how: V.how, guessed: vodGuessed() }, VOD.WIDER);
+  const full = vodFull(V.tries), opts = { chunk: VOD.CHUNK, win: VOD.WIN_MAX, guess: VOD.D0, wider };
   const plan = FoneVod.searchPlan(V.reps, E, { ...opts, full });
   const hour = full ? new Set(FoneVod.searchPlan(V.reps, E, opts).map(vodChunkKey)) : null;
   V.tries++;
@@ -1852,7 +1857,7 @@ async function vodSearch(V, gen, Q, scan = true) {
   if (gone()) return false;
   hits.sort((a, b) => b.score - a.score);
   const best = hits[0], rival = best ? FoneVod.rivalOf(hits, best) : 0;
-  diag('vod', { look: V.tries, full, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
+  diag('vod', { look: V.tries, full, wider: wider || undefined, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
     best: best ? { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
     more: hits.slice(1, 3).map((h) => [r2(h.m), r1(h.score)]), checked, cands: V.cands.length });
   // (placed already, and sync by sound not confirming it: moved only by a match far above all else)

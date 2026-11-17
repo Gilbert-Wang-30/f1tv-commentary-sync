@@ -541,20 +541,23 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
   });
 
   await test("F1 TV's anchor only a guess (the pre-roll's): the clock as far off, sound found twice there wins and puts it right", () => {
-    // their screen tells the event time rightly; F1 TV's own is the pre-roll's guess, 599 s after
-    // it (2026 Japanese GP). The moment playing: W + 60 on their screen, W + 659 on F1 TV's
+    // their screen tells the event time rightly; F1 TV's own is the pre-roll's guess, 599 s before
+    // it (2026 Japanese GP race: F1 TV's video began 10 min later than the pre-roll has it). The
+    // moment playing: W + 60 on F1 TV's guess, W + 659 on their screen
     assert.equal(V.anchorGuessed('preroll'), true);
     assert.equal(V.anchorGuessed(null), true);
     assert.equal(V.anchorGuessed(undefined), true);
     for (const a of ['multiviewer', 'timing', 'pdt']) assert.equal(V.anchorGuessed(a), false, a); // (exact)
-    const W = 1.75e9, A = clockRep('BVjp', [{ page: 1, at: 1000, wall: W }, { page: 1, at: 2500, wall: W + 1500 }]), B = clockRep('BVb', []);
-    const E = W + 659, Ts = E + 50 - 1061.5; // (sound's place: the screen's W + 60, 1.5 s on, in the content: 1061.5)
+    const W0 = 1.75e9, rd = [{ page: 1, at: 1000, wall: W0 }, { page: 1, at: 2500, wall: W0 + 1500 }];
+    const A = clockRep('BVjp', rd), B = clockRep('BVb', []);
+    const E = W0 + 60, Ts = E + 50 - 1660.5; // (sound's place: the screen's W + 659, 1.5 s on, in the content: 1660.5)
     const k = V.clockAt([A], E, CK);
-    assert.ok(Math.abs(k.T0 - (Ts - 599)) < 1e-6 && k.d === 659, JSON.stringify(k));
+    assert.ok(k.r === A && Math.abs(k.T0 - (Ts + 599)) < 1e-6 && k.d === 60, JSON.stringify(k)); // (a reading near F1 TV's guess)
     // the clock refuses sound's place, and would move it back there, locked or not
+    assert.equal(V.clockRoom(k, CK), 15);
     assert.equal(V.clockVeto(k, A, Ts, V.clockRoom(k, CK)), true);
     const R = { placed: true, ...CK, reach: 23 };
-    assert.equal(V.clockRule(k, V.clockOff(k, A, Ts, 50, 50), { ...R, lock: 50 }), 'move');
+    for (const lock of [null, 50]) assert.equal(V.clockRule(k, V.clockOff(k, A, Ts, 50, 50), { ...R, lock }), 'move');
     // exact (MultiViewer's): as ever, a place the clock made isn't looked for over the hour again
     const P = { again: 600, confirm: 8 }, base = { how: 'clock', locked: false, since: 120, rechecks: 0, looks: 8, listening: true, outside: false };
     assert.equal(V.recheckDue({ ...base, guessed: V.anchorGuessed('multiviewer') }, P), false);
@@ -567,39 +570,78 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
 
     // the look over the hour sure there (refused): kept as such, among the likely places
     const L = { E, pa: 100, pb: 130, run: 'r1' }, cands = [];
-    V.keepLikely(cands, [{ rep: A, m: 1061.5, score: 42.3, next: 6, sure: true }], 3, L, { top: 1 });
+    V.keepLikely(cands, [{ rep: A, m: 1660.5, score: 42.3, next: 6, sure: true }], 3, L, { top: 1 });
     assert.ok(cands.length === 1 && cands[0].sure === true);
     V.keepLikely(cands, [{ rep: A, m: 3000, score: 8 }], 3, L);
     assert.ok(!cands[1].sure); // (a likely place: not)
     // found again: another look sure at the same place (within VOD.AGREE 0.3 s); not elsewhere, nor by a likely place
     const again = (rep, T0) => V.foundAgain(cands, rep, T0, { D0: 50, agree: 0.3 });
     assert.equal(again(A, Ts + 0.2), cands[0]);
-    assert.equal(again(A, Ts + 0.5), null);
+    assert.equal(again(A, Ts - 0.5), null);
     assert.equal(again(B, Ts), null);
     assert.equal(again(A, E + 50 - 3000), null);
 
-    // sound wins: the clock put right by as much, by the reading nearest the moment so put right
+    // sound wins: the clock put right by as much (F1 TV's event time 599 s before the screen's), by
+    // the reading nearest the moment so put right
     const dE = V.clockShift(A, Ts, E, CK);
-    assert.ok(Math.abs(dE - 599) < 1e-6, `${dE}`);
+    assert.ok(Math.abs(dE + 599) < 1e-6, `${dE}`);
     assert.equal(V.clockShift(B, Ts, E, CK), null); // (no reading on that replay: refused, as ever)
     const o = { ...CK, dE };
     const k2 = V.clockAt([A], E, o);
-    assert.ok(k2.r === A && Math.abs(k2.T0 - Ts) < 1e-6 && Math.abs(k2.d - 60) < 1e-6, JSON.stringify(k2)); // (a reading near the moment now)
+    assert.ok(k2.r === A && Math.abs(k2.T0 - Ts) < 1e-6 && Math.abs(k2.d - 659) < 1e-6, JSON.stringify(k2)); // (its readings now 659 s from the moment)
+    assert.equal(V.clockRoom(k2, CK), 120);
     assert.ok(V.clockOff(k2, A, Ts, 50, 50) < 1e-6);
     assert.equal(V.clockVeto(k2, A, Ts + 1.2, V.clockRoom(k2, CK)), false); // (sound takes it the last second, as ever)
     for (const lock of [null, 50, 50.4]) assert.equal(V.clockRule(k2, V.clockOff(k2, A, Ts, 50, 50), { ...R, lock }), 'stay'); // (not moved back)
-    // ...where it was put before, which replay holds the moment, what to ask the server: all on the screen's event time
-    assert.deepEqual(V.holder([A], E, () => null, o), { rep: A, T0: k2.T0, delay: 50, hand: 0, how: 'clock' });
+    // what to ask the server: a reading near the moment on their screen (offscreen asks for E - dE)
     const asks = (oo) => V.clockAsks([{ ...A, clock: { ...A.clock, askedAt: 0 } }], E, 100, { poll: 3, again: 20, near: 240, ...oo }).length;
-    assert.equal(asks({ dE }), 0); // (a reading 60 s from the moment)
-    assert.equal(asks({}), 1); // (on F1 TV's guess: none within 240 s, asked for one there)
+    assert.equal(asks({ dE }), 1); // (none within 240 s of the screen's W + 659: asked for one there)
+    assert.equal(asks({}), 0); // (on F1 TV's guess: the reading 60 s from it would do)
+    // ...read there: by it, the same place, a reading near the moment again
+    const A3 = clockRep('BVjp', [...rd, { page: 1, at: 1700, wall: W0 + 700 }]);
+    const k3 = V.clockAt([A3], E, o);
+    assert.ok(k3.r === A3 && Math.abs(k3.T0 - Ts) < 1e-6 && Math.abs(k3.d - 41) < 1e-6, JSON.stringify(k3));
+    assert.equal(V.clockVeto(k3, A3, Ts + 1.2, V.clockRoom(k3, CK)), false);
+    assert.equal(V.clockRule(k3, V.clockOff(k3, A3, Ts, 50, 50), { ...R, lock: 50 }), 'stay');
+    assert.equal(V.clockAsks([{ ...A3, clock: { ...A3.clock, askedAt: 0 } }], E, 100, { poll: 3, again: 20, near: 240, dE }).length, 0);
+    // ...which replay holds the moment: on the screen's event time
+    assert.deepEqual(V.holder([A3], E, () => null, o), { rep: A3, T0: k3.T0, delay: 50, hand: 0, how: 'clock' });
     // kept for the video: on its anchor now (moved with p0, as F1 TV's event time is); none on an exact one
-    assert.equal(V.shiftOn({ dE: 599, p0: 1000 }, 1000, true), 599);
-    assert.ok(Math.abs(V.shiftOn({ dE: 599, p0: 1000 }, 1012.4, true) - 611.4) < 1e-9);
-    assert.equal(V.shiftOn({ dE: 599 }, 1012.4, true), 599); // (kept before p0 was: as it is)
-    assert.equal(V.shiftOn({ dE: 599, p0: 1000 }, 1000, false), 0); // (MultiViewer's since: exact)
+    assert.equal(V.shiftOn({ dE: -599, p0: 1000 }, 1000, true), -599);
+    assert.ok(Math.abs(V.shiftOn({ dE: -599, p0: 1000 }, 1012.4, true) + 586.6) < 1e-9);
+    assert.equal(V.shiftOn({ dE: -599 }, 1012.4, true), -599); // (kept before p0 was: as it is)
+    assert.equal(V.shiftOn({ dE: -599, p0: 1000 }, 1000, false), 0); // (MultiViewer's since: exact)
     assert.equal(V.shiftOn(null, 1000, true), 0);
     assert.equal(V.shiftOn({ dE: 'x' }, 1000, true), 0);
+  });
+
+  await test("F1 TV's anchor only a guess: a look again at the clock's place looks wider than the hour, where the guess may put the moment", () => {
+    // the 2026 Japanese GP race: its replay (one page, 4 h 32 min) from the streamer's 13点场, F1
+    // TV's event time on the pre-roll's guess (599 s before the screen's); sound found that moment
+    // 3682.26 s in. The hour's plan around F1 TV's guess ends at 3632, and misses it by as much
+    // for all of the video (the guess is as far off throughout); around the screen's event time it holds it
+    const slot = 1774756800, rep = { bvid: 'BVjp', slot, total: 16297, pages: [{ page: 1, dur: 16297 }] };
+    const E = slot + 3306, m = 3682.26, o = { chunk: 200, win: 30, guess: 50 }; // (offscreen's: VOD.CHUNK, WIN_MAX, D0)
+    const key = (c) => `${c.page}/${c.a}/${c.len}`, holds = (plan, mm = m) => plan.some((c) => c.a <= mm && c.a + c.len >= mm + 30);
+    const hour = V.searchPlan([rep], E, o);
+    assert.ok(!holds(hour) && Math.max(...hour.map((c) => c.a + c.len)) === 3632, `${hour.length}`);
+    assert.ok(holds(V.searchPlan([rep], E + 599, o)));
+    for (let t = 600; t < 12000; t += 600) assert.ok(!holds(V.searchPlan([rep], E + t, o), m + t) && holds(V.searchPlan([rep], E + 599 + t, o), m + t), `${t}`);
+    // as ever: not placed (a look over all of each replay five looks in), placed by sound, an exact anchor
+    const W = (st) => V.lookWider(st, 1200);
+    for (const st of [{ placed: false, how: 'clock', guessed: true }, { placed: true, how: 'sound', guessed: true },
+      { placed: true, how: 'clock', guessed: false }, { placed: true, how: 'kept', guessed: false }]) assert.equal(W(st), 0, JSON.stringify(st));
+    // placed by the clock (or kept: maybe the clock's place), on the guess: 20 min wider either side, the hour's stretches all in it, first
+    for (const how of ['clock', 'kept']) assert.equal(W({ placed: true, how, guessed: true }), 1200, how);
+    const plan = V.searchPlan([rep], E, { ...o, wider: 1200 }), keys = new Set(plan.map(key));
+    assert.ok(holds(plan) && hour.every((c) => keys.has(key(c))) && plan.length === 24, `${plan.length}`);
+    assert.deepEqual(plan.slice(0, hour.length).map(key).sort(), hour.map(key).sort());
+    // ...and the other way: F1 TV's guess 599 s after the screen's, the streamer live 58 min into their hour
+    const E2 = slot + 8306, m2 = E2 - 599 + 50 - (slot + 3500);
+    assert.ok(!holds(V.searchPlan([rep], E2, o), m2) && holds(V.searchPlan([rep], E2, { ...o, wider: 1200 }), m2), `${m2}`);
+    // a look over all of it: as ever; the hour it looks at all of before it stops, the wider one
+    const full = V.searchPlan([rep], E, { ...o, wider: 1200, full: true });
+    assert.ok(full.length === V.searchPlan([rep], E, { ...o, full: true }).length && holds(full));
   });
 
   await test('the clock pending (sound held back for it) and when to ask the server', () => {
