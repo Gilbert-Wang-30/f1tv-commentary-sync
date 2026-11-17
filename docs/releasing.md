@@ -72,7 +72,7 @@ repository.
 
 | job | what | fails when |
 |---|---|---|
-| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `v` + the manifest's version; its CHANGELOG section is empty or undated; personal config is committed; the tag isn't on main |
+| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty or undated; personal config is committed; the tag isn't on main |
 | tests | all of `ci.yml`: syntax of every extension script, the packaging check, the extension, server and recorder tests, ruff, the release-tool tests | any of them |
 | extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS`, kept as the run's artifact | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
 | server image (after the zip) | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built, and only then pushed | the smoke run fails; arm64 doesn't build; the push fails |
@@ -100,7 +100,8 @@ What has been published depends on the job that failed:
   (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`, tag main again, push the tag).
 - **The image's push itself** (a network error midway): some of `X.Y.Z`, `X.Y`, `latest` may
   point at the new image and others not; there is no GitHub Release yet. Re-run the failed jobs
-  (Actions → the run → Re-run failed jobs): the same image is pushed under every tag again.
+  (Actions → the run → Re-run failed jobs): the image is built from the same commit and pushed
+  under every tag again.
 - **The GitHub release job** (or the "what was pushed" step): the image is on ghcr.io under
   `X.Y.Z`, `X.Y` and `latest`, which now point at this version, but there is no Release and so
   no zip for anyone. Re-run the failed jobs; the release job takes the zip this run already
