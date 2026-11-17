@@ -286,6 +286,17 @@
   // from where it says.
   const clockVeto = (k, rep, T0, room) => !!k && (k.r !== rep || Math.abs(T0 - k.T0) > room);
 
+  // ---- where it was put before -----------------------------------------------------------------
+  // A place kept for this video ({T0, delay, p0, hand, at}) on the anchor F1 TV's picture has now:
+  // T0 is on the event clock the picture was put on then (E = p0 + p); p0 since refined (the
+  // pre-roll's guess, MultiViewer's exact one later) moves it as much, so the picture's moment
+  // in the replay stays where it was found. (One kept before p0 was: as it is.) Null: none.
+  function keptOn(k, p0) {
+    if (!k || !Number.isFinite(k.T0) || !Number.isFinite(k.delay)) return null;
+    const dp = Number.isFinite(k.p0) && Number.isFinite(p0) ? p0 - k.p0 : 0;
+    return { T0: k.T0 + dp, delay: k.delay, hand: Number(k.hand) || 0, at: k.at || 0 };
+  }
+
   // An HLS playlist of the replay's sound (fMP4 by byte range: hls.js plays it as it plays a
   // server's), each page from url(i): its init segment, then its segments; pages back to back.
   function playlist(rep, url) {
@@ -575,5 +586,5 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, keptOn };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

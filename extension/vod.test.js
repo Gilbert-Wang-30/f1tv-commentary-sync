@@ -386,6 +386,22 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.deepEqual(asks([{ ...ok, clock: { ...ok.clock, more: true } }], W, 103), ['BVok']); // (reading near E: polled)
   });
 
+  await test('a place kept for the video, on the anchor it has now: the picture\'s moment in the replay where it was', () => {
+    // found on the pre-roll's guess (p0 = 1000), now on MultiViewer's exact anchor 12.4 s later
+    const rep = { bvid: 'BVk', cuts: [{ m: 1800, d: 4 }] };
+    const k = { T0: 5000, delay: 52.3, p0: 1000, hand: 0.5, at: 7 };
+    const was = V.keptOn(k, 1000), now = V.keptOn(k, 1012.4);
+    assert.deepEqual(was, { T0: 5000, delay: 52.3, hand: 0.5, at: 7 });
+    assert.ok(Math.abs(now.T0 - 5012.4) < 1e-9 && now.delay === 52.3);
+    // picture p: E = p0 + p, its moment in the replay at content E + delay - T0: the same on both
+    const c = (p0, kk, p) => p0 + p + kk.delay - kk.T0;
+    for (const p of [0, 1234.5, 3600]) assert.ok(Math.abs(c(1000, was, p) - c(1012.4, now, p)) < 1e-9);
+    assert.equal(V.atContent(rep, c(1012.4, now, 3600)), V.atContent(rep, c(1000, was, 3600)));
+    assert.equal(V.keptOn({ T0: 5000, delay: 50 }, 1012.4).T0, 5000); // (kept before the anchor was: as it is)
+    assert.equal(V.keptOn({ T0: 5000 }, 1000), null);
+    assert.equal(V.keptOn(null, 1000), null);
+  });
+
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
     const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
       + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';

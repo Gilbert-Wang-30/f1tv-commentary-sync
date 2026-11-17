@@ -1487,7 +1487,7 @@ async function vodBegin(gen) {
     vodCuts(V, gen);
     reps.forEach(vodClockKept);
     const kept = vodKept(V);
-    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept', Number(kept.hand) || 0);
+    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept', kept.hand);
     vodSay(V, 'listening', vodListenText(S.snd));
   } catch (e) {
     if (S.vod !== V) return;
@@ -1652,16 +1652,20 @@ function vodPlace(V, r, T0, delay, how, hand = 0) {
 }
 const vodKey = (r) => `vodPlace|${S.cid}|${r.bvid}`;
 // Where the replay playing was put (and the delay on it), for this video: sync by sound's, a nudge's.
+// (with the anchor it's on, p0: restored on the one there then, FoneVod.keptOn)
 function vodSave(delay = S.delay) {
   const V = S.vod, r = V?.cur;
   if (!r || V.state !== 'placed' || delay == null) return;
-  FoneVod.store.set(vodKey(r), { T0: r.T0, delay: Math.round(delay * 1000) / 1000, at: Date.now(), ...(V.hand ? { hand: V.hand } : {}) });
+  FoneVod.store.set(vodKey(r), { T0: r.T0, delay: Math.round(delay * 1000) / 1000, at: Date.now(), p0: S.content?.p0 ?? null,
+    ...(V.hand ? { hand: V.hand } : {}) });
 }
+// Where replay r was put before, for this video, on today's anchor: {T0, delay, hand, at} or null.
+const vodKeptOf = (r) => FoneVod.keptOn(FoneVod.store.get(vodKey(r)), S.content?.p0);
 function vodKept(V) {
   let best = null;
   for (const r of V.reps) {
-    const k = FoneVod.store.get(vodKey(r));
-    if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay) && !(best && best.at > k.at)) best = { rep: r, ...k };
+    const k = vodKeptOf(r);
+    if (k && !(best && best.at > k.at)) best = { rep: r, ...k };
   }
   return best;
 }
@@ -1874,9 +1878,9 @@ function vodNeighbour(state) {
   return state === 'after' ? V.reps[i + 1] || null : state === 'before' ? V.reps[i - 1] || null : null;
 }
 function vodSwitch(r) {
-  const V = S.vod, k = FoneVod.store.get(vodKey(r));
+  const V = S.vod, k = vodKeptOf(r);
   diag('vod', { switch: r.bvid, kept: !!k });
-  if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept', Number(k.hand) || 0);
+  if (k) return vodPlace(V, r, k.T0, k.delay, 'kept', k.hand);
   Object.assign(V, { tries: 0, lastTryAt: null, seen: null, cands: [] });
   vodSay(V, 'listening', vodListenText(S.snd));
 }
