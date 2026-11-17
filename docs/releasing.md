@@ -130,6 +130,27 @@ To move them on (a Python patch release, a fix in a dependency), on a branch:
 4. **Test** the image the new pins build (the server tests in CONTRIBUTING.md), and the dry run
    (step 2 of Cutting a release) builds both architectures.
 
+## The other images
+
+`docker-compose.yml` also runs images fone doesn't build, pinned to exact versions so a
+release runs what it was tested with and a `docker compose pull` changes nothing behind your
+back: `python:3.12.16-alpine3.24` (fone-ext, fone-recorder-gate; the same base as
+`server/Dockerfile`, and `recorder/streamlink/Dockerfile`'s), `alpine:3.24.4` (fone-janitor)
+and `bililive/recorder:2.18.0` (fone-recorder, 录播姬). To move one on, on a branch:
+
+1. **The tag.** The new exact tag on Docker Hub, built for both architectures:
+   `docker manifest inspect <image>:<tag>` lists `amd64` and `arm64`. For `bililive/recorder`,
+   read its release notes (BililiveRecorder's releases on GitHub) first: it is what records the
+   streamer. The Python base moves with `server/Dockerfile`'s (the server image's pinned
+   versions, above).
+2. **Try it** on a test setup: `docker compose --profile recorder --profile streamlink up -d`,
+   then each one's `docker logs` (the recorder records a room, the gate sees its streams, the
+   janitor sweeps).
+3. **Say it** in CHANGELOG.md's next section, a new 录播姬 above all.
+
+`docker image inspect <image> --format '{{json .Config.Labels}}'` shows what an image already
+on a host is (`org.opencontainers.image.version` for 录播姬), without pulling anything.
+
 ## When it goes wrong
 
 What has been published depends on the job that failed:
