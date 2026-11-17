@@ -271,12 +271,10 @@ async def _measured(cid: str, channel: str) -> dict | None:
 
 
 def _notes() -> list[str]:
-    """What this server's setup leaves out that a viewer may wonder about (the options page's
-    Test connection shows them)."""
-    out = []
-    if not cfg.rooms:
-        out.append("No Bilibili room on the server (FONE_ROOMS is empty): fine for a streamer elsewhere; for a Bilibili "
-                   "one, no live straight from the room, ↗ Live page, 弹幕, backfill or Bilibili replays")
+    """What this server's setup leaves out that a viewer may wonder about: the configuration's
+    (config.notes, also logged at start: no room, a folder that isn't there) and the tools'.
+    The options page's Test connection and the status page show them."""
+    out = config.notes(cfg)
     if vodclock is not None and vodclock.missing:
         out.append(f"No {' or '.join(vodclock.missing)} on the server: Bilibili replays aren't placed by the clock on "
                    "the streamer's screen")
@@ -480,6 +478,7 @@ def index():
         "<!doctype html><meta charset=utf-8><title>fone</title>"
         "<style>body{font:14px system-ui;margin:2em}td{padding:4px 10px;border-bottom:1px solid #ddd}</style>"
         f"<h2>fone — {len(rows)} recordings in {html.escape(str(cfg.rec_dir))}</h2>"
-        "<table><tr><th>channel</th><th>file</th><th>status</th><th>audio</th><th>analysis</th><th>error</th></tr>"
+        + "".join(f"<p>⚠ {html.escape(n)}</p>" for n in _notes())
+        + "<table><tr><th>channel</th><th>file</th><th>status</th><th>audio</th><th>analysis</th><th>error</th></tr>"
         + "".join(rows) + "</table>"
     )

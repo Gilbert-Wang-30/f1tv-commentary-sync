@@ -278,7 +278,7 @@ def test_health_says_the_servers_version(server, monkeypatch):
 
 
 def test_health_says_what_the_setup_leaves_out(server, monkeypatch):
-    """(the options page's Test connection shows these)"""
+    """(the options page's Test connection and the status page show these)"""
     client, _ = server
     from dataclasses import replace
     from types import SimpleNamespace
@@ -286,7 +286,10 @@ def test_health_says_what_the_setup_leaves_out(server, monkeypatch):
     import fone.app
 
     monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={}))
-    assert [n for n in client.get("/api/health").json()["notes"] if "FONE_ROOMS" in n]
+    # (config.notes' words, the ones logged at start: said once)
+    assert [n for n in client.get("/api/health").json()["notes"] if "FONE_ROOMS" in n] == \
+        [n for n in fone.app.config.notes(fone.app.cfg) if "FONE_ROOMS" in n] != []
+    assert "FONE_ROOMS names no Bilibili room" in client.get("/").text
     monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={23954427: CHANNEL}))
     assert client.get("/api/health").json()["notes"] == []
     monkeypatch.setattr(fone.app, "vodclock", SimpleNamespace(missing=["tesseract"]))

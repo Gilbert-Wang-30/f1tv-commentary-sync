@@ -65,7 +65,8 @@ Configuration is environment variables only (`server/fone/config.py`; the README
 Configuration table lists them). An empty one is its default (`docker-compose.yml` passes the
 optional ones through from `.env`, empty where `.env` leaves them so). Nothing names a streamer
 by default: with no `FONE_ROOMS` no Bilibili room is watched, and `config.notes()` (logged as
-the configuration loads) says what that, or a missing recordings or import folder, leaves out.
+the configuration loads, and in `/api/health`'s `notes` and on the status page) says what that,
+or a missing recordings or import folder, leaves out.
 `FONE_ROOMS` entries are `room=channel` or a room number alone (its channel is the number);
 anything else is skipped with a warning (`config.room_entries`, which backfill reads too, and
 `recorder/seed.sh` the same way). `/api/health` carries `version` (`FONE_VERSION`, stamped into
@@ -140,7 +141,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | | |
 |---|---|
 | `GET /` | status page (HTML): every recording, its extraction status and analysis notes |
-| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out (no `FONE_ROOMS`, no ffmpeg/tesseract for the replays' clock), for the options page's Test connection |
+| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out, in words (`config.notes`, also logged at start: no room in `FONE_ROOMS`, a recordings or import folder that isn't there; and no ffmpeg/tesseract for the replays' clock), shown by the options page's Test connection and the status page |
 
 | `GET /api/channels` | `[{name, files, latest, live}]`, newest first; `live` = a file is still growing |
 | `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}`. Cached in SQLite; an anchored replay never changes, everything else is re-checked after 10 min, and a re-check that can't make the exact anchor again (the archive refusing) keeps the cached one |
@@ -853,8 +854,9 @@ and a save keeps the source that has something in it (a first run's server saved
 computer" still checked is the server). A server line it can't use costs only the server
 list: that and `source` stay as saved (the box keeps what was typed, the message says which
 line and why), everything else on the page is saved. *Test connection* reads `/api/health` (the
-version, where the server has one), `/api/channels` and `/api/danmaku/status` (whether the
-channel has a Bilibili room).
+version and the setup's notes, where the server has them), `/api/channels` and
+`/api/danmaku/status` (whether the channel has a Bilibili room; from a server without notes, also
+that it has none at all).
 
 Self-update: a published build (`tools/publish_ext.sh`) carries `build.js` (read once at load),
 `build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789; the

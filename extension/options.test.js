@@ -196,6 +196,19 @@ test('Test connection: the server\'s version, its channels, and whether it has t
   p = await page({ servers: ['http://s:8788'] }, { '/api/health': { ...health, services: [] }, '/api/channels': [] });
   await p.els.test.fire('click');
   assert.match(p.els.out.textContent, /No recordings on it yet/);
+
+  // a server that says what its setup leaves out (health's notes): its words, once
+  const room = 'FONE_ROOMS names no Bilibili room: none is watched';
+  p = await page({ servers: ['http://s:8788'] }, {
+    '/api/health': { ...health, notes: [room, 'No tesseract on the server'] },
+    '/api/channels': [{ name: 'MyStreamer', files: 3, live: false }],
+    '/api/danmaku/status': { rooms: {} },
+  });
+  await p.els.test.fire('click');
+  const text = p.els.out.textContent;
+  assert.equal(text.split(room).length, 2);
+  assert.match(text, /⚠ No tesseract on the server/);
+  assert.doesNotMatch(text, /No Bilibili room set on the server/);
 });
 
 (async () => {

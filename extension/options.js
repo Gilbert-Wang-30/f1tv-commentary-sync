@@ -77,9 +77,12 @@ function showSource() {
 
 // What the server says about the commentary channel: nothing recorded yet, several to pick from,
 // and whether it has the channel's Bilibili room (FONE_ROOMS: live straight from the room, the
-// ↗ Live page, 弹幕 and the streamer's Bilibili replays all come from it).
+// ↗ Live page, 弹幕 and the streamer's Bilibili replays all come from it). A 1.0.1 server says
+// what its setup leaves out itself (health's notes: no room, a folder or a tool missing); an
+// older one's empty FONE_ROOMS is told from its danmaku status.
 async function serverNotes(base, health, chans) {
-  const out = [];
+  const told = Array.isArray(health.notes);
+  const out = told ? health.notes.map((n) => `⚠ ${n}`) : [];
   if (!chans.length) out.push('No recordings on it yet: is a recorder writing into its recordings folder (FONE_RECORDINGS)?');
   else if (chans.length > 1 && !$('channel').value) out.push(`${chans.length} channels: pick one below, or it plays whichever recorded last.`);
   const chan = $('channel').value || chans[0]?.name;
@@ -93,9 +96,10 @@ async function serverNotes(base, health, chans) {
     const rooms = Object.entries(st.rooms || {});
     const room = rooms.find(([, r]) => r?.channel === chan)?.[0];
     if (room) out.push(`${chan}: Bilibili room ${room}.`);
-    else if (!rooms.length) out.push('No Bilibili room set on the server (FONE_ROOMS): fine for a streamer elsewhere; for a Bilibili one, '
-      + 'live plays its recording, and no 弹幕, ↗ Live page or Bilibili replays.');
-    else out.push(`${chan}: no Bilibili room for it on the server (FONE_ROOMS has ${rooms.map(([id, r]) => `${id}=${r.channel}`).join(', ')}).`);
+    else if (!rooms.length) {
+      if (!told) out.push('No Bilibili room set on the server (FONE_ROOMS): fine for a streamer elsewhere; for a Bilibili one, '
+        + 'live plays its recording, and no 弹幕, ↗ Live page or Bilibili replays.');
+    } else out.push(`${chan}: no Bilibili room for it on the server (FONE_ROOMS has ${rooms.map(([id, r]) => `${id}=${r.channel}`).join(', ')}).`);
   } catch { /* an older server: nothing to add */ }
   return out;
 }
