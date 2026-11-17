@@ -358,15 +358,25 @@
     return o;
   }
 
+  // Whether the list kept ({at, items, done}) does for replays back to `since` at t: it reaches
+  // back that far, and `since` is over a week before it was read (its replays long up), or it's
+  // under 6 h old; under 10 min when it has none from `since` + 1 day on (`since` is a day before
+  // the session: its own replay, published some time after the live, may be up since).
+  function listDoes(kept, since, t) {
+    if (!kept) return false;
+    const items = kept.items || [];
+    const oldest = items.reduce((a, r) => Math.min(a, r.slot ?? Infinity), Infinity);
+    const newest = items.reduce((a, r) => Math.max(a, r.slot ?? -Infinity), -Infinity);
+    if (!(kept.done || oldest <= since)) return false;
+    return since < kept.at - 7 * 86400 || t - kept.at < (newest >= since + 86400 ? 6 * 3600 : 600);
+  }
   // Their replays back to `since` (unix s), newest first: [{bvid, title, live, slot, dur}]. Kept;
-  // read again (from the newest, merged with what's kept) when what's kept doesn't reach back to
-  // `since`, or is over 6 h old and `since` within a week of when it was read.
+  // read again (from the newest, merged with what's kept) when what's kept won't do (listDoes).
   async function replays({ uid, sid }, since) {
     const k = `vodList|${uid}`, t = Date.now() / 1000;
     const kept = store.get(k)?.sid === sid ? store.get(k) : null;
     const items = kept?.items || [];
-    const oldest = items.reduce((a, r) => Math.min(a, r.slot ?? Infinity), Infinity);
-    if (kept && (kept.done || oldest <= since) && (t - kept.at < 6 * 3600 || since < kept.at - 7 * 86400)) return items;
+    if (listDoes(kept, since, t)) return items;
     const seen = new Set(items.map((r) => r.bvid));
     let done = false;
     for (let pn = 1; pn <= 30; pn++) {
@@ -565,5 +575,5 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

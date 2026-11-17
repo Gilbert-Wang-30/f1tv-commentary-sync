@@ -32,6 +32,28 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.deepEqual(V.candidates(list, E0, E1).map((r) => r.bvid), ['race', 'restart']);
   });
 
+  await test('the replay list kept: read again when its session\'s replay may be up since', () => {
+    const h = 3600, d = 86400, E0 = 1.75e9, since = E0 - d, t = E0 + 3 * h;
+    const list = (at, ...slots) => ({ at, items: slots.map((s, i) => ({ bvid: `BV${i}`, slot: s })), done: false });
+    // read an hour after the session ended, its replay not yet published: the day before only
+    const early = list(E0 + 2 * h, E0 - 2 * d, E0 - d + h);
+    assert.equal(V.listDoes(early, since, early.at + 300), true);
+    assert.equal(V.listDoes(early, since, early.at + 601), false); // (was trusted for 6 h: 'none' all along)
+    // with the session's replay in it (the streamer live from an hour before): 6 h
+    const got = list(E0 + 2 * h, E0 - 2 * d, E0 - h);
+    assert.equal(V.listDoes(got, since, got.at + 5 * h), false); // (went live before the session's day: not by the slot)
+    const post = list(E0 + 6 * h, E0 - 2 * d, E0 - h, E0 + 3 * h); // (and their post-race show's, after it)
+    assert.equal(V.listDoes(post, since, post.at + 5 * h), true);
+    assert.equal(V.listDoes(list(t, E0 - 2 * d, E0 + d), since, t + 5 * h), true);
+    assert.equal(V.listDoes(list(t, E0 - 2 * d, E0 + d), since, t + 7 * h), false);
+    // not reaching back to `since`: read again, whatever its age (unless it holds them all)
+    assert.equal(V.listDoes(list(t, E0 - h, E0 + d), since, t + 1), false);
+    assert.equal(V.listDoes({ ...list(t, E0 - h, E0 + d), done: true }, since, t + 1), true);
+    // an old session (over a week before it was read): its replays all up long since
+    assert.equal(V.listDoes(list(E0 + 30 * d, E0 - 2 * d), since, E0 + 60 * d), true);
+    assert.equal(V.listDoes(null, since, t), false);
+  });
+
   // a sidx box (version 0) with segments of `durs` (timescale 48000) and `sizes` bytes
   const sidxBox = (durs, sizes, first = 0) => {
     const n = durs.length, b = new Uint8Array(32 + 12 * n), dv = new DataView(b.buffer);

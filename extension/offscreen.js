@@ -571,10 +571,12 @@ async function refreshTimeline(gen) {
     if (gen !== S.gen || S.local) return;
     tl.receivedAt = now();
     // nothing of the server's covers this replay: the streamer's Bilibili replay of it (looked
-    // for again a minute after a failure); the server's timeline stays out of it until it does
+    // for again a minute after a failure, VOD.NONE_AGAIN s after none was found: one published
+    // since); the server's timeline stays out of it until it does
     if (S.vod && !vodWanted(tl)) vodStop();
     else if (S.vod || vodWanted(tl)) {
-      if (!S.vod || (S.vod.state === 'error' && now() - (S.vod.failedAt ?? 0) > 60)) vodBegin(gen);
+      const V = S.vod, t = now();
+      if (!V || (V.state === 'error' && t - (V.failedAt ?? 0) > 60) || (V.state === 'none' && t - V.at > VOD.NONE_AGAIN)) vodBegin(gen);
       if (!S.timeline || !S.timeline.vod) { S.timeline = tl; S.playlist = null; }
       S.error = null;
       throw VOD_ON;
@@ -1437,7 +1439,7 @@ function sndSteer(t, v) {
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
   WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
   CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, RELOAD: 60, RELOAD_MAX: 1800,
-  SCAN_WAIT: 30, SCAN_WAIT_MAX: 300 };
+  SCAN_WAIT: 30, SCAN_WAIT_MAX: 300, NONE_AGAIN: 300 };
 // (RELOAD: a replay that wouldn't load tried again this many s on, twice as long each time to RELOAD_MAX)
 // (the clock on the streamer's screen, read by a fone server: vodClock*. CLOCK_POLL s between asks
 // while it reads, CLOCK_AGAIN for a reading near a new moment; sound waits CLOCK_WAIT s for it
