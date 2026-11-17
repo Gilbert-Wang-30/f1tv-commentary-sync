@@ -92,7 +92,8 @@ image to run with your own streamer, recorder and storage.
   stream it stopped read as one long gap): it fills by itself only a live with a title, while
   live, that the gate's filter keeps (`GATE_RECORD` / `GATE_SKIP`, passed to the server as
   `FONE_BACKFILL_RECORD` / `FONE_BACKFILL_SKIP`; empty: the gate's F1 words). An import asked
-  for by hand takes any live; `/api/backfill/status` says why a live was left alone.
+  for by hand takes any live; `/api/backfill/status` says why a live was left alone, and an
+  automatic job an older server made for such a live expires.
 - Bilibili replays: the clock on the streamer's screen and sync by sound no longer pull the
   commentary back and forth when the streamer's delay steps (a pause no longer counts against
   sound's look again); no swapping between two replays in a restart's gap; a backward seek no

@@ -224,6 +224,10 @@ class BackfillDB:
         rows = self._q(sql + " ORDER BY start DESC LIMIT ?", (*args, limit))
         return [dict(zip(PERIOD_COLS, r)) for r in rows]
 
+    def period(self, room: int, start: float) -> dict | None:
+        rows = self._q(f"SELECT {', '.join(PERIOD_COLS)} FROM bf_period WHERE room = ? AND start = ?", (room, start))
+        return dict(zip(PERIOD_COLS, rows[0])) if rows else None
+
     def mark_checked(self, room: int, start: float, now: float, skipped: str | None = None) -> None:
         self._q("UPDATE bf_period SET checked = ?, skipped = ? WHERE room = ? AND start = ?",
                 (now, skipped, room, start))
@@ -393,7 +397,12 @@ class BackfillService:
             if not (st.live and st.live_time == p["start"]):  # ended, or restarted with a new 开播
                 self.db.close_period(st.room, p["start"], now)
         if st.live and st.live_time:
-            self.db.upsert_live(st.room, st.live_time, now, st.title, st.uid, channel, self.settings.wanted(st.title))
+            wanted = self.settings.wanted(st.title)
+            p = self.db.period(st.room, st.live_time)
+            if p is not None and p["wanted"] is None and (first := self.settings.wanted(p["title"])) is not None:
+                # logged before titles were judged (fone upgraded during this live): its first title counts
+                wanted = first or bool(wanted)
+            self.db.upsert_live(st.room, st.live_time, now, st.title, st.uid, channel, wanted)
 
     # ---- gap detection -----------------------------------------------------------------------
 
@@ -427,6 +436,12 @@ class BackfillService:
             return bool(p["wanted"])
         return self.settings.wanted(p["title"]) is not False
 
+    @staticmethod
+    def not_wanted(p: dict) -> str:
+        """Why an ended live is left alone (the title quoted is the first it had)."""
+        return (f"no title it had while live matches FONE_BACKFILL_RECORD / _SKIP (the gate's words unless set); "
+                f"its first: {p['title']!r}")
+
     def check_periods(self, now: float | None = None) -> list[Job]:
         now = time.time() if now is None else now
         created = []
@@ -438,7 +453,7 @@ class BackfillService:
         for p in self.db.periods(pending=True):
             if not self.wanted(p):
                 # (a game stream, say: the gate stopped its recording, so all of it reads as missing)
-                why = f"no title it had while live matches FONE_BACKFILL_RECORD / _SKIP (the gate's): {p['title']!r}"
+                why = self.not_wanted(p)
                 self.db.mark_checked(p["room"], p["start"], now, skipped=why)
                 log.info("room %s live %s: %s", p["room"], p["start"], why)
                 continue
@@ -561,6 +576,12 @@ class BackfillService:
 
     async def _find(self, job: Job) -> None:
         d, now = job.data, time.time()
+        if d.get("source") == "auto" and not d.get("bvid") and d.get("room"):
+            # (one made before its live was judged, by an older server: a game stream, say)
+            p = self.db.period(d["room"], (d.get("period") or [d.get("liveTime")])[0])
+            if p is not None and not self.wanted(p):
+                job.state, job.error = "expired", "not a live to fill: " + self.not_wanted(p)
+                return
         uid = await self._uid(job)
         reps = await self.replays(uid)
         if d.get("bvid"):

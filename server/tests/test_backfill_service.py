@@ -420,6 +420,52 @@ def test_a_database_from_before_titles_were_judged(tmp_path):
     make_service(tmp_path, extractor=ex)  # (and a second start finds the columns there)
 
 
+def old_database(tmp_path, *periods):
+    import sqlite3
+
+    db = tmp_path / "data" / "fone.sqlite3"
+    db.parent.mkdir()
+    with sqlite3.connect(db) as c:
+        c.execute(OLD_PERIODS)
+        c.executemany("INSERT INTO bf_period VALUES (?, ?, ?, ?, ?, ?, ?, ?)", periods)
+    c.close()
+
+
+def test_a_live_on_through_the_upgrade_keeps_its_first_titles_judgement(tmp_path):
+    """Logged by a server from before 1.0.1 with an F1 title, then a game title after the upgrade:
+    still one to fill (and one that was a game stream stays left alone with no title seen)."""
+    old_database(tmp_path, (ROOM, KL_LIVE, KL_LIVE + 600, None, KL_TITLE, UID, CHANNEL, None),
+                 (ROOM + 1, KL_LIVE, KL_LIVE + 600, None, GAME, UID, CHANNEL, None))
+    ex = FakeExtractor()
+    another_days_recording(ex)
+    svc = make_service(tmp_path, extractor=ex)
+    svc.record(status(True, title=GAME), CHANNEL, KL_LIVE + 660)
+    svc.record(replace(status(True, title=""), room=ROOM + 1), CHANNEL, KL_LIVE + 660)
+    assert svc.db.period(ROOM, KL_LIVE)["wanted"] == 1 and svc.db.period(ROOM + 1, KL_LIVE)["wanted"] == 0
+    svc.record(status(False), CHANNEL, KL_LIVE + 3600)
+    (job,) = svc.check_periods(now=KL_LIVE + 4000)
+    assert job.data["liveTime"] == KL_LIVE
+
+
+def test_an_auto_job_from_before_for_a_game_stream_expires(tmp_path):
+    """Made by a server from before 1.0.1, which filled every live: one whose live isn't to fill
+    stops waiting for its replay without asking Bilibili; one that is goes on."""
+    old_database(tmp_path, (ROOM, KL_LIVE, KL_LIVE + 3600, KL_LIVE + 3660, GAME, UID, CHANNEL, KL_LIVE + 4000),
+                 (ROOM, KL_LIVE + 7200, KL_LIVE + 9000, KL_LIVE + 9060, KL_TITLE, UID, CHANNEL, KL_LIVE + 9500))
+    bili = FakeBili()
+    svc = make_service(tmp_path, bili=bili)
+    game = svc.submit(CHANNEL, (KL_LIVE, KL_LIVE + 3600), gaps=[[KL_LIVE, KL_LIVE + 3600]], room=ROOM, uid=UID,
+                      live_time=KL_LIVE, title=GAME, source="auto", period=(KL_LIVE, KL_LIVE + 3600))
+    asyncio.run(svc.step(game))
+    game = svc.db.job(game.id)
+    assert game.state == "expired" and game.error.startswith("not a live to fill") and GAME in game.error
+    assert bili.log == []
+    f1 = svc.submit(CHANNEL, (KL_LIVE + 7200, KL_LIVE + 9000), room=ROOM, uid=UID, live_time=KL_LIVE + 7200,
+                    title=KL_TITLE, source="auto", period=(KL_LIVE + 7200, KL_LIVE + 9000))
+    asyncio.run(svc.step(f1))
+    assert svc.db.job(f1.id).state != "expired" and "archives" in bili.log
+
+
 # ---- jobs -----------------------------------------------------------------------------------------
 
 
