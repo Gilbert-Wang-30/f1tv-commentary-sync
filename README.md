@@ -259,7 +259,8 @@ replaces the old one's files (Windows: *Extract All…* → *Browse* to that fol
 `unzip -o fone-extension-<version>.zip -d <that folder>`), then click ↻ on fone's card in
 `chrome://extensions`. The same folder keeps the same extension, and with it your settings (a
 copy loaded from another folder is another extension, starting from scratch). A release
-install doesn't update itself: the repository's releases page says when there's a new one.
+install doesn't update itself: the repository's releases page says when there's a new one
+(fone's settings link it, beside the version you have).
 
 From source, the `extension` folder of a clone loads the same way (with its tests in it).
 
@@ -363,7 +364,9 @@ In fone's settings choose **A fone server** and enter its address, `http://<host
 (`192.168.1.20` or `my-server:8788` is read as that), one per line, tried in order: an address
 that works away from home first (a VPN name, say), the LAN one second. *Test connection* shows
 which one answers, the server's version, its channels, whether it has the channel's Bilibili
-room and what its setup leaves out. The page also sets the commentary channel, live auto-hold and whether live comes straight
+room and what its setup leaves out; the extension's version is at the top of the page, with the
+server's once tested (and which to update when they're different releases) and a link to the
+releases. The page also sets the commentary channel, live auto-hold and whether live comes straight
 from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
 a `user:password@`), *Save* says which and why and keeps the server list and which source to use
 (*This computer* or *A fone server*) as they were; the rest of the page is saved.

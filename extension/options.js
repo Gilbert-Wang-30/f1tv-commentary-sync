@@ -41,7 +41,20 @@
     return chosen === 'server' ? 'server' : 'local';
   }
 
-  root.FoneOptions = Object.freeze({ server, servers, source, PORT });
+  // This extension's version against the server's (/api/health's): a line when they are different
+  // releases (major.minor), saying which to update. None when either isn't one (a server built from
+  // source says dev; one older than 1.0.1, nothing).
+  function versions(ext, srv) {
+    const mm = (v) => /^(\d+)\.(\d+)(?!\d)/.exec(String(v ?? ''));
+    const a = mm(ext), b = mm(srv);
+    const newer = a && b && Math.sign(a[1] - b[1] || a[2] - b[2]);
+    if (!newer) return null;
+    return newer < 0
+      ? `⚠ The server is fone ${srv}, this extension ${ext}: update the extension (Releases, at the top of this page).`
+      : `⚠ This extension is fone ${ext}, the server ${srv}: update the server (the README's "Updating the server").`;
+  }
+
+  root.FoneOptions = Object.freeze({ server, servers, source, versions, PORT });
 })(globalThis);
 
 const SERVERS = self.FONE_LOCAL?.servers || []; // local.js: this install's, or none
@@ -59,6 +72,13 @@ const DEFAULTS = {
   f1Sound: null, f1Subs: null, f1Pick: null, f1Feed: null, f1Audio: null, autoFx: null,
 };
 const $ = (id) => document.getElementById(id);
+const VERSION = ((m) => m.version_name || m.version)(chrome.runtime.getManifest());
+
+// The versions line at the top: this extension's, and the server's once Test connection has it.
+function showVersions(server) {
+  $('versions').textContent = `This extension: fone ${VERSION}${server ? ` · the server: fone ${server}` : ''}`;
+}
+showVersions();
 
 const readServers = () => FoneOptions.servers($('servers').value);
 const source = () => ($('srcLocal').checked ? 'local' : 'server');
@@ -107,12 +127,16 @@ async function serverNotes(base, health, chans) {
 async function test() {
   const { servers: list, changed, errors } = readServers();
   $('out').textContent = 'Testing…';
+  showVersions();
   const lines = [...errors.map((e) => `❌ ${e}`), ...changed.map(([a, b]) => `${a} → ${b}`)];
   for (const base of list) {
     try {
       const h = await (await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) })).json();
       const chans = await (await fetch(`${base}/api/channels`, { signal: AbortSignal.timeout(5000) })).json();
       lines.push(`✅ ${base} — ${h.version ? `fone ${h.version}, ` : ''}${h.files} recordings`);
+      showVersions(h.version);
+      const differ = FoneOptions.versions(VERSION, h.version);
+      if (differ) lines.push(differ);
       const sel = $('channel');
       const keep = sel.value;
       sel.length = 1;
