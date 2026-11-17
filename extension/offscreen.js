@@ -1515,6 +1515,7 @@ async function vodBegin(gen, again = null) {
     const reps = await vodLoad(V, cands);
     if (gen !== S.gen || S.vod !== V) return;
     if (!reps.length) throw V.loadErr;
+    if (V.unloaded.length) V.loadNext = now() + (V.loadWait = FoneVod.backoff(0, VOD.RELOAD, VOD.RELOAD_MAX));
     V.reps = reps;
     vodCuts(V, gen);
     reps.forEach(vodClockKept);
@@ -1536,6 +1537,7 @@ async function vodBegin(gen, again = null) {
 // The replays that may hold it, each loaded on its own: one that won't (taken down, still being
 // transcoded, its sound not AAC, a 412) doesn't keep the others from being used; it's tried again
 // in a while (vodLoadMore). Those that loaded, by time.
+// (VOD.RELOAD s on, twice as long each time to VOD.RELOAD_MAX: FoneVod.backoff)
 async function vodLoad(V, cands) {
   const ok = [];
   for (const r of cands) {
@@ -1548,12 +1550,10 @@ async function vodLoad(V, cands) {
       diag('vod', { loadErr: r.bvid, err: String(e?.message || e).slice(0, 120) });
     }
   }
-  if (V.unloaded.length) V.loadNext = now() + (V.loadWait = VOD.RELOAD);
   return ok;
 }
 async function vodLoadMore(V, gen) {
   V.loading = true;
-  const wait = Math.min(VOD.RELOAD_MAX, 2 * (V.loadWait || VOD.RELOAD));
   try {
     const got = await vodLoad(V, V.unloaded.splice(0));
     if (gen !== S.gen || S.vod !== V || !got.length) return;
@@ -1563,7 +1563,7 @@ async function vodLoadMore(V, gen) {
     vodCuts(V, gen);
   } finally {
     V.loading = false;
-    if (V.unloaded.length) V.loadNext = now() + (V.loadWait = wait);
+    if (V.unloaded.length) V.loadNext = now() + (V.loadWait = FoneVod.backoff(V.loadWait, VOD.RELOAD, VOD.RELOAD_MAX));
   }
 }
 function vodStop() {
@@ -1631,7 +1631,7 @@ async function vodScan(V, r, gen) {
     diag('vod', { ahead: c });
     if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
   } catch (e) {
-    r.scanWait = Math.min(VOD.SCAN_WAIT_MAX, r.scanWait ? 2 * r.scanWait : VOD.SCAN_WAIT);
+    r.scanWait = FoneVod.backoff(r.scanWait, VOD.SCAN_WAIT, VOD.SCAN_WAIT_MAX);
     r.scanNext = now() + r.scanWait;
     diag('vod', { scanErr: String(e?.message || e).slice(0, 120), wait: r.scanWait });
   }
@@ -1666,20 +1666,21 @@ function vodFailed(url) {
   if (pg) FoneVod.failed(pg);
 }
 // `hand`: s of nudges in `delay` (vodClockOff leaves them out: yours on top of the clock's place;
-// placed by sound, the nudge kept for its sound).
+// placed by sound, the nudge kept for its sound: FoneVod.placing).
 function vodPlace(V, r, T0, delay, how, hand = 0) {
-  const was = V.state === 'placed' ? { r: V.cur, T0: V.cur?.T0, delay: S.delay } : null;
+  const was = V.state === 'placed' ? { rep: V.cur, T0: V.cur?.T0, delay: S.delay } : null;
   r.T0 = T0;
-  Object.assign(V, { cur: r, how, hand, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [], check: null });
+  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [], check: null });
   vodSay(V, 'placed', '');
   vodApply(V);
   // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
-  if (S.snd) S.snd.bias = Number(FoneVod.store.get(sndBiasKey())?.bias) || 0;
-  if (how === 'sound') V.hand = S.snd?.bias || 0;
-  S.delay = Math.round((how === 'sound' ? delay + (S.snd?.bias || 0) : delay) * 1000) / 1000;
-  // (what sync by sound found, a delay on the old place, or one this place overrules: found again from here)
   const sn = S.snd;
-  if (sn && !(was && was.r === r && Math.abs(was.T0 - T0) < 1e-3 && Math.abs(was.delay - S.delay) < 1)) {
+  if (sn) sn.bias = Number(FoneVod.store.get(sndBiasKey())?.bias) || 0;
+  const P = FoneVod.placing(how, delay, hand, sn?.bias);
+  V.hand = P.hand;
+  S.delay = P.delay;
+  // (what sync by sound found, a delay on the old place, or one this place overrules: found again from here)
+  if (sn && FoneVod.placeResets(was, { rep: r, T0, delay: S.delay })) {
     Object.assign(sn, { target: null, est: [], miss: 0, state: sn.state === 'locked' ? 'listening' : sn.state });
   }
   S.delaySource = 'sound';
@@ -1903,9 +1904,11 @@ function vodTick(t, v, outside = false) {
   const check = V.state === 'listening' && !due && V.cands.length > 0;
   if (V.state === 'listening') vodPrefetch(V, S.gen, E);
   // (placed by the clock: it says where; sync by sound finds the last second near there itself.
-  // The moment outside a place kept from before, no sound looks there: looked at again all the same)
-  const unsure = V.state === 'placed' && V.how !== 'clock' && sn.target == null && since >= (V.rechecks ? VOD.AGAIN : 60)
-    && (outside ? V.how === 'kept' : (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM && sn.state === 'listening');
+  // The moment outside a place kept from before, no sound looks there: looked at again all the
+  // same, a minute after it was put there at the soonest)
+  const unsure = V.state === 'placed' && FoneVod.recheckDue({ how: V.how, locked: sn.target != null, rechecks: V.rechecks,
+    since: t - Math.max(V.lastTryAt ?? -Infinity, V.placedAt ?? -Infinity), looks: (sn.looks || 0) - (V.looks0 || 0),
+    listening: sn.state === 'listening', outside }, { again: VOD.AGAIN, confirm: VOD.CONFIRM });
   if (!due && !unsure && !check) return;
   const Q = vodQuery(V);
   if (!Q.x) { if (Q.why && V.state === 'listening' && (V.tries === 0 || !/^Not found/.test(V.text || ''))) V.text = Q.why; return; }
@@ -1918,7 +1921,8 @@ function vodTick(t, v, outside = false) {
 // The replay that holds event time E by what's known of them (where each was put before, the clock).
 const vodHolder = (V, E) => FoneVod.holder(V.reps, E, vodKeptOf, VOD_CLOCK);
 // Off the end (or before the start) of the replay playing (FoneVod.outside): to the one that
-// holds the moment, or to look for it in the next (previous) one; {gap} between two; else null.
+// holds the moment, or to look for it in the first after (before) it nothing's known of, past
+// those known to end before it (start after it); {gap} between two; else null.
 function vodOutside(V, E, state) {
   const out = FoneVod.outside(V.reps, V.cur, E, state, vodKeptOf, VOD_CLOCK);
   if (out?.to) {

@@ -520,6 +520,44 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.keptOn(null, 1000), null);
   });
 
+  await test('placing it: the delay it plays at and the nudges in it; what sync by sound found, kept only on the same place', () => {
+    // found by sound: the delay at D0 with the nudge kept for the replay's sound on top (that, the hand)
+    assert.deepEqual(V.placing('sound', 50, 7, 0.3), { delay: 50.3, hand: 0.3 });
+    assert.deepEqual(V.placing('sound', 50, 7, undefined), { delay: 50, hand: 0 });
+    // the clock's or a kept place: as given, with the nudges it carries
+    assert.deepEqual(V.placing('clock', 70, 20, 0.3), { delay: 70, hand: 20 });
+    assert.deepEqual(V.placing('kept', 52.34567, undefined, 0.3), { delay: 52.346, hand: 0 });
+    const A = { bvid: 'BVa' }, B = { bvid: 'BVb' }, was = { rep: A, T0: 1000, delay: 70 };
+    assert.equal(V.placeResets(null, { rep: A, T0: 1000, delay: 70 }), true); // (not placed before)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1000, delay: 70.5 }), false); // (the clock again, sound's lock within 1 s of it)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1000, delay: 50 }), true); // (a delay it overrules)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1020, delay: 70 }), true); // (moved)
+    assert.equal(V.placeResets(was, { rep: B, T0: 1000, delay: 70 }), true); // (another replay)
+  });
+
+  await test('placed: when to look over the hour again; what failed, tried again later and later', () => {
+    const P = { again: 600, confirm: 8 }, base = { how: 'sound', locked: false, since: 61, rechecks: 0, looks: 8, listening: true, outside: false };
+    const due = (o) => V.recheckDue({ ...base, ...o }, P);
+    assert.equal(due({}), true); // (sync by sound not finding it in 8 looks of its own)
+    assert.equal(due({ looks: 7 }), false);
+    assert.equal(due({ listening: false }), false);
+    assert.equal(due({ locked: true }), false); // (sound has it)
+    assert.equal(due({ how: 'clock' }), false); // (the clock says where)
+    assert.equal(due({ since: 59 }), false);
+    assert.equal(due({ rechecks: 1, since: 599 }), false); // (then every 10 min)
+    assert.equal(due({ rechecks: 1, since: 600 }), true);
+    // the moment outside a place kept from before: no sound looks there, looked at again a minute
+    // after it was put there (since: from the last look or the placement, whichever's later)
+    assert.equal(due({ outside: true, how: 'kept', looks: 0, listening: false }), true);
+    assert.equal(due({ outside: true, how: 'kept', looks: 0, since: 15 }), false);
+    assert.equal(due({ outside: true, how: 'sound', looks: 0 }), false);
+    // a replay that won't load: 60 s, 2, 4, 8, 16 min, then every 30; the look for repeats ahead: 30 s to 5 min
+    const sched = (first, max, n) => { const out = []; let w = 0; for (let i = 0; i < n; i++) out.push(w = V.backoff(w, first, max)); return out; };
+    assert.deepEqual(sched(60, 1800, 7), [60, 120, 240, 480, 960, 1800, 1800]);
+    assert.deepEqual(sched(30, 300, 6), [30, 60, 120, 240, 300, 300]);
+    assert.equal(V.backoff(0, 30, 300), 30); // (a success between: from the start again)
+  });
+
   await test('the streamer restarted: which replay holds the moment, and never swapping between two in the gap', () => {
     // two replays of an hour; A put (before, for this video) on the events 950..4550, B on 4950..8550
     const rep = (bvid) => ({ bvid, pages: [{ page: 1, dur: 3600 }], total: 3600, cuts: [] });

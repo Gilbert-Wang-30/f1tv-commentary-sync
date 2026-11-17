@@ -332,6 +332,28 @@
     return { T0: k.T0 + dp, delay: k.delay, hand: Number(k.hand) || 0, at: k.at || 0 };
   }
 
+  // ---- placing it, and trying again (offscreen.js's vodPlace, vodTick, vodLoad*, vodScan) --------
+
+  // The delay a placement plays at, and the nudges in it (`hand`: what the clock's place leaves
+  // out, clockOff): found by sound, `delay` with the nudge kept for the replay's sound (`bias`) on
+  // top; else as given, with the nudges it carries.
+  const round3 = (v) => Math.round(v * 1000) / 1000;
+  const placing = (how, delay, hand, bias) => (how === 'sound' ? { delay: round3(delay + (bias || 0)), hand: bias || 0 } : { delay: round3(delay), hand: hand || 0 });
+  // Whether what sync by sound found is dropped on a placement ({rep, T0, delay}) after `was` (the
+  // one before, null: none): a lock on the old place, or a delay this one overrules. Kept only when
+  // it's the same replay, at the same T0, playing within 1 s of the same delay.
+  const placeResets = (was, now) => !(was && was.rep === now.rep && Math.abs(was.T0 - now.T0) < 1e-3 && Math.abs(was.delay - now.delay) < 1);
+  // Placed, whether to look for the moment over the hour again: not placed by the clock (it says
+  // where) and sync by sound not locked, `since` s since the last look and the placement (`first`
+  // the first time, `again` after); sound's own looks not finding it in `confirm` of them since
+  // (listening), or the moment outside a place kept from before (no sound looks there).
+  function recheckDue({ how, locked, since, rechecks, looks, listening, outside }, { first = 60, again, confirm }) {
+    if (how === 'clock' || locked || !(since >= (rechecks ? again : first))) return false;
+    return outside ? how === 'kept' : looks >= confirm && listening;
+  }
+  // The wait before trying again after a failure: `first` s, twice the last one each time, `max` at most.
+  const backoff = (wait, first, max) => Math.min(max, wait ? 2 * wait : first);
+
   // ---- which of the streamer's replays ---------------------------------------------------------
   // What's known of where a replay is, for event time E: where it was put before for this video
   // (kk: keptOn's), else by its clock's reading nearest E, at the delay D0. {T0, delay} or null.
@@ -687,5 +709,6 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, clockPlace, clockVeto, listDoes, noneAgain, keptOn, placeOf, holder, outside };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
+    placing, placeResets, recheckDue, backoff, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
