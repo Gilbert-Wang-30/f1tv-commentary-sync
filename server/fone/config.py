@@ -64,7 +64,9 @@ class Config:
 
 def load() -> Config:
     env = os.environ.get
-    rooms = parse_rooms(env("FONE_ROOMS", ""))
+    rooms, skipped = room_entries(env("FONE_ROOMS", ""))
+    for pair in skipped:  # (recorder/seed.sh says the same)
+        log.warning("skipping %r in FONE_ROOMS: not a room number (room=channel, or the room alone)", pair)
     cfg = Config(
         rec_dir=Path(env("FONE_REC_DIR", "/rec")),
         data_dir=Path(env("FONE_DATA_DIR", "/data")),
@@ -97,7 +99,7 @@ def notes(cfg: Config) -> list[str]:
     if not cfg.rec_dir.is_dir():
         out.append(f"FONE_REC_DIR {cfg.rec_dir} isn't a folder: no recordings to play")
     if not cfg.rooms:
-        out.append("FONE_ROOMS is empty: no Bilibili room is watched, so no live-status log or backfill and no 弹幕, "
+        out.append("FONE_ROOMS names no Bilibili room: none is watched, so no live-status log or backfill and no 弹幕, "
                    "and the extension gets no live straight from the room, ↗ Live page or Bilibili replays "
                    "(set room=channel for a Bilibili streamer)")
     if cfg.import_dir is not None and not cfg.import_dir.is_dir():
@@ -129,10 +131,19 @@ def parse_aliases(spec: str) -> dict[str, str]:
 
 
 def parse_rooms(spec: str) -> dict[int, str]:
-    """"23954427=胡闹P房,123=other" -> {23954427: "胡闹P房", 123: "other"}."""
-    out = {}
+    """"23954427=胡闹P房,123=other,456" -> {23954427: "胡闹P房", 123: "other", 456: "456"}."""
+    return room_entries(spec)[0]
+
+
+def room_entries(spec: str) -> tuple[dict[int, str], list[str]]:
+    """FONE_ROOMS -> (room -> channel, the entries that aren't a room). An entry is room=channel,
+    or a room number alone: its channel is then the number, the folder fone-recorder records
+    it in. recorder/seed.sh reads FONE_ROOMS the same way for the recorder's rooms."""
+    out, skipped = {}, []
     for pair in filter(None, (x.strip() for x in spec.split(","))):
-        room, _, channel = pair.partition("=")
-        if room.strip().isdigit() and channel.strip():
-            out[int(room.strip())] = channel.strip()
-    return out
+        room, _, channel = (x.strip() for x in pair.partition("="))
+        if not (room.isascii() and room.isdigit()):
+            skipped.append(pair)
+            continue
+        out[int(room)] = channel or room
+    return out, skipped

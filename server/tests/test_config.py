@@ -28,7 +28,7 @@ def test_no_room_by_default_and_the_log_says_what_that_leaves_out(env, caplog):
     with caplog.at_level(logging.WARNING, logger="fone.config"):
         cfg = env()
     assert cfg.rooms == {} and cfg.channel_aliases == {}
-    assert "FONE_ROOMS is empty" in caplog.text and "弹幕" in caplog.text
+    assert "FONE_ROOMS names no Bilibili room" in caplog.text and "弹幕" in caplog.text
     assert config.notes(cfg) == [r.getMessage() for r in caplog.records]
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="fone.config"):
@@ -73,3 +73,24 @@ def test_notes_for_missing_folders(env, tmp_path):
     cfg = env(FONE_ROOMS="1=a", FONE_REC_DIR=str(tmp_path / "nope"), FONE_IMPORT_DIR=str(tmp_path / "imp"))
     text = " ".join(config.notes(cfg))
     assert "FONE_REC_DIR" in text and "FONE_IMPORT_DIR" in text and "FONE_ROOMS" not in text
+
+
+def test_a_room_alone_is_its_own_channel_and_what_isnt_a_room_is_said(env, caplog):
+    # (recorder/seed.sh reads FONE_ROOMS the same way: the recorder records what the server knows)
+    with caplog.at_level(logging.WARNING, logger="fone.config"):
+        cfg = env(FONE_ROOMS=" 12345678 , 777=, 5=Five, abc=X, =Y, １２=Z")
+    assert cfg.rooms == {12345678: "12345678", 777: "777", 5: "Five"}
+    assert cfg.channel_aliases == {"12345678": "12345678", "777": "777", "5": "Five"}
+    skipped = [r.getMessage() for r in caplog.records if "skipping" in r.getMessage()]
+    assert skipped == [f"skipping {x!r} in FONE_ROOMS: not a room number (room=channel, or the room alone)"
+                       for x in ("abc=X", "=Y", "１２=Z")]
+    assert "names no Bilibili room" not in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="fone.config"):
+        cfg = env(FONE_ROOMS="MyStreamer")  # (a channel without its room)
+    assert cfg.rooms == {} and "skipping 'MyStreamer'" in caplog.text and "names no Bilibili room" in caplog.text
+
+
+def test_backfill_reads_the_rooms_as_the_server_does():
+    from fone import backfill
+    assert backfill.parse_rooms is config.parse_rooms
