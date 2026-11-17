@@ -128,7 +128,9 @@ async def main():
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             tempfile.mkdtemp(), channel="chromium", headless=True,
-            args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required"],
+            # (team radio asks OpenF1 for a session's messages: never from a test, its rate limit is shared)
+            args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required",
+                  "--host-resolver-rules=MAP api.openf1.org ~NOTFOUND"],
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
         await sw.evaluate(f"chrome.storage.sync.set({{source: 'server', servers: ['http://127.0.0.1:{PORT}'], soundSync: true, f1Feed: 'off', f1Pick: false}})")

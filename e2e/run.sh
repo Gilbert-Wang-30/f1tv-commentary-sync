@@ -21,6 +21,9 @@ NET=$NAME
 # Keeps CPU low on a box that also runs the recorders (and the production server).
 CAP="--cpus 2 --cpu-shares 256"
 CAP_CHROME="--cpus 4 --cpu-shares 256"
+# E2E_NO_TIMING=1: nothing the server's containers ask reaches OpenF1, its schedule (once a run)
+# included: the box may share OpenF1's rate limit with a production server.
+if [ "${E2E_NO_TIMING:-}" = 1 ]; then CAP="$CAP --add-host api.openf1.org:127.0.0.1"; fi
 cleanup() {
   local rc=$?
   if [ $rc != 0 ]; then echo "== server log (tail)"; docker logs --tail 40 $NAME-server 2>&1 || true; fi
