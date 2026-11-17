@@ -1868,7 +1868,7 @@ async function vodSearch(V, gen, Q, scan = true) {
     // (F1 TV's anchor only a guess, the clock's place as far off: kept, found again there, the
     // look before's or the sound heard after it, it wins: vodOverrule)
     const guess = vodGuessed();
-    if (guess && FoneVod.foundAgain(V.cands, best.rep, T0, { D0: VOD.D0, agree: VOD.AGREE }) && vodOverrule(V, best.rep, T0, E, 'again')) return true;
+    if (guess && !hold && FoneVod.foundAgain(V.cands, best.rep, T0, { D0: VOD.D0, agree: VOD.AGREE }) && vodOverrule(V, best.rep, T0, E, 'again')) return true;
     diag('vod', { clockVeto: { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), off: ck.r === best.rep ? r1(T0 - ck.T0) : null }, kept: guess || undefined });
     if (guess) {
       best.sure = true;
