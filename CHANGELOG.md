@@ -102,6 +102,13 @@ image to run with your own streamer, recorder and storage.
   never read; a replay published after the list was read is found within minutes; a kept place
   follows F1 TV's anchor; nudges survive the clock's placement.
 - Sync by sound: a ±4 min look no longer holds up the engine or fetches the whole stretch again.
+- Bilibili replays: a look over the hour no longer stops at a repeat that scores high (F1's
+  music, a stretch the streamer showed again) before it reaches the place itself. On F1 TV's
+  pre-roll guess (no exact anchor), the clock on the streamer's screen no longer keeps the
+  commentary minutes off for good (2026 Japanese GP: 10 min): where sound finds it twice wins,
+  and puts the clock right for the rest of the video.
+- Sync by sound: a resync on a ±4 min look (F1 Academy, F2, F3) waits for two looks that agree,
+  not the first sure one, which is a repeat now and then.
 - The streamer's screen: a column they closed is let go after about 12 s. A drag the browser
   cancels no longer swallows the panel's next click.
 - The replay clock on the server: a temporary failure is asked again with backoff, not answered
