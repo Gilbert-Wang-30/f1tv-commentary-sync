@@ -46,10 +46,14 @@ them up front. The manifest's `version` is therefore exactly `X.Y.Z` when a rele
    tools/build_ext.sh dist          # dist/fone-extension-X.Y.Z.zip, from the committed files
    ```
 
-2. **Dry run.** Push the branch, then Actions → Release → Run workflow on it. It runs every
+2. **Dry run.** Push the branch, then Actions → Release → Run workflow, with the branch chosen
+   under "Use workflow from" (or `gh workflow run release.yml --ref <branch>`). It runs every
    check, the tests and the packaging, and builds the image for both architectures (the only
    way to know arm64 still builds). It pushes and releases nothing. The run's `extension`
-   artifact is the zip: unzip it and load it in Chrome to try the real thing.
+   artifact is the zip: unzip it and load it in Chrome to try the real thing. GitHub offers
+   Run workflow only for a workflow that is on main, the default branch, whichever branch it
+   then runs on: before the first release there is none there, and that release goes in
+   another order ([The first release](#the-first-release)).
 
 3. **Merge** the branch into main (a pull request; CI must pass). Optionally run the dry run
    once more, on main: that is the one run that leaves both architectures' layers in the build
@@ -73,6 +77,27 @@ The first release only: the image package starts private. Open it (the repositor
 → fone → Package settings) and change its visibility to public, so `docker pull` works
 without a login. The image's `org.opencontainers.image.source` label links the package to the
 repository.
+
+## The first release
+
+`workflow_dispatch` (Run workflow) runs only a workflow that is on the default branch, and
+before 1.0.1 main has no `release.yml`, so the dry run can't come before the merge. The order:
+
+1. **The branch**, as step 1 above: the version, the dated CHANGELOG section, the local checks.
+2. **Push the branch** (that branch alone: `git push origin <branch>`) and open a pull request
+   into main. CI (`ci.yml`) runs on it and must pass.
+3. **Merge** it into main.
+4. **Dry run on main**: Actions → Release → Run workflow, from main. Everything but the push
+   and the release (step 2 above), and it leaves both architectures' layers in the build cache
+   for the tag's run.
+5. **Try the zip**: the run's `extension` artifact, unzipped, loaded in Chrome
+   (`chrome://extensions` → Developer mode → Load unpacked → the `fone` folder), against a
+   server: *Test connection*, then a session played.
+6. **Tag main** and push only the tag (step 4 above), watch the run (step 5), and make the
+   image package public.
+
+A fault the dry run or the zip shows is fixed on a branch and merged (a pull request, CI) before
+the tag; nothing has been published until then.
 
 ## What the workflow does
 
