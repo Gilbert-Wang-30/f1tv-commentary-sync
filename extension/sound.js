@@ -88,6 +88,28 @@
     return { lag: best + frac, score: (yr[best] - mean) / sd, next: c ? (next - mean) / sd : 0, edge: best === 0 || best === span };
   }
 
+  // locate over a long y a stretch at a time, `span` s of lags each (2 s more, so a peak at one's
+  // end is inside the next), `pause()` awaited between them: one FFT of millions of points (a
+  // ±240 s look: 2^21, ~67 MB, about a second) held up everything else the page does. The best
+  // peak of them all; its runner-up the best of the rest away from it (scores per stretch: each
+  // over its own lags). A y no longer than one stretch: locate itself.
+  async function locateLong(x, y, sr, { span = 50, pause = null, ...o } = {}) {
+    const lags = y.length - x.length, n = Math.round(span * sr), ov = Math.round(2 * sr);
+    if (lags <= n + ov) return locate(x, y, sr, o);
+    const k = Math.ceil(lags / n), step = Math.ceil(lags / k), away = Math.round((o.apart ?? 0.25) * sr);
+    const got = [];
+    for (let a = 0; a < lags; a += step) {
+      const res = locate(x, y.subarray(a, Math.min(lags, a + step + ov) + x.length), sr, o);
+      if (res) got.push({ ...res, lag: a + res.lag, inner: res.edge && a + res.lag > 0 && a + res.lag < lags });
+      if (pause) await pause();
+    }
+    // (a stretch's peak at its own end: the next one's, whole there)
+    const best = got.filter((g) => !g.inner).reduce((b, g) => (!b || g.score > b.score ? g : b), null);
+    if (!best) return null;
+    const next = Math.max(best.next, ...got.filter((g) => Math.abs(g.lag - best.lag) > away).map((g) => g.score));
+    return { lag: best.lag, score: best.score, next, edge: best.edge };
+  }
+
   // Box-filtered decimation by an integer factor (the band that matters is under 3.6 kHz).
   function decimate(x, f) {
     if (f <= 1) return x;
@@ -100,5 +122,43 @@
     return out;
   }
 
-  root.FoneSound = { fft, locate, decimate, rms, pow2 };
+  // ---- sync by sound's rules (offscreen.js's sndMeasure; P: its SND numbers) ---------------------
+
+  // How far a look reaches either side of where the sound was, in s: ±P.NEAR once locked; ±P.WIDE
+  // till then, every P.REWIDE s, and after P.MISSES looks that missed (the streamer's latency
+  // stepped further than a close look sees); ±P.FAR for a replay whose start is only a guess.
+  // `long`: that one, matched a stretch at a time (locateLong); the others in one go, as ever.
+  function lookRange({ locked, sinceWide, misses, guess }, P) {
+    const wide = !locked || sinceWide > P.REWIDE || misses >= P.MISSES, long = wide && !!guess;
+    return { wide, long, R: long ? P.FAR : wide ? P.WIDE : P.NEAR };
+  }
+  // A replay whose start is only a guess till it's found: F1 TV's F1 Academy, F2, F3 videos, no
+  // session of F1's own to anchor them, F1's pre-roll borrowed (on its clock, no session key; not
+  // live, not a Bilibili replay; nothing found yet).
+  const guessed = ({ live, vod, clock, sessionKey, locked }) => !live && !vod && clock === 'preroll' && sessionKey == null && !locked;
+
+  // One look's verdict. st: {target (the place it's locked on, null: none), bias (a nudge of yours
+  // on top), est (the sure looks of the last few minutes, [{at, val}]), quick (a resync asked
+  // for)}; m: the look {val (the place it found; null: not recorded there), score, next, edge};
+  // t: now. A look counts when it's sure (P.SCORE, P.NEXT × the runner-up, not at the window's
+  // edge) and agrees with another of the last few (P.AGREE s; a resync takes the first). {sure,
+  // far (found well away from where it was), est (the new list), o (where to: the median of
+  // those agreeing; null: wait for another), why}.
+  function judge(st, m, t, P) {
+    const sure = m.val != null && m.score >= P.SCORE && m.score >= P.NEXT * m.next && !m.edge;
+    if (!sure) return { sure, far: false, est: st.est, o: null, why: 'not sure' };
+    const far = st.target != null && Math.abs(m.val + st.bias - st.target) > 1;
+    const est = [...st.est.filter((e) => t - e.at < 180), { at: t, val: m.val }].slice(-4);
+    const agree = est.filter((e) => Math.abs(e.val - m.val) <= P.AGREE);
+    const quick = st.quick != null;
+    if (agree.length < 2 && !quick) return { sure, far, est, o: null, why: 'waiting for a second match' };
+    const o = quick ? m.val : agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
+    return { sure, far, est, o, why: quick ? 'resynced' : 'matched' };
+  }
+  // How far off where it plays a place found is jumped to rather than eased, in s: a resync's
+  // (unless it's there already), the first lock's (the delay it started from was a guess), a
+  // later one's (a step too big to ease: minutes out of sync).
+  const jumpOver = ({ quick, fresh }, P) => (quick ? 0.05 : fresh ? P.JUMP : P.JUMP_LATER);
+
+  root.FoneSound = { fft, locate, locateLong, decimate, rms, pow2, lookRange, guessed, judge, jumpOver };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

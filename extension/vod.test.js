@@ -32,6 +32,73 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.deepEqual(V.candidates(list, E0, E1).map((r) => r.bvid), ['race', 'restart']);
   });
 
+  await test('the replay list kept: read again soon only while the session is so recent its replays may not be up', () => {
+    const h = 3600, d = 86400, E0 = 1.75e9, E1 = E0 + 2 * h, since = E0 - d, until = E1 + 12 * h;
+    const list = (at, ...slots) => ({ at, items: slots.map((s, i) => ({ bvid: `BV${i}`, slot: s })), done: false });
+    // read an hour after the session ended, its replay maybe not published yet: 10 min
+    const early = list(E1 + h, E0 - 2 * d, E0 - d + h);
+    assert.equal(V.listDoes(early, since, early.at + 300, until), true);
+    assert.equal(V.listDoes(early, since, early.at + 601, until), false); // (was trusted for 6 h: 'none' all along)
+    // the same with the session's replay in it (the streamer live from an hour before): 10 min still
+    // (a restart's second may come later)
+    assert.equal(V.listDoes(list(E1 + h, E0 - 2 * d, E0 - h), since, E1 + h + 601, until), false);
+    // read the next day (the session's replays all up): 6 h, whenever the streamer went live for it
+    const next = list(E0 + d, E0 - 2 * d, E0 - h);
+    assert.equal(V.listDoes(next, since, next.at + 5 * h, until), true);
+    assert.equal(V.listDoes(next, since, next.at + 7 * h, until), false);
+    assert.equal(V.listDoes(next, since, next.at + 5 * h), true); // (no `until`: as read after it)
+    // not reaching back to `since`: read again, whatever its age (unless it holds them all)
+    assert.equal(V.listDoes(list(next.at, E0 - h, E0 + d), since, next.at + 1, until), false);
+    assert.equal(V.listDoes({ ...list(next.at, E0 - h, E0 + d), done: true }, since, next.at + 1, until), true);
+    // an old session (over a week before it was read): its replays all up long since
+    assert.equal(V.listDoes(list(E0 + 30 * d, E0 - 2 * d), since, E0 + 60 * d, until), true);
+    assert.equal(V.listDoes(null, since, E1, until), false);
+  });
+
+  await test("the replay list: Bilibili refusing a read again, the one kept (when it reaches back); 'none' looked for again", async () => {
+    const mem = new Map(), was = { fetch: globalThis.fetch, localStorage: globalThis.localStorage };
+    globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+    const d = 86400, t = Date.now() / 1000, since = t - 3 * d, who = { uid: 7, sid: 9 };
+    const keep = (items, at) => mem.set('vodList|7', JSON.stringify({ at, sid: 9, items, done: false }));
+    let status = 412, asked = 0;
+    // (the session's own, from yesterday: its title the Beijing hour it went live in)
+    const bj = new Date((t - d + 8 * 3600) * 1000), title = `【直播回放】F1 ${bj.getUTCFullYear()}年${bj.getUTCMonth() + 1}月${bj.getUTCDate()}日${bj.getUTCHours()}点场`;
+    globalThis.fetch = async () => {
+      asked++;
+      return { status, ok: status === 200, json: async () => ({ code: 0, data: { archives: [{ bvid: 'BVnew', title, duration: 9000, pubdate: t }], page: { total: 1 } } }) };
+    };
+    try {
+      const race = { bvid: 'BVrace', slot: t - 2 * d, dur: 9000 }, old = { bvid: 'BVold', slot: t - 4 * d, dur: 9000 };
+      keep([race, old], t - 660); // (11 min old, read before the session's replays were all up)
+      const warned = [];
+      let got = await V.replays(who, since, { until: t + d, warn: (e) => warned.push(String(e.message)) });
+      assert.deepEqual(got.items.map((r) => r.bvid), ['BVrace', 'BVold']);
+      assert.ok(got.at === t - 660 && asked === 1 && /412/.test(warned[0]));
+      // kept, not reaching back: the error
+      keep([race], t - 660);
+      await assert.rejects(V.replays(who, since, { until: t + d }), /412/);
+      // read again, and kept with the new one
+      status = 200;
+      keep([race, old], t - 660);
+      got = await V.replays(who, since, { until: t + d });
+      assert.deepEqual(got.items.map((r) => r.bvid), ['BVnew', 'BVrace', 'BVold']);
+      assert.ok(got.at > t - 1 && JSON.parse(mem.get('vodList|7')).items.length === 3);
+      // read after the session's replays were all up: 6 h, nothing asked
+      asked = 0;
+      keep([race, old], t - 3600);
+      got = await V.replays(who, since, { until: t - 2 * d });
+      assert.ok(asked === 0 && got.at === t - 3600);
+    } finally {
+      Object.assign(globalThis, was);
+    }
+    // 'none': again every 5 min while the list it came from was read before the replays were all up; never after
+    const until = 1e6;
+    assert.equal(V.noneAgain({ at: 1000, listAt: 990 }, 1299, until, 300), false);
+    assert.equal(V.noneAgain({ at: 1000, listAt: 990 }, 1300, until, 300), true);
+    assert.equal(V.noneAgain({ at: 1000, listAt: until + 1 }, 9e6, until, 300), false);
+    assert.equal(V.noneAgain({ at: 1000 }, 9e6, until, 300), false); // (no list read: an error's, not this)
+  });
+
   // a sidx box (version 0) with segments of `durs` (timescale 48000) and `sizes` bytes
   const sidxBox = (durs, sizes, first = 0) => {
     const n = durs.length, b = new Uint8Array(32 + 12 * n), dv = new DataView(b.buffer);
@@ -258,10 +325,297 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     V.keepLikely(c2, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }], 1, L1);
     ck = await V.checkLikely(c2, look(150, 20, 'run3'), read, S.locate, { sr });
     assert.ok(ck.hit && Math.abs(ck.hit.m - (at0 + 150)) < 0.01, JSON.stringify(ck.checked));
+    // a seek back over the sound that found them (F1 TV's −10 s): that sound again, in a new run,
+    // isn't fresh (it would find the same places again, the place or not): not checked at all
+    const c4 = [];
+    V.keepLikely(c4, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }, { rep, m: 4210.4, score: 9.1 }], 1, L1);
+    ck = await V.checkLikely(c4, look(0, 30, 'run4'), read, S.locate, { sr });
+    assert.ok(ck.hit === null && ck.checked.length === 0, JSON.stringify(ck.checked));
+    ck = await V.checkLikely(c4, look(10, 30, 'run4'), read, S.locate, { sr }); // (10 s of it new: too little)
+    assert.ok(ck.hit === null && ck.checked.length === 0, JSON.stringify(ck.checked));
+    // ...but sound from before what found it is: found by a look at 40..70, then a seek back to 0
+    const c5 = [];
+    V.keepLikely(c5, [{ rep, m: at0 + 40, score: 7.6 }], 1, look(40, 30, 'run5'));
+    ck = await V.checkLikely(c5, look(0, 30, 'run6'), read, S.locate, { sr });
+    assert.ok(ck.hit && Math.abs(ck.hit.m - at0) < 0.01 && ck.hit.E === E0, JSON.stringify(ck.checked));
+    ck = await V.checkLikely(c5, look(20, 30, 'run6'), read, S.locate, { sr }); // (20..40: what's before it)
+    assert.ok(ck.hit && Math.abs(ck.hit.m - (at0 + 20)) < 0.01, JSON.stringify(ck.checked));
     // too many: the weakest let go
     const c3 = [];
     for (let k = 0; k < 5; k++) V.keepLikely(c3, [{ rep, m: 100 * k, score: 7 + k }, { rep, m: 100 * k + 50, score: 12 - k }], k, L1, { max: 4 });
     assert.deepEqual(c3.map((c) => c.score).sort((a, b) => a - b), [10, 11, 11, 12]);
+  });
+
+  // the clock on the streamer's screen: a replay of two pages, its repeats cut; the extension's numbers
+  const CK = { D0: 50, SCREEN: 1.5, near: 240, trust: 15, bound: 120 };
+  const clockRep = (bvid, readings, status = 'ok') => ({ bvid, pages: [{ page: 1, dur: 3600 }, { page: 2, dur: 3600 }], total: 7200,
+    cuts: [{ m: 1804.2, d: 4.18 }, { m: 3600, d: 4.18 }], clock: { status, readings } });
+
+  await test('the clock on the streamer\'s screen: where a reading puts the replay, the one nearest the moment', () => {
+    const W = 1.75e9;
+    const A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }, { page: 2, at: 500, wall: W + 4200 }]);
+    assert.equal(V.pageStart(A, 2), 3600);
+    assert.equal(V.pageStart(A, 3), null);
+    // T0: the reading's wall at its place on the content clock, the delay at D0, less the screen's lead
+    const T0a = W + 50 - 1000 - 1.5, T0b = W + 4200 + 50 - (4100 - 2 * 4.18) - 1.5;
+    let k = V.clockAt([A], W + 30, CK);
+    assert.ok(k.r === A && Math.abs(k.T0 - T0a) < 1e-6 && k.d === 30, JSON.stringify(k));
+    k = V.clockAt([A], W + 4000, CK); // (nearer the second: it rules)
+    assert.ok(Math.abs(k.T0 - T0b) < 1e-6 && k.d === 200);
+    assert.equal(V.clockAt([A], W - 3600, CK), null); // (before the replay, by both)
+    // the streamer restarted: the moment in the second replay by its own reading; one still being read, not used
+    const B = clockRep('BVb', [{ page: 1, at: 100, wall: W + 9000 }]), C = clockRep('BVc', [{ page: 1, at: 0, wall: W + 9000 }], 'working');
+    k = V.clockAt([A, B, C], W + 9100, CK);
+    assert.ok(k.r === B && k.d === 100);
+  });
+
+  await test('the clock against where the replay plays: moved when off a reading near the moment, bounded by a far one', () => {
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), B = clockRep('BVb', []);
+    const k = V.clockAt([A], W + 100, CK);
+    // off: T0 less the delay against the clock's T0 less D0 (a delay of 70 at T0 + 20 plays where D0 at T0 would)
+    assert.equal(V.clockOff(k, A, k.T0 + 20, 70, 50), 0);
+    assert.ok(Math.abs(V.clockOff(k, A, k.T0, 70, 50) - 20) < 1e-9);
+    assert.equal(V.clockOff(k, B, k.T0, 50, 50), Infinity); // (it says another replay holds the moment)
+    assert.equal(V.clockOff(null, A, k.T0, 50, 50), null);
+    // your nudges by hand left out: +20 s on the clock's place is yours, not off it
+    assert.equal(V.clockOff(k, A, k.T0, 70 - 20, 50), 0);
+    const rule = (off, d, o = {}) => V.clockRule({ ...k, d }, off, { placed: true, ...CK, reach: 23, ...o });
+    assert.equal(V.clockRule(k, null, { placed: false, ...CK }), 'move'); // (not placed: there at once)
+    assert.equal(V.clockRule(null, null, { placed: false, ...CK }), 'stay');
+    assert.equal(rule(10, 100), 'stay'); // (within sync by sound's own drift of a near reading)
+    assert.equal(rule(20, 100), 'move');
+    assert.equal(rule(20, 400), 'stay'); // (a reading minutes away only bounds it)
+    assert.equal(rule(130, 400), 'move');
+    assert.equal(rule(Infinity, 400), 'move');
+    // where the clock puts it: your nudges kept on top on the replay playing, none on another
+    assert.deepEqual(V.clockPlace(k, A, 20, 50), { rep: A, T0: k.T0, delay: 70, hand: 20 });
+    assert.deepEqual(V.clockPlace(k, B, 20, 50), { rep: A, T0: k.T0, delay: 50, hand: 0 });
+    assert.deepEqual(V.clockPlace(k, null, undefined, 50), { rep: A, T0: k.T0, delay: 50, hand: 0 });
+  });
+
+  await test('the clock against sync by sound locked elsewhere: a wide look again first; moved unless it finds the lock', () => {
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), k = V.clockAt([A], W + 100, CK);
+    const rule = (off, o = {}) => V.clockRule(k, off, { placed: true, ...CK, reach: 23, ...o });
+    // locked within TRUST of a near reading: no news, nothing asked (sound has the last second)
+    assert.equal(rule(10, { lock: 60 }), 'stay');
+    // a near reading 20 s off the lock: sound asked to look again, widely (±25 s sees both places)
+    assert.equal(rule(20, { lock: 70 }), 'check');
+    const asked = { T0: k.T0, target: 70, at: 1000, looks: 0, seen: 990, says: null };
+    assert.equal(rule(20, { lock: 70, check: asked }), 'wait');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, says: 'confirmed' } }), 'held');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, says: 'refuted' } }), 'move');
+    // checked for another lock (sound moved since), or another reading: asked again
+    assert.equal(rule(20, { lock: 72, check: { ...asked, says: 'confirmed' } }), 'check');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, T0: k.T0 + 5, says: 'confirmed' } }), 'check');
+    // further than sound's wide look sees (no step it followed from the clock's place: a kept place
+    // or an hour-wide match gone wrong): moved; past the bound, whatever sound says
+    assert.equal(rule(40, { lock: 90 }), 'move');
+    assert.equal(rule(130, { lock: 180, check: { ...asked, target: 180, says: 'confirmed' } }), 'move');
+    // a reading minutes away: only the bound, locked or not
+    assert.equal(V.clockRule({ ...k, d: 400 }, 60, { placed: true, ...CK, reach: 23, lock: 110 }), 'stay');
+
+    // the look again, a step each tick: what sound's looks since say
+    const L = { target: 70.3, bias: 0.3 }; // (locked at 70 with a nudge of +0.3 on top)
+    const look = (at, val, sure = true, wide = true) => ({ at, val, sure, wide, score: sure ? 14 : 6, next: 5 });
+    let c = V.clockCheck(asked, look(985, 70), L, 1001);
+    assert.ok(c === asked, 'a look from before it was asked: not counted');
+    c = V.clockCheck(asked, look(1005, 70.02, true, false), L, 1006);
+    assert.ok(!c.says && !c.looks, 'a close look: not one that sees both places');
+    c = V.clockCheck(asked, look(1005, 70.05), L, 1006);
+    assert.equal(c.says, 'confirmed'); // (found at the lock, over the clock's place: the streamer's delay stepped)
+    assert.equal(V.clockCheck(asked, look(1005, 50.1), L, 1006).says, 'refuted'); // (sure at the clock's place)
+    // not sure: counted once each, refuted after 3
+    c = V.clockCheck(asked, look(1005, 61, false), L, 1006);
+    assert.ok(!c.says && c.looks === 1 && c.seen === 1005);
+    assert.equal(V.clockCheck(c, look(1005, 61, false), L, 1007).looks, 1); // (the same look again)
+    c = V.clockCheck(V.clockCheck(c, look(1020, 44, false), L, 1021), look(1035, 70, false), L, 1036);
+    assert.ok(c.says === 'refuted' && c.looks === 3);
+    // no look that says in 2 min (F1 TV silent, paused): refuted
+    assert.equal(V.clockCheck(asked, null, L, 1119).says, null);
+    assert.equal(V.clockCheck(asked, null, L, 1121).says, 'refuted');
+    assert.equal(V.clockCheck({ ...asked, says: 'confirmed' }, look(1200, 10), L, 1300).says, 'confirmed'); // (said: kept)
+  });
+
+  await test('the fight that was: the streamer\'s delay stepped 20 s after a reading, sync by sound and the clock each placing it', () => {
+    // a reading 100 s back puts it at the delay 50; the stream's sound is at 70 now. Ticks of the
+    // engine's own rules: once sound has found 70 again with the clock's place in view, it stays
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), k = V.clockAt([A], W + 100, CK);
+    const R = { ...CK, reach: 23 }, P = { tries: 3, wait: 120 };
+    let delay = 50, lock = null, check = null, moves = 0;
+    const T0 = k.T0, off = () => V.clockOff(k, A, T0, delay, 50);
+    const tick = (t, last) => {
+      let act = V.clockRule(k, off(), { placed: true, lock, check, ...R });
+      if (act === 'stay') check = null;
+      if (act === 'wait') { check = V.clockCheck(check, last, { target: lock, bias: 0 }, t, P); act = check.says === 'confirmed' ? 'held' : check.says ? 'move' : act; }
+      if (act === 'check') check = { T0: k.T0, target: lock, at: t, looks: 0, seen: last?.at ?? null, says: null };
+      if (act === 'move') { moves++; delay = 50; lock = null; check = null; }
+      return act;
+    };
+    assert.equal(tick(0, null), 'stay');
+    lock = 70; delay = 70; // (two sure looks agreeing: locked, jumped there)
+    assert.equal(tick(30, { at: 30, val: 70, sure: true, wide: false }), 'check');
+    assert.equal(tick(31, { at: 30, val: 70, sure: true, wide: false }), 'wait');
+    assert.equal(tick(36, { at: 35, val: 70.01, sure: true, wide: true }), 'held');
+    for (let t = 37; t < 400; t += 0.5) assert.equal(tick(t, { at: 35, val: 70.01, sure: true, wide: true }), 'held');
+    assert.equal(moves, 0);
+    // a lock that was wrong (a kept place 20 s off): the wide look finds the clock's place instead
+    lock = 70; delay = 70; check = null;
+    assert.equal(tick(500, null), 'check');
+    assert.equal(tick(506, { at: 505, val: 50.02, sure: true, wide: true }), 'move');
+    assert.ok(moves === 1 && delay === 50);
+  });
+
+  await test("the clock refuses a sound match far from where it says (a lap shown again after the session)", () => {
+    // 2026 Italian GP qualifying (BV1ATbL6dEp9): a sure-looking match, 13.9 at 1.8× the rest, 28 min off the replay's place
+    const W = 1.75e9, A = clockRep('BV1ATbL6dEp9', [{ page: 1, at: 1000, wall: W }, { page: 1, at: 2500, wall: W + 1500 }]);
+    const k = V.clockAt([A], W + 60, CK), room = V.clockRoom(k, CK);
+    assert.equal(room, 15);
+    assert.equal(V.clockVeto(k, A, k.T0 + 28 * 60, room), true);
+    assert.equal(V.clockVeto(k, A, k.T0 + 1.2, room), false); // (sound takes it the last second)
+    assert.equal(V.clockVeto(k, clockRep('BVother', []), k.T0, room), true);
+    assert.equal(V.clockVeto(null, A, k.T0 + 28 * 60, room), false); // (no clock: sound alone)
+    // a reading 10 min from the moment: only the bound
+    const far = V.clockAt([A], W + 600 + 1500, CK);
+    assert.equal(V.clockRoom(far, CK), 120);
+    assert.equal(V.clockVeto(far, A, far.T0 + 60, V.clockRoom(far, CK)), false);
+  });
+
+  await test('the clock pending (sound held back for it) and when to ask the server', () => {
+    const W = 1.75e9, ok = clockRep('BVok', [{ page: 1, at: 1000, wall: W }]);
+    const fresh = { bvid: 'BVnew' }, reading = { bvid: 'BVr', clock: { status: 'working', askedAt: 100 } };
+    const none = { bvid: 'BVn', clock: { status: 'none', askedAt: 100 } };
+    assert.equal(V.clockPending([ok, fresh], 10, { wait: 300 }), true); // (not asked yet)
+    assert.equal(V.clockPending([ok, reading], 10, { wait: 300 }), true);
+    assert.equal(V.clockPending([ok, none], 10, { wait: 300 }), false);
+    assert.equal(V.clockPending([ok, reading], 301, { wait: 300 }), false); // (waited long enough)
+    // F1 Academy, F2, F3: no session key, never asked: nothing to wait for
+    assert.equal(V.clockPending([fresh], 10, { can: false, wait: 300 }), false);
+    const O = { poll: 3, again: 20, near: 240 };
+    ok.clock.askedAt = 100;
+    const asks = (reps, E, t) => V.clockAsks(reps, E, t, O).map((r) => r.bvid);
+    assert.deepEqual(asks([fresh, reading, none], W, 102), ['BVnew']);
+    assert.deepEqual(asks([fresh, reading, none], W, 103), ['BVnew', 'BVr']);
+    assert.deepEqual(asks([{ bvid: 'BVe', clock: { status: 'error', askedAt: 100 } }], W, 129), []);
+    assert.deepEqual(asks([{ bvid: 'BVe', clock: { status: 'error', askedAt: 100 } }], W, 130), ['BVe']);
+    assert.deepEqual(asks([ok], W + 100, 200), []); // (a reading near the moment)
+    assert.deepEqual(asks([ok], W + 600, 119), []);
+    assert.deepEqual(asks([ok], W + 600, 120), ['BVok']); // (none near a moment after a seek: asked for one there)
+    assert.deepEqual(asks([ok], null, 200), []);
+    assert.deepEqual(asks([{ ...ok, clock: { ...ok.clock, more: true } }], W, 103), ['BVok']); // (reading near E: polled)
+  });
+
+  await test('a place kept for the video, on the anchor it has now: the picture\'s moment in the replay where it was', () => {
+    // found on the pre-roll's guess (p0 = 1000), now on MultiViewer's exact anchor 12.4 s later
+    const rep = { bvid: 'BVk', cuts: [{ m: 1800, d: 4 }] };
+    const k = { T0: 5000, delay: 52.3, p0: 1000, hand: 0.5, at: 7 };
+    const was = V.keptOn(k, 1000), now = V.keptOn(k, 1012.4);
+    assert.deepEqual(was, { T0: 5000, delay: 52.3, hand: 0.5, at: 7 });
+    assert.ok(Math.abs(now.T0 - 5012.4) < 1e-9 && now.delay === 52.3);
+    // picture p: E = p0 + p, its moment in the replay at content E + delay - T0: the same on both
+    const c = (p0, kk, p) => p0 + p + kk.delay - kk.T0;
+    for (const p of [0, 1234.5, 3600]) assert.ok(Math.abs(c(1000, was, p) - c(1012.4, now, p)) < 1e-9);
+    assert.equal(V.atContent(rep, c(1012.4, now, 3600)), V.atContent(rep, c(1000, was, 3600)));
+    assert.equal(V.keptOn({ T0: 5000, delay: 50 }, 1012.4).T0, 5000); // (kept before the anchor was: as it is)
+    assert.equal(V.keptOn({ T0: 5000 }, 1000), null);
+    assert.equal(V.keptOn(null, 1000), null);
+  });
+
+  await test('placing it: the delay it plays at and the nudges in it; what sync by sound found, kept only on the same place', () => {
+    // found by sound: the delay at D0 with the nudge kept for the replay's sound on top (that, the hand)
+    assert.deepEqual(V.placing('sound', 50, 7, 0.3), { delay: 50.3, hand: 0.3 });
+    assert.deepEqual(V.placing('sound', 50, 7, undefined), { delay: 50, hand: 0 });
+    // the clock's or a kept place: as given, with the nudges it carries
+    assert.deepEqual(V.placing('clock', 70, 20, 0.3), { delay: 70, hand: 20 });
+    assert.deepEqual(V.placing('kept', 52.34567, undefined, 0.3), { delay: 52.346, hand: 0 });
+    const A = { bvid: 'BVa' }, B = { bvid: 'BVb' }, was = { rep: A, T0: 1000, delay: 70 };
+    assert.equal(V.placeResets(null, { rep: A, T0: 1000, delay: 70 }), true); // (not placed before)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1000, delay: 70.5 }), false); // (the clock again, sound's lock within 1 s of it)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1000, delay: 50 }), true); // (a delay it overrules)
+    assert.equal(V.placeResets(was, { rep: A, T0: 1020, delay: 70 }), true); // (moved)
+    assert.equal(V.placeResets(was, { rep: B, T0: 1000, delay: 70 }), true); // (another replay)
+  });
+
+  await test('placed: when to look over the hour again; what failed, tried again later and later', () => {
+    const P = { again: 600, confirm: 8 }, base = { how: 'sound', locked: false, since: 61, rechecks: 0, looks: 8, listening: true, outside: false };
+    const due = (o) => V.recheckDue({ ...base, ...o }, P);
+    assert.equal(due({}), true); // (sync by sound not finding it in 8 looks of its own)
+    assert.equal(due({ looks: 7 }), false);
+    assert.equal(due({ listening: false }), false);
+    assert.equal(due({ locked: true }), false); // (sound has it)
+    assert.equal(due({ how: 'clock' }), false); // (the clock says where)
+    assert.equal(due({ since: 59 }), false);
+    assert.equal(due({ rechecks: 1, since: 599 }), false); // (then every 10 min)
+    assert.equal(due({ rechecks: 1, since: 600 }), true);
+    // the moment outside a place kept from before: no sound looks there, looked at again a minute
+    // after it was put there (since: from the last look or the placement, whichever's later)
+    assert.equal(due({ outside: true, how: 'kept', looks: 0, listening: false }), true);
+    assert.equal(due({ outside: true, how: 'kept', looks: 0, since: 15 }), false);
+    assert.equal(due({ outside: true, how: 'sound', looks: 0 }), false);
+    // a replay that won't load: 60 s, 2, 4, 8, 16 min, then every 30; the look for repeats ahead: 30 s to 5 min
+    const sched = (first, max, n) => { const out = []; let w = 0; for (let i = 0; i < n; i++) out.push(w = V.backoff(w, first, max)); return out; };
+    assert.deepEqual(sched(60, 1800, 7), [60, 120, 240, 480, 960, 1800, 1800]);
+    assert.deepEqual(sched(30, 300, 6), [30, 60, 120, 240, 300, 300]);
+    assert.equal(V.backoff(0, 30, 300), 30); // (a success between: from the start again)
+  });
+
+  await test('the streamer restarted: which replay holds the moment, and never swapping between two in the gap', () => {
+    // two replays of an hour; A put (before, for this video) on the events 950..4550, B on 4950..8550
+    const rep = (bvid) => ({ bvid, pages: [{ page: 1, dur: 3600 }], total: 3600, cuts: [] });
+    const A = rep('BVa'), B = rep('BVb'), reps = [A, B];
+    const K = new Map([[A, { T0: 1000, delay: 50, hand: 0 }], [B, { T0: 5000, delay: 50, hand: 0.5 }]]);
+    const kept = (r) => K.get(r) || null;
+    assert.deepEqual(V.holder(reps, 2000, kept, CK), { rep: A, T0: 1000, delay: 50, hand: 0, how: 'kept' });
+    assert.equal(V.holder(reps, 6000, kept, CK).rep, B);
+    assert.equal(V.holder(reps, 4700, kept, CK), null);
+    // off the end of A, into B: B; before B's start, back into A: A
+    assert.equal(V.outside(reps, A, 6000, 'after', kept, CK).to.rep, B);
+    assert.equal(V.outside(reps, B, 2000, 'before', kept, CK).to.rep, A);
+    // in the gap between them (paused there, or playing through it): stays, 250 s till B
+    assert.deepEqual(V.outside(reps, A, 4700, 'after', kept, CK), { gap: 250 });
+    assert.deepEqual(V.outside(reps, B, 4700, 'before', kept, CK), { gap: null });
+    assert.equal(V.outside(reps, A, 2000, 'after', kept, CK), null); // (A holds it after all: the clock or sound's to fix)
+    // B never placed: looked for there (by sound, or its clock)
+    K.delete(B);
+    assert.deepEqual(V.outside(reps, A, 6000, 'after', kept, CK), { listen: B });
+    assert.equal(V.outside(reps, A, 6000, 'before', kept, CK), null); // (nothing before A)
+    // B's clock read: it holds 4998.5..8598.5 (its reading's T0 5048.5)
+    B.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 5100 }] };
+    assert.deepEqual(V.placeOf(B, 4700, null, CK), { T0: 5048.5, delay: 50 });
+    assert.deepEqual(V.outside(reps, A, 4700, 'after', kept, CK), { gap: 298.5 });
+    assert.deepEqual(V.outside(reps, A, 6000, 'after', kept, CK).to, { rep: B, T0: 5048.5, delay: 50, hand: 0, how: 'clock' });
+    // the clock says which replay, over a place kept for another (a sound match on the wrong one)
+    K.set(A, { T0: 3000, delay: 50, hand: 0 });
+    assert.equal(V.holder(reps, 6000, kept, CK).rep, B);
+    // and where it was put before, to the sample, when it's that one
+    K.set(B, { T0: 5047.9, delay: 50.2, hand: 0 });
+    assert.equal(V.holder(reps, 6000, kept, CK).how, 'kept');
+  });
+
+  await test('the streamer restarted twice: past each replay known not to hold the moment, to the one that may', () => {
+    // A on the events 950..4550, B on 4950..8550 (both put before, for this video), C after: nothing known of it
+    const rep = (bvid) => ({ bvid, pages: [{ page: 1, dur: 3600 }], total: 3600, cuts: [] });
+    const A = rep('BVa'), B = rep('BVb'), C = rep('BVc'), reps = [A, B, C];
+    const K = new Map([[A, { T0: 1000, delay: 50, hand: 0 }], [B, { T0: 5000, delay: 50, hand: 0 }]]);
+    const kept = (r) => K.get(r) || null;
+    // in C, from A: past B (known to end before it), to C (was: nothing, 'Commentary recording ended')
+    assert.deepEqual(V.outside(reps, A, 10000, 'after', kept, CK), { listen: C });
+    assert.deepEqual(V.outside(reps, B, 10000, 'after', kept, CK), { listen: C });
+    // C's clock read (it holds 8998.5..12598.5): there, from either
+    C.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 9100 }] };
+    assert.equal(V.outside(reps, A, 10000, 'after', kept, CK).to.rep, C);
+    // between B and C, from A: the gap, 448.5 s till C
+    assert.deepEqual(V.outside(reps, A, 8550, 'after', kept, CK), { gap: 448.5 });
+    // past the last: nothing further
+    assert.equal(V.outside(reps, A, 20000, 'after', kept, CK), null);
+    // back from C: past B to A; between A and B, the gap till B (not till C)
+    K.delete(B);
+    B.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 5100 }] }; // (B: 4998.5..8598.5)
+    assert.deepEqual(V.outside(reps, C, 4700, 'before', kept, CK), { gap: 298.5 });
+    assert.deepEqual(V.outside(reps, B, 4700, 'before', kept, CK), { gap: null }); // (till B itself: map.wait)
+    delete B.clock;
+    assert.deepEqual(V.outside(reps, C, 4700, 'before', kept, CK), { listen: B }); // (nothing known of B: looked for there)
+    K.delete(A);
+    assert.equal(V.outside(reps, A, 10, 'before', kept, CK), null); // (nothing before A)
   });
 
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
