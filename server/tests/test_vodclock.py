@@ -437,6 +437,26 @@ def test_timing_not_there_yet_is_an_error_asked_again_later_not_a_lasting_none(t
     asyncio.run(run())
 
 
+def test_a_relays_car_positions_are_no_timing(tmp_path, monkeypatch):
+    """(timing.RELAY: positions from the viewer's browser, no capture's: no clock in them)"""
+    rig = Rig(tmp_path, monkeypatch)
+    rig.meta = {"t0": 1, "source": "relay"}
+    monkeypatch.setattr(vc, "TIMING_WAIT", -1.0)
+    asked = []
+    rig.timing._missing_reason = lambda k: asked.append(k) or "downloading the timing archive"
+
+    async def run():
+        svc = rig.service()
+        await svc.start()
+        st = await settled(svc)
+        assert st["status"] == "error" and "downloading the timing archive" in st["why"] and asked == [KEY]
+        rig.meta = {"t0": 1, "source": "openf1", "name": "Qualifying"}  # (its rebuild, in its place)
+        svc.state[(BV, KEY)]["again"] = 0
+        assert (await settled(svc))["status"] == "ok"
+
+    asyncio.run(run())
+
+
 def test_waiting_for_timing_holds_no_frame_slot(tmp_path, monkeypatch):
     """Two replays waiting (up to TIMING_WAIT, 7 min) for a session's timing held both slots:
     every other replay waited behind them, its timing there or not."""

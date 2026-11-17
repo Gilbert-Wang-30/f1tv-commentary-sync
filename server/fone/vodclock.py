@@ -564,8 +564,14 @@ class VodClockService:
     def _timing_of(self, key: int) -> list | None:
         """Which timing the session has (source, t0): what was worked out from other timing (a
         capture since replaced by the archive, say) is worked out again."""
+        meta = self._meta(key)
+        return [meta.get("source"), meta["t0"]] if meta else None
+
+    def _meta(self, key: int) -> dict | None:
+        """The session's timing meta, if it has timing: a relay's car positions (timing.RELAY)
+        aren't, the archive or an OpenF1 rebuild replaces them."""
         meta = self.timing.store.meta(key) if self.timing else None
-        return [meta.get("source"), meta["t0"]] if meta and meta.get("t0") is not None else None
+        return meta if meta and meta.get("t0") is not None and meta.get("source") != "relay" else None
 
     def _save(self, bvid: str, key: int, st: dict) -> None:
         """What's known, frames read included, for the asks after a restart."""
@@ -631,8 +637,7 @@ class VodClockService:
         until = time.monotonic() + TIMING_WAIT
         ok = self.state[k].get("status") == "ok"  # (more near E: what's known stands, whatever happens)
         while True:
-            meta = self.timing.store.meta(key) if self.timing else None
-            if meta and meta.get("t0") is not None:
+            if meta := self._meta(key):
                 clock = await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
                 self._say(k, timing=[meta.get("source"), meta["t0"]])
                 if clock is None and not ok:

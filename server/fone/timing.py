@@ -8,6 +8,8 @@ see timing_state.py), told apart by `meta.json`:
               car positions; the extension forwards those from the viewer's F1 TV login
               (POST /positions), so the server never sees the token. A finished capture
               nobody relayed positions for gets OpenF1's (below) when the map asks.
+              Positions relayed for a session with no capture (FONE_TIMING_RECORD=0, or
+              it failed) are a "relay": no timing of its own, replaced by either below.
   * archive - livetiming.formula1.com/static/<path>, published ~20 min after a session
               (403 until then), no auth until 2026-10-18 (401 for everyone since). Replaces
               the live capture once it appears; while it refuses, nothing stored is pruned.
@@ -74,6 +76,9 @@ OPENF1_RETRY = {"no data": 6 * 3600.0, "not over": 5 * 60.0, "stored": 0.0, "ok"
 OPENF1_RETRY_ERROR = 10 * 60.0
 # Sources that are complete in themselves: nothing captured live may append to them.
 FINAL_SOURCES = ("archive", "openf1")
+# A session only the browser's car positions came for (no capture of ours): not timing of its
+# own, so it never stands in the way of the archive or an OpenF1 rebuild.
+RELAY = "relay"
 
 
 @dataclass(frozen=True)
@@ -193,29 +198,35 @@ class SessionStore:
 
 class CaptureWriter:
     """Appends live messages to a session directory. Thread-safe: the feed (event loop) and
-    browser position uploads (request threads) write through the same writer."""
+    browser position uploads (request threads) write through the same writer. A session only
+    uploads came for is a RELAY (car positions, no timing of its own: the archive or an OpenF1
+    rebuild replaces it); the capture's first message makes it live."""
 
     def __init__(self, store: SessionStore, key: int):
         self.store = store
         self.key = key
         self.dir = store.dir(key)
         meta = store.meta(key) or {}
-        self.t0: float | None = meta["t0"] if meta.get("source") == "live" else None
+        self.t0: float | None = meta["t0"] if meta.get("source") in ("live", RELAY) else None
+        self.relay = meta.get("source") == RELAY
         # Once the archive (or an OpenF1 rebuild) is installed nothing may append to its directory.
         self.closed = meta.get("source") in FINAL_SOURCES
         self._files: dict[str, Any] = {}
         self._lock = threading.Lock()
 
-    def write(self, topic: str, payload: Any, utc: float) -> None:
+    def write(self, topic: str, payload: Any, utc: float, relay: bool = False) -> None:
         # .z topics stay base64+deflate text, exactly as the archive stores them.
         line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         with self._lock:
             if self.closed:
                 return
             if self.t0 is None:
-                self.t0 = utc
-                self.store.write_meta(self.key, {"key": self.key, "source": "live", "t0": utc, "ended": False,
-                                                 "created": time.time()})
+                self.t0, self.relay = utc, relay
+                self.store.write_meta(self.key, {"key": self.key, "source": RELAY if relay else "live", "t0": utc,
+                                                 "ended": False, "created": time.time()})
+            elif self.relay and not relay:
+                self.relay = False
+                self.store.update_meta(self.key, source="live")
             fh = self._files.get(topic)
             if fh is None:
                 fh = self._files[topic] = open(self.dir / f"{topic}.jsonStream", "a", encoding="utf-8")
@@ -641,8 +652,14 @@ class TimingService:
         finally:
             self._fetching.pop(key, None)
 
+    def _stored(self, key: int) -> bool:
+        """The session's own timing is stored: a capture, the archive, a rebuild (a relay's car
+        positions alone aren't)."""
+        meta = self.store.meta(key)
+        return bool(meta) and meta.get("source") != RELAY
+
     def _openf1_due(self, key: int) -> bool:
-        if not self.settings.openf1 or key in self._captures or self.store.meta(key):
+        if not self.settings.openf1 or key in self._captures or self._stored(key):
             return False  # never over anything stored: a capture, the archive, an earlier rebuild
         last = self._openf1.get(key)
         if last is None:
@@ -659,7 +676,7 @@ class TimingService:
         self._openf1_busy.add(key)
         try:
             async with self._openf1_sem:  # one session at a time: a race is ~35 requests, ~100 MB
-                if self.store.meta(key):
+                if self._stored(key):
                     return "stored"
                 sess = self.schedule.get(key)
                 if sess and time.time() < sess.end + timing_openf1.SETTLE_SECONDS:
@@ -759,8 +776,11 @@ class TimingService:
 
     def _install_openf1(self, key: int, staged: Path, meta: dict) -> str:
         with self._key_lock(key):
-            if self.store.meta(key):
+            if self._stored(key):
                 return "stored"  # a capture or the archive got there first
+            w = self._writers.pop(key, None)  # (a relay's: nothing more goes into what's replaced)
+            if w:
+                w.close()
             self.store.write_meta(key, {"key": key, "source": "openf1", "complete": True, "fetched": time.time(),
                                         "builder": timing_openf1.BUILDER, **meta}, directory=staged)
             self.store.install(key, staged)
@@ -849,7 +869,16 @@ class TimingService:
         tl = self.timeline(key)
         if tl is None:
             return {"available": False, "reason": self._missing_reason(key)}
+        if self._relay_over(key):
+            self._kick_fetch(key)  # (car positions alone: the archive's, or OpenF1's rebuild, in their place)
         return tl.state(t)
+
+    def _relay_over(self, key: int) -> bool:
+        meta = self.store.meta(key) or {}
+        if meta.get("source") != RELAY:
+            return False
+        sess = self.schedule.get(key)
+        return time.time() > (sess.end if sess else float(meta.get("created") or 0) + self.settings.max_record_seconds)
 
     def positions(self, key: int, t_from: float, t_to: float) -> dict:
         tl = self.timeline(key)
@@ -976,7 +1005,7 @@ class TimingService:
             if not fresh:
                 return {"ok": True, "stored": 0}
             payload = deflate({"Position": [{"Timestamp": raw, "Entries": e} for _, raw, e in fresh]})
-            self._writer(key).write(POSITION_TOPIC, payload, fresh[-1][0])
+            self._writer(key).write(POSITION_TOPIC, payload, fresh[-1][0], relay=True)
             self._last_upload[key] = fresh[-1][0]
         return {"ok": True, "stored": len(fresh)}
 
