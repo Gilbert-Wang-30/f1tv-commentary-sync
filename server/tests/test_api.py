@@ -232,3 +232,12 @@ def test_the_gets_that_start_work(server):
                  "/api/danmaku", "/api/danmaku/status", "/api/timing/status", "/api/backfill/status",
                  "/api/screenclock/abc", "/api/ads/abc", "/api/diagnostics", "/api/timelines"):
         assert not work.match(path), path
+
+
+def test_health_says_the_servers_version(server, monkeypatch):
+    client, _ = server
+    import fone.app
+
+    assert client.get("/api/health").json()["version"] == (os.environ.get("FONE_VERSION") or "dev")  # (a checkout: dev)
+    monkeypatch.setattr(fone.app, "VERSION", "1.0.1")
+    assert client.get("/api/health").json()["version"] == "1.0.1"

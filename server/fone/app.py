@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from .store import CLOCK_FAMILY, Store
 from .timeline import MIN_CLIP_SECONDS, MIN_FILL_SECONDS, content_span, mutes as ad_mutes, uncovered, union
 
 log = logging.getLogger("fone")
+VERSION = os.environ.get("FONE_VERSION") or "dev"  # a release's image is stamped with its own
 SEG_RE = re.compile(r"^seg_\d{5}\.ts$")
 # Screen-clock results good enough to beat the channel's calibrated default.
 MEASURED_CONFIDENCE = ("high", "medium")
@@ -258,8 +260,8 @@ async def _measured(cid: str, channel: str) -> dict | None:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "recDir": str(cfg.rec_dir), "files": len(extractor.files), "now": time.time(),
-            "services": sorted(SERVICES)}
+    return {"ok": True, "version": VERSION, "recDir": str(cfg.rec_dir), "files": len(extractor.files),
+            "now": time.time(), "services": sorted(SERVICES)}
 
 
 @app.get("/api/channels")
