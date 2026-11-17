@@ -43,6 +43,27 @@ def test_survives_a_restart_and_caps_oversized_events(tmp_path):
     assert len(files) == 1 and all(json.loads(line)["client"] == "c" for line in files[0].read_text().splitlines())
 
 
+def test_whats_kept_is_bounded_and_answerable(tmp_path, monkeypatch):
+    store = DiagStore(tmp_path)
+    c = client_for(store)
+    huge = "x" * 10000
+    body = '{"client": "c", "events": [{"t": 1, "type": "%s"}, {"t": "%s", "type": "seek"}, ' \
+           '{"t": 2, "type": "snap", "drift": Infinity}, {"t": NaN, "type": ["a"]}]}' % (huge, huge)
+    assert c.post("/api/diag", content=body, headers={"content-type": "application/json"}).json()["stored"] == 4
+    evs = c.get("/api/diag").json()["events"]  # (answerable: no Infinity in it)
+    assert [(e["t"], e["type"]) for e in evs] == [(1, "x" * 40), (None, "seek"), (2, "snap"), (None, "['a']")]
+    assert evs[0]["truncated"] > 10000 and evs[2]["truncated"] == "not JSON" and "drift" not in evs[2]
+    assert len(c.get("/api/diag", params={"since": 1.5}).json()["events"]) == 3  # (t 2; those without: by arrival)
+    assert next(tmp_path.glob("*.jsonl")).stat().st_size < 2000
+    # a day's file stops growing at its cap (what's posted stays in memory)
+    monkeypatch.setattr("fone.diag.MAX_DAY_BYTES", 1000)
+    for _ in range(3):
+        c.post("/api/diag", json={"client": "c", "events": [{"t": 3, "type": "snap", "v": "y" * 500}]})
+    assert next(tmp_path.glob("*.jsonl")).stat().st_size < 1000 + 600 * 2
+    assert len(store.query(None, {"snap"}, None, 10)) == 4
+    assert [e["type"] for e in DiagStore(tmp_path).query(None, None, None, 10)][:4] == ["x" * 40, "seek", "snap", "['a']"]
+
+
 def test_rejects_garbage(tmp_path):
     c = client_for(DiagStore(tmp_path))
     assert c.post("/api/diag", json={"events": []}).status_code == 422  # no client
