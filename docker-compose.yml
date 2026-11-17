@@ -48,6 +48,10 @@ services:
       FONE_SCREENCLOCK_TZ:
       # (a number: empty is the default here rather than in the server)
       FONE_TIMING_KEEP_DAYS: ${FONE_TIMING_KEEP_DAYS:-30}
+      # The lives backfill fills by itself: the titles fone-recorder-gate records (a game stream
+      # it stops would otherwise read as one long gap). Empty: the gate's default F1 words.
+      FONE_BACKFILL_RECORD: ${FONE_BACKFILL_RECORD:-${GATE_RECORD:-}}
+      FONE_BACKFILL_SKIP: ${FONE_BACKFILL_SKIP:-${GATE_SKIP:-}}
       # Optional services, all on by default: =0 switches one off.
       FONE_TIMING:
       FONE_ADS:

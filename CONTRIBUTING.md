@@ -46,13 +46,14 @@ and tesseract; the recorder gate's, `recorder/test_*.py`, need only Python):
 docker build -t fone:dev server
 docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
   fone:dev sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
-docker run --rm -v "$PWD/recorder":/r -w /r -e PYTHONDONTWRITEBYTECODE=1 python:3.12-alpine \
-  sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -p no:cacheprovider'
+docker run --rm -v "$PWD":/r:ro -w /r/recorder -e PYTHONDONTWRITEBYTECODE=1 python:3.12-alpine \
+  sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider'
 ```
 
 240+ server tests; the ones that need a real recording (`-rs` lists them as skipped) run only
 when it's mounted into the container: the recordings folder at `/rec`, or the `FONE_*`
-switches in the README's Development section.
+switches in the README's Development section. The recorder's run in the whole checkout: one
+checks that the gate and the server's backfill start from the same F1 words.
 
 **Checks** (CI's "release checks" and the extension job; seconds each):
 

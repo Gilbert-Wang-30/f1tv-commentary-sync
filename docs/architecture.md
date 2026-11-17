@@ -171,7 +171,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | `GET /api/screenclock/{fid}` | `{delayScreen, n, confidence: "high"\|"medium"\|"low"\|"none", updated, basis, status, …}`; `delayScreen` = file wall time − the F1 feed UTC shown on screen |
 | `GET /api/video/{fid}/info` | `{id, name, growing, t0, a0, mOffset, duration, edge, width, height, codec, wallStart}`; `m = v + mOffset` converts this playlist's time `v` into the file's audio-HLS time |
 | `GET /api/video/{fid}/index.m3u8[?start=]` · `/seg/{a}_{b}.ts` | the recording's own picture and sound, cut at keyframes, no re-encode (VOD when finished, EVENT while growing); `202` + `Retry-After` while the FLV is being indexed |
-| `GET /api/backfill/status` | `{enabled, importDir, rooms, periods, jobs}` |
+| `GET /api/backfill/status` | `{enabled, importDir, rooms, periods, jobs}`; a period's `wanted` (a title it had while live is one to fill) and `skipped` (why it was left alone) |
 | `POST /api/backfill/import` `{"bvid"}` or `{"from", "to", "channel"}` | import a replay by hand (409 unless `FONE_ROOMS` and `FONE_IMPORT_DIR` are set) |
 | `GET /api/danmaku?channel=&from=&to=[&limit=]` | `{items: [{t, x, m: 1\|4\|5, s, c, u, ul?, ml?, wl?, g?, e?, em?, k?, p?}], live, room}`, oldest first, at most 6000 (see `danmaku.py` for the fields) |
 | `GET /api/danmaku/status` | rooms listened to, capture and archive state |
@@ -309,7 +309,11 @@ segments are the FLV bytes between two keyframes, remuxed by ffmpeg with timesta
 stream ends and the channel's recordings leave a gap over 60 s, the streamer's official
 replay (直播回放) is polled for up to 36 h, downloaded, de-duplicated, placed on the wall
 clock (aligned against what was recorded, else from the room's live time) and written as a
-recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`.
+recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`. Only a live with a title the recorder
+gate keeps is filled by itself (`FONE_BACKFILL_RECORD` / `_SKIP`: compose passes the gate's
+`GATE_RECORD` / `GATE_SKIP`; empty, the gate's F1 words, `backfill.F1_TITLES`): any title it had
+while live will do, and a live with no title seen is filled. A game stream the gate stopped
+would otherwise read as one long gap. An import asked for by hand takes any live.
 
 **danmaku**: an anonymous connection to each room's danmaku feed (`danmaku_feed.py`), written
 as JSON lines and indexed into SQLite, plus danmakus.com's archive for what the capture
