@@ -313,7 +313,7 @@ newest. How a release is made: [docs/releasing.md](docs/releasing.md).
 git clone https://github.com/Gilbert-Wang-30/f1tv-commentary-sync fone && cd fone   # or a release's source archive
 cp .env.example .env                  # then edit it: FONE_RECORDINGS at least (below)
 mkdir -p /srv/recordings/fone /srv/recordings/fone-import    # your FONE_RECORDINGS, and these two in it
-sudo chown 1000:1000 /srv/recordings/fone /srv/recordings/fone-import   # FONE_UID:FONE_GID (1000 by default)
+sudo chown 1000:1000 /srv/recordings/fone   # FONE_UID:FONE_GID (1000 by default)
 docker compose up -d                  # the server alone, on port 8788
 ```
 
@@ -321,9 +321,11 @@ docker compose up -d                  # the server alone, on port 8788
 setup in it. `FONE_RECORDINGS` is the folder every recorder writes under, a folder per streamer:
 the server reads all of it (read-only), backfill writes into `fone-import/`, fone's own
 recorders into `fone/`. A folder that doesn't exist stops the container with an error rather
-than being created empty. The two folders belong to `FONE_UID:FONE_GID` (`.env`, 1000:1000 by
-default), the user fone-streamlink and the recorder gate write as: in a folder they don't own
-they fail with *permission denied* (fone-recorder, 录播姬, sets its folder's owner itself).
+than being created empty. `fone/` belongs to `FONE_UID:FONE_GID` (`.env`, 1000:1000 by
+default), the user fone-streamlink writes as: in a folder it doesn't own it fails with
+*permission denied* (fone-recorder, 录播姬, sets its folders' owner itself, and the server writes
+`fone-import/` as root). On a network share that refuses `chown` (NFS with root_squash, CIFS),
+the share's own options set the owner: the mount's `uid=`/`gid=`, or the export's.
 `.env.example` says what each setting does; the [Configuration](#configuration) tables list
 them all.
 
@@ -427,9 +429,9 @@ docker compose up -d
   Its `config.json` (in `<FONE_RECORDINGS>/fone/`) is written from `recorder/config.json` on its
   first start (`recorder/seed.sh`) and is 录播姬's own after that (rooms you add in it stay): to
   seed it again from `FONE_ROOMS`, stop fone-recorder, delete that file and start it. With no
-  room in `FONE_ROOMS` it doesn't start (`docker logs fone-recorder` says so) rather than record
-  nothing; a `config.json` with no room is written again once `FONE_ROOMS` names one. A room
-  number alone (`FONE_ROOMS=12345678`) is a channel of that name.
+  room in its `config.json` nor in `FONE_ROOMS` it doesn't start (`docker logs fone-recorder`
+  says so) rather than record nothing; a `config.json` with no room is written again once
+  `FONE_ROOMS` names one. A room number alone (`FONE_ROOMS=12345678`) is a channel of that name.
 - **fone-recorder-gate:** judges each stream by its title: F1 (`GATE_RECORD`; by default F1/F2/F3,
   Formula, Grand Prix, GP, FP1-3, Qualifying, Sprint, Race and the Chinese session names) or not
   (`GATE_SKIP` for titles never to record). Until `GATE_ACTION=stop` it only logs what it would
@@ -569,7 +571,7 @@ where its player happened to start.
 | `COMPOSE_PROFILES` | | optional services `docker compose up -d` starts too: `recorder` (fone-recorder, its gate, the janitor), `streamlink` (fone-streamlink, the janitor), `ext-update` (fone-ext, [Advanced](#advanced-a-self-hosted-update-channel)) |
 | `FONE_UID`, `FONE_GID` | `1000` | the user the recorders write as |
 | `GATE_RECORD`, `GATE_SKIP` | F1 words | the gate's title regexes (Python, case-insensitive): titles to record, titles never to; backfill's too |
-| `FONE_BACKFILL_RECORD`, `FONE_BACKFILL_SKIP` | the gate's | the titles of the lives backfill fills by itself, if not the gate's (one imported by hand is any) |
+| `FONE_BACKFILL_RECORD`, `FONE_BACKFILL_SKIP` | the gate's | the titles of the lives backfill fills by itself, if not the gate's (one imported by hand is any); `FONE_BACKFILL_RECORD=.` fills every live, and empty is the gate's again |
 | `GATE_ACTION` | `log` | `stop`: the gate stops a recording whose title isn't F1; `log`: it only says so |
 | `FONE_STREAMS` | | fone-streamlink's `channel=URL …` |
 | `FONE_STREAMS_QUALITY`, `FONE_STREAMS_RECORD` | audio only; any | its stream names, first available wins; a title regex (`grep -E`) to wait for |

@@ -79,9 +79,9 @@ backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into
 `recorder/seed.sh` writes fone-recorder's 录播姬 `config.json` on its first start from the
 template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone, and again only when
 the file has no room (no `RoomId`) and `FONE_ROOMS` names one (the old file kept as
-`config.json.bak`); with no file and no room it exits 1 with what to set, so the recorder
-restarts saying so instead of recording nothing. The gate (`recorder/gate.py`) only logs the
-streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
+`config.json.bak`); with no room in the file (or no file) and none in `FONE_ROOMS` it exits 1
+with what to set, so the recorder restarts saying so instead of recording nothing. The gate
+(`recorder/gate.py`) only logs the streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
 profile (`recorder`, `streamlink`) and deletes files under `<FONE_RECORDINGS>/fone/` and
 `fone-import/` `FONE_KEEP_DAYS` (21) after their last write. The server image is
 `ghcr.io/gilbert-wang-30/fone:<version>` from 1.0.1 on (`.github/workflows/release.yml`,
@@ -143,7 +143,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | | |
 |---|---|
 | `GET /` | status page (HTML): every recording, its extraction status and analysis notes |
-| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out, in words (`config.notes`, also logged at start: no room in `FONE_ROOMS`, a recordings or import folder that isn't there; and no ffmpeg/tesseract for the replays' clock), shown by the options page's Test connection and the status page |
+| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out, in words (`config.notes`, also logged at start: no room in `FONE_ROOMS`, a recordings or import folder that isn't there; and no ffmpeg/tesseract for the replays' clock; an optional service that's on but couldn't start, e.g. a bad `FONE_BACKFILL_SKIP` regex, with why), shown by the options page's Test connection and the status page |
 | `GET /api/channels` | `[{name, files, latest, live}]`, newest first; `live` = a file is still growing |
 | `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}`. Cached in SQLite; an anchored replay never changes, everything else is re-checked after 10 min, and a re-check that can't make the exact anchor again (the archive refusing) keeps the cached one |
 | `GET /api/sync/{cid}?channel=&clock=` | the delay to start from: `{delay, source: "content"\|"measured"\|"channel"\|"default"}`; `measured` adds `{screen, reaction, confidence, file}` |
@@ -314,7 +314,9 @@ recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`. Only a live with a title t
 gate keeps is filled by itself (`FONE_BACKFILL_RECORD` / `_SKIP`: compose passes the gate's
 `GATE_RECORD` / `GATE_SKIP`; empty, the gate's F1 words, `backfill.F1_TITLES`): any title it had
 while live will do, and a live with no title seen is filled. A game stream the gate stopped
-would otherwise read as one long gap. An import asked for by hand takes any live.
+would otherwise read as one long gap. An import asked for by hand takes any live. A live logged
+by a server from before 1.0.1 is judged by the one title it kept (its first), and an automatic
+job such a server made for a live that isn't to fill expires before it asks Bilibili again.
 
 **danmaku**: an anonymous connection to each room's danmaku feed (`danmaku_feed.py`), written
 as JSON lines and indexed into SQLite, plus danmakus.com's archive for what the capture

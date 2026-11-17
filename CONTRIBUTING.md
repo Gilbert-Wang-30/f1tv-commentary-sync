@@ -23,6 +23,10 @@ being rewritten.
   NAS mounted under `/mnt` as `nas`, fail everywhere.
 - A change someone running fone would notice gets a line in the top section of
   [CHANGELOG.md](CHANGELOG.md); releases are cut from it ([docs/releasing.md](docs/releasing.md)).
+- `docker-compose.yml` names its project `fone` in any folder, so `docker compose up` or `down`
+  in a clone acts on the containers of a fone server you run. Try compose changes under another
+  project name (`docker compose -p fone-try …`, or `COMPOSE_PROJECT_NAME`): its fixed container
+  names then clash with the running ones and fail rather than replace them.
 
 ## The three test layers
 
