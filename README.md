@@ -686,7 +686,9 @@ by hand (`.github/workflows/e2e.yml`). `CONTRIBUTING.md` has the same commands.
   server image and publishes them as a GitHub Release with that version's `CHANGELOG.md`
   section ([docs/releasing.md](docs/releasing.md)). A self-hosted build: `tools/publish_ext.sh`
   ([Advanced](#advanced-a-self-hosted-update-channel)).
-- **Read a browser's playback diagnostics:** `tools/diag.py --minutes 30 [--client …]`.
+- **Read a browser's playback diagnostics:** `tools/diag.py --minutes 30 [--client …]`. The server's own
+  files (7 days; the API serves only the last 20000 events): `tools/diag.py --file <data>/diag/*.jsonl`.
+  How sync by sound did, run by run: add `--report sound`.
 - **How the parts fit together:** `docs/architecture.md` (routes, data shapes, the messages
   between the extension's parts, the time-domain rules).
 - **F1's data sources:** `docs/f1-data-sources.md` (F1 TV content API, MultiViewer, live timing,

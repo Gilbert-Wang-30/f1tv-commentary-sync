@@ -38,6 +38,9 @@ image to run with your own streamer, recorder and storage.
   GitHub by hand (`.github/workflows/e2e.yml`).
 - `FONE_ADS_REFS` and `FONE_ADS_CHANNELS` (your own sponsor clips, and where to look for them),
   `GATE_ACTION`, and `FONE_TIMING_KEEP_DAYS` passed from `.env`.
+- `tools/diag.py --file <data>/diag/*.jsonl` reads the server's diagnostics files (all 7 days,
+  not only the last 20000 events), and `--report sound` sums up sync by sound run by run: how
+  soon it locked, how sure its looks were, how steady it held, what moved it.
 
 ### Changed
 - Your setup, not the author's: `docker-compose.yml` takes the recordings folder, rooms,
@@ -65,6 +68,8 @@ image to run with your own streamer, recorder and storage.
   packages through `tools/build_ext.sh`, the release's packager.
 
 ### Fixed
+- `tools/diag.py` no longer stops at a snapshot the server kept only the time of (over its 4000
+  bytes).
 - Bilibili replays: the clock on the streamer's screen and sync by sound no longer pull the
   commentary back and forth when the streamer's delay steps (a pause no longer counts against
   sound's look again); no swapping between two replays in a restart's gap; a backward seek no
