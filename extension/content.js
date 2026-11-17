@@ -310,7 +310,8 @@
   :host([hidden]), [hidden] { display: none !important; }
   .wrap { position: fixed; top: 14px; right: 14px; z-index: 2147483647; font: 13px/1.35 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #f2f2f2; }
   .card { background: rgba(16,16,20,.88); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 10px 12px; width: 300px; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
-  .head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; touch-action: none; }
+  .wrap.dragging .head { cursor: grabbing; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #888; flex: none; }
   .dot.sync { background: #3ddc84; } .dot.syncing, .dot.loading, .dot.buffering { background: #f5c542; }
   .dot.waiting { background: #f5c542; animation: pulse 1s infinite; } .dot.paused { background: #8ab4f8; }
@@ -389,6 +390,54 @@
   }
   document.addEventListener('fullscreenchange', mount);
   mount();
+
+  // The panel dragged by its head anywhere on the page, kept for this browser (localStorage, not
+  // synced: another screen, another place): {l | r: px from the nearer side, t: px from the top},
+  // so opened it grows away from that side. Kept on screen as the window changes size.
+  const POS_KEY = 'fone.panelPos';
+  const posGet = () => { try { const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); return p && typeof p.t === 'number' ? p : null; } catch { return null; } };
+  function placePanel() {
+    const p = posGet(), w = window.innerWidth, h = window.innerHeight;
+    if (!p) { wrap.style.left = wrap.style.right = wrap.style.top = ''; return; }
+    wrap.style.top = `${Math.max(0, Math.min(h - 36, p.t))}px`;
+    if (typeof p.l === 'number') { wrap.style.left = `${Math.max(0, Math.min(w - 80, p.l))}px`; wrap.style.right = 'auto'; }
+    else { wrap.style.right = `${Math.max(0, Math.min(w - 80, p.r ?? 14))}px`; wrap.style.left = 'auto'; }
+  }
+  let drag = null, dragged = false;
+  $('head').addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const r = wrap.getBoundingClientRect();
+    drag = { x: e.clientX, y: e.clientY, l: r.left, t: r.top, w: r.width, moved: false };
+    try { $('head').setPointerCapture(e.pointerId); } catch { /* gone */ }
+  });
+  $('head').addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return; // (a click, not a drag)
+    drag.moved = true;
+    wrap.classList.add('dragging');
+    wrap.style.left = `${Math.max(0, Math.min(window.innerWidth - drag.w, drag.l + dx))}px`;
+    wrap.style.right = 'auto';
+    wrap.style.top = `${Math.max(0, Math.min(window.innerHeight - 30, drag.t + dy))}px`;
+  });
+  const dragEnd = () => {
+    const d = drag;
+    drag = null;
+    wrap.classList.remove('dragging');
+    if (!d?.moved) return;
+    dragged = true; // (the click this ends with doesn't open or close it)
+    const r = wrap.getBoundingClientRect();
+    const p = r.left + r.width / 2 < window.innerWidth / 2 ? { l: Math.round(r.left), t: Math.round(r.top) }
+      : { r: Math.round(window.innerWidth - r.right), t: Math.round(r.top) };
+    try { localStorage.setItem(POS_KEY, JSON.stringify(p)); } catch { /* private */ }
+    placePanel();
+  };
+  $('head').addEventListener('pointerup', dragEnd);
+  $('head').addEventListener('pointercancel', dragEnd);
+  // (double-click the head: back to its corner)
+  $('head').addEventListener('dblclick', () => { try { localStorage.removeItem(POS_KEY); } catch { /* private */ } placePanel(); });
+  window.addEventListener('resize', placePanel);
+  placePanel();
 
   const fmtTime = (t) => (t ? new Date(t * 1000).toISOString().slice(11, 21) + 'Z' : '–');
   const CLOCKS = {
@@ -633,7 +682,7 @@
     toast(`${d > 0 ? '+' : '−'}${Math.abs(d)} s → commentary ${d > 0 ? 'sooner' : 'later'}${next != null ? ` (delay ${next.toFixed(1)} s)` : ''}`);
   }
 
-  $('head').addEventListener('click', () => save({ collapsed: !settings.collapsed }));
+  $('head').addEventListener('click', () => { if (dragged) { dragged = false; return; } save({ collapsed: !settings.collapsed }); });
   root.querySelectorAll('button[data-d]').forEach((b) => b.addEventListener('click', () => nudge(Number(b.dataset.d))));
   $('mute').addEventListener('click', () => save({ muted: !settings.muted }));
   $('relive').addEventListener('click', () => { send({ type: 'relive' }); toast('Re-synced to live'); });
