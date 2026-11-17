@@ -458,6 +458,53 @@ def test_waiting_for_timing_holds_no_frame_slot(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_frames_read_are_kept_their_times_worked_out_again(tmp_path, monkeypatch):
+    """The wall times of what a frame showed were kept with it and reused for good: a session's
+    timing replaced (a capture by the archive), a server whose clock logic changed, gave the
+    same answer again. Now only what the frames showed is kept; the times are worked out from the
+    session's timing as it is, again whenever that changes; frames read another way (OCR) are
+    read again."""
+    rig = Rig(tmp_path, monkeypatch)
+    f = tmp_path / "vodclock" / f"{BV}.{KEY}.json"
+
+    async def run():
+        svc = rig.service()
+        await svc.start()
+        st = await settled(svc)
+        assert st["status"] == "ok" and st["timing"] == ["openf1", 1] and len(rig.reads) == vc.PAR
+        walls = [r["wall"] for r in st["readings"]]
+        assert all("cands" not in s for s in json.loads(f.read_text())["seen"])
+        # the session's timing replaced: the same frames, their times from the new clock
+        c = rig.c
+        rig.c = vc.Clock(c.kind, c.number, [vc.Seg(s.a + 100, s.b + 100, s.r, s.run, s.part) for s in c.segs])
+        rig.meta = {**rig.meta, "source": "archive", "t0": 101}
+        assert svc.get(BV, KEY, SLOT)["status"] == "working"
+        st = await settled(svc)
+        assert [r["wall"] for r in st["readings"]] == [pytest.approx(w + 100) for w in walls]
+        assert len(rig.reads) == vc.PAR and st["timing"] == ["archive", 101]  # (no frame read again)
+        await svc.stop()
+        # a file from before (times kept with each frame, no timing said): worked out afresh
+        old = json.loads(f.read_text())
+        for s in old["seen"]:
+            s["cands"] = [1.0]
+        del old["timing"]
+        f.write_text(json.dumps(old))
+        svc = rig.service()
+        await svc.start()
+        st = await settled(svc)
+        assert [r["wall"] for r in st["readings"]] == [pytest.approx(w + 100) for w in walls] and len(rig.reads) == vc.PAR
+        await svc.stop()
+        # frames read by an OCR of another version: read again
+        f.write_text(json.dumps({**json.loads(f.read_text()), "v": vc.OCR + 1}))
+        svc = rig.service()
+        await svc.start()
+        st = await settled(svc)
+        assert st["status"] == "ok" and len(rig.reads) == 2 * vc.PAR and st["v"] == vc.OCR
+        await svc.stop()
+
+    asyncio.run(run())
+
+
 def test_a_mirror_ignoring_range_is_refused_before_the_whole_file(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
     rig.video += b"\x00" * 1_000_000  # (the page's whole video: big)

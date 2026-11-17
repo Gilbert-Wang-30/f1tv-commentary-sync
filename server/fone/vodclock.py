@@ -526,7 +526,8 @@ class VodClockService:
         if k not in self.tasks:
             status, now = st.get("status"), time.time()
             again = status == "working" or (status == "error" and now >= st.get("again", 0)) \
-                or (status == "none" and now - st.get("at", 0) > NONE_TTL)
+                or (status == "none" and now - st.get("at", 0) > NONE_TTL) \
+                or (status in ("ok", "none") and st.get("timing") != self._timing_of(key))
             want_near = status == "ok" and E is not None and self._wants(st, E)
             if again or want_near:
                 if again:
@@ -541,11 +542,17 @@ class VodClockService:
             st = json.loads(self._file(bvid, key).read_text())
         except (OSError, ValueError):
             st = None
-        if not isinstance(st, dict):
-            return {"status": "working", "why": "starting", "seen": []}
+        if not isinstance(st, dict) or st.get("v", 1) != OCR:  # (frames read another way: read again)
+            return {"status": "working", "why": "starting", "seen": [], "v": OCR}
         if st.get("status") in ("working", "error"):  # (a job a restart cut short; one that failed: on)
             st.update(status="working", why="starting")
         return st
+
+    def _timing_of(self, key: int) -> list | None:
+        """Which timing the session has (source, t0): what was worked out from other timing (a
+        capture since replaced by the archive, say) is worked out again."""
+        meta = self.timing.store.meta(key) if self.timing else None
+        return [meta.get("source"), meta["t0"]] if meta and meta.get("t0") is not None else None
 
     def _save(self, bvid: str, key: int, st: dict) -> None:
         """What's known, frames read included, for the asks after a restart."""
@@ -614,6 +621,7 @@ class VodClockService:
             meta = self.timing.store.meta(key) if self.timing else None
             if meta and meta.get("t0") is not None:
                 clock = await asyncio.to_thread(Clock.load, self.timing.store.dir(key), meta)
+                self._say(k, timing=[meta.get("source"), meta["t0"]])
                 if clock is None and not ok:
                     self._say(k, status="none", why="no clock in the session's timing")
                 return clock
@@ -621,7 +629,7 @@ class VodClockService:
                 return None
             why = await asyncio.to_thread(self.timing._missing_reason, key) if self.timing else "no timing service"
             if why in ("no timing data for this session", "no timing service"):
-                self._say(k, status="none", why=f"the session's timing: {why}")
+                self._say(k, status="none", why=f"the session's timing: {why}", timing=None)
                 return None
             if time.monotonic() > until or why == "session has not started":
                 self._fail(k, f"the session's timing: {why}")
@@ -686,7 +694,8 @@ class VodClockService:
         pages = await self.bili.pagelist(bvid)
         by_page = {int(p["page"]): p for p in pages}
         st["running"] = clock.running()
-        found = [(Reading.from_dict(r), r["cands"]) for r in seen]
+        # (what each frame showed is kept, when that was is worked out each time: from this clock)
+        found = [(rd, candidates(clock, rd)) for rd in map(Reading.from_dict, seen)]
         failed: list[Exception] = []
 
         async def read(page: int, at: float) -> bool:
@@ -703,9 +712,8 @@ class VodClockService:
                 log.exception("%s p%d %.0f s: the frame", bvid, page, at)
                 got = None
             rd = Reading(page, at, *(got[:3] if got else ("", None, None)), got[3] if got else "")
-            ts = candidates(clock, rd)
-            found.append((rd, ts))
-            seen.append({**rd.to_dict(), "cands": ts})
+            found.append((rd, candidates(clock, rd)))
+            seen.append(rd.to_dict())
             return True
 
         def done() -> list[tuple[Reading, float]]:
