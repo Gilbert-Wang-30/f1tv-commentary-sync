@@ -368,6 +368,26 @@ from the streamer's Bilibili room (on by default). With a server line it can't u
 a `user:password@`), *Save* says which and why and keeps the server list as it was; the rest of
 the page is saved.
 
+### Updating the server
+
+**Update the extension before the server** ([Install the extension](#install-the-extension)):
+since 1.0.1 the server answers most of its routes (the commentary's timeline, F1 TV's lookups,
+the delays, the stats) only to an extension of 1.0.1 or newer, which sends the header they ask
+for; an older one gets 403 from them and plays nothing from the server. The settings page shows
+both versions (*Test connection*) and links the releases. Then, in the folder with
+`docker-compose.yml`:
+
+```bash
+git pull                       # a release's source archive: unpack the new one, copy .env (and recorder/api.env) into it
+docker compose pull            # the server image docker-compose.yml now names, and the recorders'
+docker compose up -d           # recreates what changed; the data volume and the recordings stay
+```
+
+`docker-compose.yml` names its own release's image (`fone:<version>`), so a new checkout runs
+the new server. A `FONE_IMAGE` you set in `.env` stays as it is: bump its version there first
+(or remove it). With the `streamlink` profile, `docker compose up -d --build fone-streamlink` rebuilds its
+recorder from the new checkout too.
+
 ## Configure your streamer
 
 Everything about the streamer is in `.env` (server) and fone's settings (extension). One
