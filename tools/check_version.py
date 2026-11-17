@@ -8,11 +8,11 @@ runs that image by default.
                                              every older one dated; the server image the setup
                                              files name (docker-compose.yml, .env.example, the
                                              README) is not older than it
-  tools/check_version.py --tag v1.0.1        a release: the tag is vX.Y.Z, the manifest's version,
-                                             or vX.Y.Z-rc.N for a pre-release (nothing else: the
-                                             image's tags are read from it as semver), its
-                                             section says something and, for a release proper,
-                                             carries its date
+  tools/check_version.py --tag v1.0.1        a release: the tag is vX.Y.Z, the manifest's version
+                                             exactly (1.0.1, not 1.0.1.0), or vX.Y.Z-rc.N for a
+                                             pre-release (nothing else: the image's tags are read
+                                             from it as semver), its section says something and,
+                                             for a release proper, carries its date
       --dry-run                              (release.yml run by hand) an undated section will do
       --notes FILE                           writes that section's text, for the release notes
 
@@ -112,6 +112,9 @@ def check(manifest_version: str, changelog: str, tag: str | None = None, dry_run
         if key(m["version"]) != mv:
             raise Problem(f"tag {tag} is not the manifest's version {manifest_version}: bump "
                           "extension/manifest.json (and CHANGELOG.md) first", "extension/manifest.json")
+        if manifest_version != m["version"]:  # (1.0.1.0 and 1.0.1 are one version to Chrome, not to a release)
+            raise Problem(f"the manifest's version {manifest_version} is not the tag's X.Y.Z: make it "
+                          f"{m['version']}", "extension/manifest.json")
         version, prerelease = tag[1:], bool(m["suffix"])
         if not mine["body"]:
             raise Problem(f"[{mine['name']}] says nothing: it becomes the release notes", "CHANGELOG.md")

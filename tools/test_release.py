@@ -97,6 +97,14 @@ class CheckVersion(unittest.TestCase):
             with self.assertRaisesRegex(cv.Problem, "is not vX.Y.Z or vX.Y.Z-rc.N", msg=bad):
                 cv.check("0.5.4", CHANGELOG, bad)
         self.assertEqual(cv.check("0.5.4", CHANGELOG, "v0.5.4-rc.0")["prerelease"], True)
+        # the manifest exactly X.Y.Z, the tag's: Chrome's 1.0.1.0 or 1.0 is the same version, a release's not
+        for manifest, tag in (("1.0.1.0", "v1.0.1"), ("1.0.1.0", "v1.0.1-rc.1"), ("1.0", "v1.0.0")):
+            log = CHANGELOG.replace("[1.0.1]", f"[{manifest}]")
+            with self.assertRaisesRegex(cv.Problem, f"the manifest's version {manifest} is not the tag's X.Y.Z: make it "
+                                        f"{tag[1:].split('-')[0]}", msg=(manifest, tag)) as e:
+                cv.check(manifest, log, tag, dry_run=True)
+            self.assertEqual(e.exception.file, "extension/manifest.json")
+            self.assertEqual(cv.check(manifest, log)["version"], manifest)  # (every push: Chrome's rules only)
         # 1.0.1 still unreleased: a release candidate or a dry run may go, the release proper not
         with self.assertRaisesRegex(cv.Problem, "give it the release's date"):
             cv.check("1.0.1", CHANGELOG, "v1.0.1")
