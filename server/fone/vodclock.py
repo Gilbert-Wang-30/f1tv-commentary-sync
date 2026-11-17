@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import time
@@ -500,11 +501,18 @@ class VodClockService:
         self.tasks: dict[tuple[str, int], asyncio.Task] = {}
         self._video_cache: dict[tuple[str, int], Video] = {}
         self._sem: asyncio.Semaphore | None = None
+        self.missing: list[str] = []
 
     async def start(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         if self.bili is None:
             self.bili = bb.BiliClient(min_interval=1.0)
+        # (without them every frame reads as nothing: 'no MultiViewer clock on the streamer's
+        # screen', for every replay, after downloading its frames)
+        self.missing = [tool for tool, used in (("ffmpeg", self.decode is decode_frame), ("tesseract", self.words is sm.frame_words))
+                        if used and shutil.which(tool) is None]
+        if self.missing:
+            log.warning("vodclock: no %s on this server: replays aren't placed by their clock", " or ".join(self.missing))
 
     async def stop(self) -> None:
         for t in self.tasks.values():
@@ -519,10 +527,15 @@ class VodClockService:
         """What's known (status working | ok | none | error, readings); a job started when
         there's more to read: the first frames (again, for an error once its wait is over, a
         'none' after NONE_TTL), or ones near event time E."""
+        if self.missing:
+            return {"status": "none", "why": f"no {' or '.join(self.missing)} on the fone server"}
         k = (bvid, key)
-        st = self.state.get(k)
+        st = self.state.pop(k, None)  # (and back in last: the longest unasked are forgotten first)
         if st is None:
-            st = self.state[k] = self._load(bvid, key)
+            st = self._load(bvid, key)
+        self.state[k] = st
+        for old in [x for x in self.state if x != k and x not in self.tasks][:max(0, len(self.state) - MAX_KEPT)]:
+            del self.state[old]  # (on disk, as they were)
         if k not in self.tasks:
             status, now = st.get("status"), time.time()
             again = status == "working" or (status == "error" and now >= st.get("again", 0)) \

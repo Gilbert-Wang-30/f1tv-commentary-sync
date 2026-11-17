@@ -505,6 +505,41 @@ def test_frames_read_are_kept_their_times_worked_out_again(tmp_path, monkeypatch
     asyncio.run(run())
 
 
+def test_memory_holds_the_latest_asked_for(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(vc, "MAX_KEPT", 2)
+
+    async def run():
+        svc = rig.service()
+        await svc.start()
+        bvs = ("BV1aaaaaaaaa", "BV1bbbbbbbbb", BV)
+        for bv in bvs:
+            svc.get(bv, KEY, SLOT)
+        await asyncio.sleep(0)
+        assert len(svc.state) == 3  # (none forgotten while being read)
+        while svc.tasks:
+            await asyncio.sleep(0.01)
+        svc.get(BV, KEY, SLOT)
+        assert list(svc.state) == [(bvs[1], KEY), (BV, KEY)]
+        n = len(rig.reads)
+        assert svc.get(bvs[0], KEY, SLOT)["status"] == "ok" and not svc.tasks and len(rig.reads) == n  # (from disk)
+        assert list(svc.state) == [(BV, KEY), (bvs[0], KEY)]
+
+    asyncio.run(run())
+
+
+def test_without_ffmpeg_or_tesseract_it_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(vc.shutil, "which", lambda tool: None if tool == "tesseract" else f"/usr/bin/{tool}")
+
+    async def run():
+        svc = vc.VodClockService(SimpleNamespace(data_dir=tmp_path), None, bili=FakeBili(*fake_video()))
+        await svc.start()
+        assert svc.get(BV, KEY, SLOT) == {"status": "none", "why": "no tesseract on the fone server"}
+        assert not svc.tasks and not svc.state
+
+    asyncio.run(run())
+
+
 def test_a_mirror_ignoring_range_is_refused_before_the_whole_file(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
     rig.video += b"\x00" * 1_000_000  # (the page's whole video: big)
