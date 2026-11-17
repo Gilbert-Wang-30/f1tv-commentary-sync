@@ -93,4 +93,63 @@ test('FFT round trip', () => {
   for (let i = 0; i < 64; i++) assert.ok(Math.abs(re[i] - orig[i]) < 1e-9 && Math.abs(im[i]) < 1e-9);
 });
 
+// ---- sync by sound's rules, with the engine's numbers (offscreen.js SND) ----------------------
+const P = { SCORE: 8, NEXT: 1.6, AGREE: 0.08, JUMP: 1.5, JUMP_LATER: 3, NEAR: 4, WIDE: 25, FAR: 240, REWIDE: 300, MISSES: 2 };
+
+test('how far a look reaches: widely till locked, now and then, after misses; ±240 s for a start only guessed', () => {
+  const R = (o) => { const r = S.lookRange({ locked: true, sinceWide: 15, misses: 0, guess: false, ...o }, P); return `${r.wide} ${r.R}`; };
+  assert.equal(R({ locked: false }), 'true 25');
+  assert.equal(R({}), 'false 4');
+  assert.equal(R({ sinceWide: 301 }), 'true 25');
+  assert.equal(R({ misses: 2 }), 'true 25');
+  assert.equal(R({ locked: false, guess: true }), 'true 240');
+  // F1 TV's F1 Academy, F2, F3 videos: the pre-roll's clock borrowed, no session key
+  const g = { live: false, vod: false, clock: 'preroll', sessionKey: null, locked: false };
+  assert.equal(S.guessed(g), true);
+  for (const o of [{ live: true }, { vod: true }, { clock: 'multiviewer' }, { sessionKey: 9947 }, { locked: true }]) assert.equal(S.guessed({ ...g, ...o }), false, JSON.stringify(o));
+});
+
+test("a look's verdict: sure, and a second that agrees locks it, at their median", () => {
+  const st = { target: null, bias: 0, est: [], quick: null };
+  const look = (val, score, next, edge = false) => ({ val, score, next, edge });
+  let J = S.judge(st, look(50.02, 7.9, 3), 100, P);
+  assert.ok(!J.sure && J.why === 'not sure' && J.o === null);
+  assert.equal(S.judge(st, look(50.02, 12, 7.6), 100, P).sure, false); // (under 1.6× the runner-up)
+  assert.equal(S.judge(st, look(50.02, 12, 7.5, true), 100, P).sure, false); // (at the edge of where it looked)
+  assert.equal(S.judge(st, look(null, 20, 4), 100, P).sure, false); // (not recorded there)
+  J = S.judge(st, look(50.02, 12, 7.5), 100, P);
+  assert.ok(J.sure && J.o === null && J.why === 'waiting for a second match' && J.est.length === 1);
+  st.est = J.est;
+  J = S.judge(st, look(50.2, 13, 5), 115, P); // (0.18 s from it: not the same place)
+  assert.equal(J.o, null);
+  st.est = J.est;
+  J = S.judge(st, look(50.06, 14, 5), 130, P); // (agrees with 50.02, not 50.2)
+  assert.ok(J.o === 50.06 && J.why === 'matched' && J.est.length === 3);
+  // the last few minutes, four at most
+  st.est = [{ at: 0, val: 50 }, { at: 100, val: 50 }, { at: 110, val: 50 }, { at: 120, val: 50 }, { at: 130, val: 50 }];
+  assert.deepEqual(S.judge(st, look(50, 12, 5), 181, P).est.map((e) => e.at), [110, 120, 130, 181]);
+  // a resync asked for: the first sure one will do
+  assert.ok(S.judge({ target: 50, bias: 0, est: [], quick: 1 }, look(51.3, 9, 5), 200, P).o === 51.3);
+  // how far off it's jumped rather than eased
+  assert.equal(S.jumpOver({ quick: true, fresh: false }, P), 0.05);
+  assert.equal(S.jumpOver({ quick: false, fresh: true }, P), 1.5);
+  assert.equal(S.jumpOver({ quick: false, fresh: false }, P), 3);
+});
+
+test("the streamer's latency stepped 4.4 s (2026-11-01, over one race): found far, again soon, jumped there", () => {
+  // locked at 50.00 with a nudge of +0.3 on top (target 50.3); then the stream's sound is 4.4 s later
+  const st = { target: 50.3, bias: 0.3, est: [{ at: 0, val: 50 }, { at: 15, val: 50.01 }], quick: null };
+  let J = S.judge(st, look2(50.03), 30, P);
+  assert.ok(!J.far && J.o === 50.01, JSON.stringify(J)); // (where it is: no news)
+  st.est = J.est;
+  J = S.judge(st, look2(54.4), 45, P);
+  assert.ok(J.far && J.o === null, JSON.stringify(J)); // (far: looked at again soon, widely)
+  st.est = J.est;
+  J = S.judge(st, look2(54.41), 50, P);
+  assert.ok(J.o === 54.41 && J.why === 'matched');
+  const err = J.o + st.bias - 50.3; // (from where it plays: the target)
+  assert.ok(Math.abs(err) > S.jumpOver({ quick: false, fresh: false }, P), 'too big to ease: jumped');
+  function look2(val) { return { val, score: 14, next: 5, edge: false }; }
+});
+
 console.log(`${n} passed`);

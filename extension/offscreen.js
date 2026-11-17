@@ -1256,8 +1256,8 @@ async function sndMeasure(t, vn) {
   // (a replay whose start is only a guess till it's found: F1 TV's F1 Academy, F2, F3 videos, no
   // session of F1's own to anchor them, F1's pre-roll borrowed: ±SND.FAR s. The streamer passes
   // those broadcasts on whole, picture and sound, so their sound is found strongly there)
-  const guess = !pl.live && !S.timeline?.vod && S.clock === 'preroll' && S.content?.sessionKey == null && sn.target == null;
-  const wide = sn.target == null || t - sn.wideAt > SND.REWIDE || sn.miss >= SND.MISSES, R = wide ? (guess ? SND.FAR : SND.WIDE) : SND.NEAR;
+  const guess = FoneSound.guessed({ live: pl.live, vod: !!S.timeline?.vod, clock: S.clock, sessionKey: S.content?.sessionKey, locked: sn.target != null });
+  const { wide, R } = FoneSound.lookRange({ locked: sn.target != null, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
   // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
   // a replay, the delay's mapping at p: it changes at the server's file boundaries)
   const cAt = (p) => {
@@ -1304,25 +1304,23 @@ async function sndMeasure(t, vn) {
       const w = C.wallOf(S.timeline?.pieces, pa + off);
       val = w == null ? null : w - C.eventTime(S.clock, S.content, pa, null, t, { manualBase: S.manualBase });
     }
-    const sure = val != null && res.score >= SND.SCORE && res.score >= SND.NEXT * res.next && !res.edge;
+    // (sure, and agreeing with another of the last few: FoneSound.judge; a resync asked for: the
+    // first sure match will do)
+    const J = FoneSound.judge(sn, { val, score: res.score, next: res.next, edge: res.edge }, t, SND), sure = J.sure;
     sn.last = { at: t, off, val, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, sure, wide };
     const r2 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
     diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, wide, c: r2(ca) });
     sn.state = sn.target != null ? 'locked' : 'listening';
-    if (!sure) { sn.miss++; sn.why = 'not sure'; return; }
+    if (!sure) { sn.miss++; sn.why = J.why; return; }
     // (found well away from where it was: look widely again till that's confirmed, and soon: the
     // commentary is that far off till then)
-    const far = sn.target != null && Math.abs(val + sn.bias - sn.target) > 1;
-    sn.miss = far ? SND.MISSES : 0;
-    if (far) sn.measAt = Math.min(sn.measAt, t - SND.EVERY + SND.SOON);
-    sn.est = [...sn.est.filter((e) => t - e.at < 180), { at: t, val }].slice(-4);
-    const agree = sn.est.filter((e) => Math.abs(e.val - val) <= SND.AGREE);
-    // (resync asked for: the first sure match will do)
-    const quick = sn.quick != null;
-    if (agree.length < 2 && !quick) { sn.why = 'waiting for a second match'; return; }
+    sn.miss = J.far ? SND.MISSES : 0;
+    if (J.far) sn.measAt = Math.min(sn.measAt, t - SND.EVERY + SND.SOON);
+    sn.est = J.est;
+    sn.why = J.why;
+    if (J.o == null) return;
     sn.miss = 0;
-    sn.why = quick ? 'resynced' : 'matched';
-    const o = quick ? val : agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
+    const o = J.o, quick = sn.quick != null;
     const now_ = sndPlace(); // (where it sits now: an easing may have moved it meanwhile)
     if (!now_) return;
     // (live: an offset on the lock, from where the lock is; a replay: the delay that puts it there)
@@ -1334,7 +1332,7 @@ async function sndMeasure(t, vn) {
     if (!sn.carries) { sn.carries = true; try { localStorage.setItem(sndCarriesKey(), String(Date.now())); } catch { /* private mode */ } }
     // found the first time far off (the delay was a guess), or a step too big to ease: there at
     // once (a resync: there at once, unless it's already there)
-    if (Math.abs(err) > (quick ? 0.05 : fresh ? SND.JUMP : SND.JUMP_LATER)) {
+    if (Math.abs(err) > FoneSound.jumpOver({ quick, fresh }, SND)) {
       shiftCommentary(err, true);
       diag('sound', { jump: r2(err), resync: quick || undefined });
     }
