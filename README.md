@@ -366,10 +366,10 @@ that works away from home first (a VPN name, say), the LAN one second. *Test con
 which one answers, the server's version, its channels, whether it has the channel's Bilibili
 room and what its setup leaves out; the extension's version is at the top of the page, with the
 server's once tested (and which to update when they're different releases) and a link to the
-releases. The page also sets the commentary channel, live auto-hold and whether live comes straight
-from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
-a `user:password@`), *Save* says which and why and keeps the server list and which source to use
-(*This computer* or *A fone server*) as they were; the rest of the page is saved.
+releases. The page also sets the commentary channel, live auto-hold and whether live comes
+straight from the streamer's Bilibili room (on by default). With a server line it can't use
+(`ftp://…`, a `user:password@`), *Save* says which and why and keeps the server list and which
+source to use (*This computer* or *A fone server*) as they were; the rest of the page is saved.
 
 ### Updating the server
 
@@ -388,8 +388,8 @@ docker compose up -d           # recreates what changed; the data volume and the
 
 `docker-compose.yml` names its own release's image (`fone:<version>`), so a new checkout runs
 the new server. A `FONE_IMAGE` you set in `.env` stays as it is: bump its version there first
-(or remove it). With the `streamlink` profile, `docker compose up -d --build fone-streamlink` rebuilds its
-recorder from the new checkout too.
+(or remove it). With the `streamlink` profile, `docker compose up -d --build fone-streamlink`
+rebuilds its recorder from the new checkout too.
 
 ## Configure your streamer
 
