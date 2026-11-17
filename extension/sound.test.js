@@ -5,8 +5,8 @@
 require('./sound.js');
 const assert = require('node:assert/strict');
 const S = globalThis.FoneSound;
-let n = 0;
-const test = (name, fn) => { fn(); n++; console.log('ok -', name); };
+let n = 0, chain = Promise.resolve();
+const test = (name, fn) => { chain = chain.then(fn).then(() => { n++; console.log('ok -', name); }); };
 
 const SR = 8000;
 function rng(seed) { return () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32) - 0.5; }
@@ -93,6 +93,32 @@ test('FFT round trip', () => {
   for (let i = 0; i < 64; i++) assert.ok(Math.abs(re[i] - orig[i]) < 1e-9 && Math.abs(im[i]) < 1e-9);
 });
 
+// a ±240 s look (an F1 Academy/F2/F3 video's start only guessed): a stretch at a time, the page let run between
+test('a long look a stretch at a time: the same place as one FFT over all of it, the rest of the page run between', async () => {
+  const sr = SR / 2, D = 211.3; // (where F1 TV's sound is in the stream, s)
+  const LONG = race(300, 41), x = S.decimate(LONG.subarray(100 * SR, 115 * SR), 2);
+  const stream = S.decimate(mix([db(-15), shift(LONG, Math.round((D - 100) * SR))], [1, voice(300, 43)]), 2);
+  const y = stream.subarray(0, 270 * sr), lags = y.length - x.length, k = Math.ceil(lags / (50 * sr)); // (255 s of lags: 6 stretches)
+  let pauses = 0;
+  const all = S.locate(x, y, sr), long = await S.locateLong(x, y, sr, { span: 50, pause: async () => { pauses++; } });
+  assert.ok(Math.abs(all.lag / sr - D) < 0.002 && Math.abs(long.lag - all.lag) < 0.01, `${all.lag / sr} ${long.lag / sr}`);
+  assert.ok(long.score > 8 && long.score > 1.6 * long.next && !long.edge, JSON.stringify(long));
+  assert.equal(pauses, k);
+  // at the end of one stretch (the start of the next's own lags, 2 s on): found whole there, not an edge
+  const at = Math.ceil(lags / k) + 2 * sr, yj = Float32Array.from(y);
+  for (let i = 0; i < x.length; i++) yj[at + i] += 3 * x[i];
+  const j = await S.locateLong(x, yj, sr, { span: 50 });
+  assert.ok(Math.abs(j.lag - at) < 1 && !j.edge, JSON.stringify(j));
+  // the runner-up from another stretch: a fainter copy (a lap shown again) far away
+  const y2 = Float32Array.from(y);
+  for (let i = 0; i < x.length; i++) y2[Math.round(30 * sr) + i] += 0.1 * x[i];
+  const two = await S.locateLong(x, y2, sr, { span: 50 });
+  assert.ok(Math.abs(two.lag / sr - D) < 0.002 && two.next > long.next + 1, `${JSON.stringify(two)} vs ${long.next}`);
+  // short: locate itself
+  const ys = y.subarray(Math.round(190 * sr), Math.round(250 * sr));
+  assert.deepEqual(await S.locateLong(x, ys, sr, { span: 50 }), S.locate(x, ys, sr));
+});
+
 // ---- sync by sound's rules, with the engine's numbers (offscreen.js SND) ----------------------
 const P = { SCORE: 8, NEXT: 1.6, AGREE: 0.08, JUMP: 1.5, JUMP_LATER: 3, NEAR: 4, WIDE: 25, FAR: 240, REWIDE: 300, MISSES: 2 };
 
@@ -152,4 +178,4 @@ test("the streamer's latency stepped 4.4 s (2026-11-01, over one race): found fa
   function look2(val) { return { val, score: 14, next: 5, edge: false }; }
 });
 
-console.log(`${n} passed`);
+chain.then(() => console.log(`${n} passed`), (e) => { console.error(e); process.exit(1); });

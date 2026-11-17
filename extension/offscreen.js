@@ -1174,23 +1174,31 @@ async function streamSound(B, m, d) {
 // media time): fetched (the last few kept), the AAC frames out of the MPEG-TS, decoded the same way.
 // Each segment's frames go where hls.js plays that segment (its start): a hole before it filled
 // with silent frames, an overlap with the one before skipped, so what follows isn't shifted.
+// (SEG_PAR fetched at once; kept, the last used last let go, at least the look's own: a ±SND.FAR
+// look reads ~250 2-s segments, and the next look 15 s on most of them again)
 const SEGS = new Map(); // url -> Promise<ADTS frames [{data, samples, rate}]>
+const SEG_PAR = 4, SEGS_KEEP = 24;
+function serverSeg(url, keep) {
+  let got = SEGS.get(url);
+  if (got) { SEGS.delete(url); SEGS.set(url, got); return got; }
+  got = fetch(url, { signal: AbortSignal.timeout(15000) })
+    .then((r) => { if (!r.ok) throw new Error(`segment: HTTP ${r.status}`); return r.arrayBuffer(); })
+    .then((ab) => FoneDemux.tsAudio(new Uint8Array(ab)).frames.map((x) => ({ data: x.data, samples: x.samples, rate: x.rate })));
+  SEGS.set(url, got);
+  got.catch(() => { if (SEGS.get(url) === got) SEGS.delete(url); });
+  while (SEGS.size > keep) SEGS.delete(SEGS.keys().next().value);
+  return got;
+}
 async function serverSound(frags, m, d) {
   const sel = frags.filter((f) => f.start + f.duration > m && f.start < m + d);
   if (!sel.length) return null;
+  const keep = Math.max(SEGS_KEEP, sel.length + SEG_PAR), segs = [];
   const parts = [];
   let at = null, m0 = null;
-  for (const f of sel) {
-    let got = SEGS.get(f.url);
-    if (!got) {
-      got = fetch(f.url, { signal: AbortSignal.timeout(15000) })
-        .then((r) => { if (!r.ok) throw new Error(`segment: HTTP ${r.status}`); return r.arrayBuffer(); })
-        .then((ab) => FoneDemux.tsAudio(new Uint8Array(ab)).frames.map((x) => ({ data: x.data, samples: x.samples, rate: x.rate })));
-      SEGS.set(f.url, got);
-      got.catch(() => SEGS.delete(f.url));
-      while (SEGS.size > 24) SEGS.delete(SEGS.keys().next().value);
-    }
-    const fr = await got;
+  for (let i = 0; i < sel.length; i++) {
+    const f = sel[i];
+    while (segs.length < Math.min(sel.length, i + SEG_PAR)) segs.push(serverSeg(sel[segs.length].url, keep));
+    const fr = await segs[i];
     if (!fr.length) continue;
     const dur = fr[0].samples / fr[0].rate;
     if (at == null) { at = f.start; m0 = f.start; }
@@ -1293,7 +1301,9 @@ async function sndMeasure(t, vn) {
     if (!got || S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while decoding'; return; }
     const f = wide ? 2 : 1, sr = SND.SR / f;
     const y = FoneSound.decimate(got.y, f), xx = FoneSound.decimate(x, f);
-    const res = FoneSound.locate(xx, y, sr);
+    // (±SND.FAR: a wide look's span at a time, the engine's tick let run between)
+    const res = await FoneSound.locateLong(xx, y, sr, { span: 2 * SND.WIDE, pause: vodBreath });
+    if (S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while looking'; return; }
     if (!res) { sn.why = 'no match computed'; return; }
     if (wide) sn.wideAt = t;
     const off = got.m0 + res.lag / sr - pa; // where F1 TV's sound for picture p is in the stream: p + off

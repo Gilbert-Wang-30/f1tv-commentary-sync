@@ -88,6 +88,28 @@
     return { lag: best + frac, score: (yr[best] - mean) / sd, next: c ? (next - mean) / sd : 0, edge: best === 0 || best === span };
   }
 
+  // locate over a long y a stretch at a time, `span` s of lags each (2 s more, so a peak at one's
+  // end is inside the next), `pause()` awaited between them: one FFT of millions of points (a
+  // ±240 s look: 2^21, ~67 MB, about a second) held up everything else the page does. The best
+  // peak of them all; its runner-up the best of the rest away from it (scores per stretch: each
+  // over its own lags). A y no longer than one stretch: locate itself.
+  async function locateLong(x, y, sr, { span = 50, pause = null, ...o } = {}) {
+    const lags = y.length - x.length, n = Math.round(span * sr), ov = Math.round(2 * sr);
+    if (lags <= n + ov) return locate(x, y, sr, o);
+    const k = Math.ceil(lags / n), step = Math.ceil(lags / k), away = Math.round((o.apart ?? 0.25) * sr);
+    const got = [];
+    for (let a = 0; a < lags; a += step) {
+      const res = locate(x, y.subarray(a, Math.min(lags, a + step + ov) + x.length), sr, o);
+      if (res) got.push({ ...res, lag: a + res.lag, inner: res.edge && a + res.lag > 0 && a + res.lag < lags });
+      if (pause) await pause();
+    }
+    // (a stretch's peak at its own end: the next one's, whole there)
+    const best = got.filter((g) => !g.inner).reduce((b, g) => (!b || g.score > b.score ? g : b), null);
+    if (!best) return null;
+    const next = Math.max(best.next, ...got.filter((g) => Math.abs(g.lag - best.lag) > away).map((g) => g.score));
+    return { lag: best.lag, score: best.score, next, edge: best.edge };
+  }
+
   // Box-filtered decimation by an integer factor (the band that matters is under 3.6 kHz).
   function decimate(x, f) {
     if (f <= 1) return x;
@@ -137,5 +159,5 @@
   // later one's (a step too big to ease: minutes out of sync).
   const jumpOver = ({ quick, fresh }, P) => (quick ? 0.05 : fresh ? P.JUMP : P.JUMP_LATER);
 
-  root.FoneSound = { fft, locate, decimate, rms, pow2, lookRange, guessed, judge, jumpOver };
+  root.FoneSound = { fft, locate, locateLong, decimate, rms, pow2, lookRange, guessed, judge, jumpOver };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
