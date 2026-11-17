@@ -20,7 +20,9 @@ image to run with your own streamer, recorder and storage.
 ### Upgrading
 - **Update the extension before the server.** A 1.0.1 server answers most of its routes (the
   commentary's timeline, F1 TV's lookups, the delays, the stats) only to an extension of 1.0.1
-  or newer; an older one gets 403 there and plays nothing from the server (Security, below).
+  or newer (Security, below). The 0.5.4 extension's reads there get 403, so it plays nothing
+  from the server, and its panel shows only "HTTP 403": it can't show the server's message,
+  which says to update. Its writes (POSTs, which carry the extension's origin) still pass.
 - Scripts and `curl` on those routes send `-H 'X-Fone: 1'` now (`tools/diag.py` does).
 - The README's "Updating the server": `git pull`, a pinned `FONE_IMAGE` bumped, `docker compose
   pull`, `docker compose up -d`.
@@ -35,7 +37,8 @@ image to run with your own streamer, recorder and storage.
   for a local build), and Docker checks its health on `/api/health`.
 - `/api/health`'s `notes`, also on the status page and in the settings' *Test connection*: what
   the setup leaves out (no `FONE_ROOMS`, a recordings or import folder that isn't there, no
-  ffmpeg or tesseract).
+  ffmpeg or tesseract), and an optional service that's on but couldn't start, with why (a bad
+  `FONE_BACKFILL_RECORD` or `FONE_BACKFILL_SKIP` pattern turns backfill off).
 - First run: fone's settings open on install, and **⚙** in the panel opens them (lit while
   nothing is set up). *Test connection* shows the server's version, its channels and whether
   it has the channel's Bilibili room.
@@ -78,7 +81,12 @@ image to run with your own streamer, recorder and storage.
 - fone-streamlink is built by `docker compose up -d` (from cache when nothing changed) and
   skipped by `docker compose pull`, which used to fail on it with that profile on.
 - The server image is built from an exact Python (3.12.16 on Alpine 3.24) and exact package
-  versions (`server/constraints.txt`), so rebuilding a release gives the same server.
+  versions (`server/constraints.txt`), so rebuilding a release gives the same server. The other
+  images `docker-compose.yml` runs are exact versions too, not `latest`: 录播姬
+  `bililive/recorder:2.18.0`, `python:3.12.16-alpine3.24` (fone-ext, the gate, fone-streamlink's
+  base) and `alpine:3.24.4` (the janitor).
+- OpenF1 is asked a second apart (was half a second), and a 429's `Retry-After` is waited out
+  when it's longer than the backoff: OpenF1 rate-limits by address, which a server may share.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
   what it can't use with the reason, and *Save* keeps everything but a bad server list (and
   which source to use, which may depend on it, kept as it was); a first run's server is saved
@@ -108,7 +116,8 @@ image to run with your own streamer, recorder and storage.
   'none' for good; waiting for timing holds no frame slot; readings are worked out again when
   the timing changes; one bad frame or mirror fails alone, downloads are streamed and capped; a
   reading near the moment that can't be had isn't asked for every 20 s; a missing ffmpeg or
-  tesseract is said.
+  tesseract is said. The streamer's clock is read with a margin round it: a leading 3 is no
+  longer read as 1 or 2 (37:59 as 17:59), and a cold replay is placed sooner.
 - Timing: car positions relayed for a session with no capture no longer block its OpenF1
   rebuild; OpenF1 rebuilds are pruned after `FONE_TIMING_KEEP_DAYS` even while F1's archive
   refuses.
@@ -118,6 +127,9 @@ image to run with your own streamer, recorder and storage.
   MultiViewer or OpenF1 answer that isn't the JSON expected is a failed lookup, the cached one
   kept. `PUT /api/sync` takes only a finite delay within a day. Diagnostics keep a numeric `t`
   and a short type, and a day's file stops at 64 MB.
+- Diagnostics: the sound engine's snapshots (up to ~4.4 kB) are kept whole, not cut to their
+  time and type; a line an unclean shutdown left unreadable costs that line, not the rest of
+  its day; files are kept 7 days by their date (it was the last 7 files, which could span weeks).
 
 ### Security
 - Web pages can no longer use the server: every write and every read that starts work or hands
@@ -126,7 +138,15 @@ image to run with your own streamer, recorder and storage.
   (its origin, or no origin and `X-Fone: 1`) or a script sending `X-Fone: 1`
   (`curl -H 'X-Fone: 1' …`), on plain http too; a page's `<img>`, link, form or fetch gets 403.
   CORS allows the extension's origins only. Update the extension before the server: an older
-  one gets 403 on those routes, whose JSON `error` says to update it.
+  one gets 403 on those routes; the answer's JSON `error` says to update it, though the 0.5.4
+  panel shows only "HTTP 403".
+
+### Known issues
+<!-- TODO(release owner): fill this in before the tag, or take the section out (tools/check_version.py
+     refuses a release whose section still has the marker). Each as someone running fone sees it. -->
+- TODO(release owner): sync by sound with F1 TV's sound as fone copies it (the fix on another
+  branch for how that copy is taken): merged before the tag, or listed here; and whatever else
+  the 1.0.1 checks leave open.
 
 ## [0.5.4] - 2026-11-17
 

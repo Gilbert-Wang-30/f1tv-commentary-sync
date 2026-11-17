@@ -113,6 +113,13 @@ class CheckVersion(unittest.TestCase):
         self.assertEqual(cv.check("1.0.1", CHANGELOG, "v1.0.1", dry_run=True)["notes"], "### Added\n- Releases.")
         with self.assertRaisesRegex(cv.Problem, "says nothing"):
             cv.check("0.5.3", CHANGELOG.replace("- Own sound.\n", ""), "v0.5.3")
+        # a TODO left for whoever cuts the release: every push and a dry run go, the tag not
+        todo = CHANGELOG.replace("- The panel dragged anywhere.", "- The panel dragged anywhere.\n- TODO(release owner): known issues")
+        self.assertEqual(cv.check("0.5.4", todo)["version"], "0.5.4")
+        self.assertIn("TODO(release owner)", cv.check("0.5.4", todo, "v0.5.4", dry_run=True)["notes"])
+        for tag in ("v0.5.4", "v0.5.4-rc.1"):
+            with self.assertRaisesRegex(cv.Problem, r"\[0.5.4\] still has a TODO\(release owner\) marker", msg=tag):
+                cv.check("0.5.4", todo, tag)
 
     def test_images_not_older_than_the_version(self):
         compose = "services:\n  fone:\n    image: ${FONE_IMAGE:-ghcr.io/someone/fone:1.0.1}\n"

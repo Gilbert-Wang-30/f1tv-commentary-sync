@@ -36,6 +36,7 @@ TAG = re.compile(r"v(?P<version>(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2})(?P<suffix
 # The released server image a checkout runs by default (and the docs name): one release's own
 IMAGE = re.compile(r"ghcr\.io/[\w.-]+/fone:(\d+\.\d+\.\d+)\b")
 IMAGE_FILES = ("docker-compose.yml", ".env.example", "README.md")
+TODO = "TODO(release owner)"  # in a version's CHANGELOG section: not released until it's gone
 
 
 class Problem(Exception):
@@ -121,6 +122,8 @@ def check(manifest_version: str, changelog: str, tag: str | None = None, dry_run
         if not prerelease and not dry_run and not DATE.match(mine["date"]):
             raise Problem(f"[{mine['name']}] is still '{mine['date'] or 'undated'}': give it the release's date",
                           "CHANGELOG.md")
+        if not dry_run and TODO in mine["body"]:  # (left for whoever cuts the release to fill in)
+            raise Problem(f"[{mine['name']}] still has a {TODO} marker: fill it in or take it out", "CHANGELOG.md")
     return {"version": version, "prerelease": prerelease, "notes": mine["body"]}
 
 

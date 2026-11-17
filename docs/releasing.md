@@ -38,7 +38,8 @@ them up front. The manifest's `version` is therefore exactly `X.Y.Z` when a rele
 1. **On a branch**, bump `version` in `extension/manifest.json`, and the image's version in
    `docker-compose.yml`, `.env.example` and the README's `FONE_IMAGE` row. In CHANGELOG.md, the top
    section becomes `## [X.Y.Z] - YYYY-MM-DD`: what changed for someone running fone, grouped
-   under Added / Changed / Fixed / Security. Check it locally:
+   under Added / Changed / Fixed / Security (and Known issues), with every `TODO(release owner)`
+   marker filled in or taken out. Check it locally:
 
    ```bash
    python3 tools/check_version.py --tag vX.Y.Z
@@ -103,7 +104,7 @@ the tag; nothing has been published until then.
 
 | job | what | fails when |
 |---|---|---|
-| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty or undated; `docker-compose.yml` (or `.env.example`, the README) names an older server image; personal config is committed; the tag isn't on main |
+| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty, undated or still has a `TODO(release owner)` marker (a dry run lets the marker by); `docker-compose.yml` (or `.env.example`, the README) names an older server image; personal config is committed; the tag isn't on main |
 | tests | all of `ci.yml`: syntax of every extension script, the packaging check, the extension, server and recorder tests, ruff, the release-tool tests | any of them |
 | extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS`, kept as the run's artifact | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
 | server image (after the zip) | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built, and only then pushed | the smoke run fails; arm64 doesn't build; the push fails |
