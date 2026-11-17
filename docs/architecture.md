@@ -128,7 +128,9 @@ and the GETs that start work or hand out what viewers did (`/api/f1tv`, `/api/sy
 `/api/timeline`, `/api/timing/session/*`, `/api/timing/content/*`, `/api/vod`, `/api/video`,
 `/api/diag`, anything not listed as open). Those need an `Origin` of `chrome-extension://` or
 `moz-extension://`, or no `Origin` and the header `X-Fone: 1` (the extension sends it on all its
-requests; curl and scripts add it: `curl -H 'X-Fone: 1' …`, as `tools/diag.py` does), else 403.
+requests; curl and scripts add it: `curl -H 'X-Fone: 1' …`, as `tools/diag.py` does), else 403
+with `{"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) or
+send X-Fone: 1"}` (an extension from before 1.0.1 sends no `X-Fone`).
 A web page can send neither: its fetch() carries its own Origin, its `<img>`, `<script>`, links
 and forms can't carry a header, and a fetch() adding one needs a CORS preflight, which is refused.
 CORS allows the extension's origins only (with private-network access), so no page reads the

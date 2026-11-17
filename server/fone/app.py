@@ -13,7 +13,7 @@ from dataclasses import replace
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import config, recordings
@@ -176,6 +176,10 @@ class RefuseWebPages:
 
     EXTENSION = re.compile(EXTENSION_ORIGIN)
     READ = frozenset({"GET", "HEAD"})
+    # (JSON, as every answer: an extension from before 1.0.1 sends no X-Fone and gets this, and
+    # whoever looks at the answer reads what to do rather than a bare 403)
+    REFUSAL = {"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) "
+                        "or send X-Fone: 1"}
     OPEN = re.compile(r"^/(|api/(health|channels|playlist\.m3u8|danmaku|danmaku/status|timing/status|backfill/status"
                       r"|ads/[^/]+|screenclock/[^/]+)|hls/[^/]+/[^/]+)$")
 
@@ -196,8 +200,7 @@ class RefuseWebPages:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and self.gated(scope["method"], scope["path"]) and not self.trusted(dict(scope["headers"])):
-            resp = PlainTextResponse("only the fone extension may ask for this (a script: send the header X-Fone: 1)",
-                                     status_code=403)
+            resp = JSONResponse(self.REFUSAL, status_code=403)
             return await resp(scope, receive, send)
         await self.app(scope, receive, send)
 

@@ -251,6 +251,19 @@ def test_web_pages_can_neither_write_nor_start_work(server):
     assert client.get("/").status_code == 200
 
 
+def test_a_refusal_says_what_to_do(server):
+    """An extension from before 1.0.1 (no X-Fone) on this server: the answer says why, in JSON."""
+    client, _ = server
+    del client.headers["X-Fone"]
+    want = {"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) or send X-Fone: 1"}
+    for r in (client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}),
+              client.get("/api/f1tv/1000011024", headers=EVIL),
+              client.put("/api/sync/123", json={"channel": CHANNEL, "clock": "multiviewer", "delay": 1})):
+        assert r.status_code == 403 and r.headers["content-type"] == "application/json" and r.json() == want
+    r = client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}, headers=EXT)
+    assert r.status_code == 200  # (the rule itself as it was)
+
+
 def test_f1tv_for_a_session_with_no_key_of_its_own(server):
     """F1 Academy, F2, F3: no session key, so the pre-roll of the session's kind, as the
     extension's guess reads it (sessionKey null, anchor preroll: sound.js guessed())."""

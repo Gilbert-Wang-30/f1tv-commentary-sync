@@ -102,7 +102,7 @@ image to run with your own streamer, recorder and storage.
   (its origin, or no origin and `X-Fone: 1`) or a script sending `X-Fone: 1`
   (`curl -H 'X-Fone: 1' …`), on plain http too; a page's `<img>`, link, form or fetch gets 403.
   CORS allows the extension's origins only. Update the extension before the server: an older
-  one gets 403 on those routes.
+  one gets 403 on those routes, whose JSON `error` says to update it.
 
 ## [0.5.4] - 2026-11-17
 
