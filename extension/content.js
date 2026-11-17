@@ -319,6 +319,8 @@
   @keyframes pulse { 50% { opacity: .3; } }
   .name { font-weight: 600; } .text { color: #bbb; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chev { color: #888; }
+  .head .opts { background: none; padding: 0 2px; color: #888; font-size: 13px; } .head .opts:hover { color: #eee; background: none; }
+  .head .opts.on { color: #f5c542; background: rgba(245,197,66,.3); border-radius: 4px; } /* (nothing set up yet) */
   .body { margin-top: 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* nothing widens the card */
   .row { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   .delay { font-variant-numeric: tabular-nums; }
@@ -348,7 +350,7 @@
 </style>
 <div class="wrap">
   <div class="card">
-    <div class="head" id="head"><span class="dot" id="dot"></span><span class="name" id="name">解说</span><span class="text" id="text"></span><span class="chev" id="chev">▾</span></div>
+    <div class="head" id="head"><span class="dot" id="dot"></span><span class="name" id="name">Commentary</span><span class="text" id="text"></span><button class="opts" id="opts" title="fone's settings: the streamer's live URL or your fone server, F1 TV's sound">⚙︎</button><span class="chev" id="chev">▾</span></div>
     <div class="body">
       <div class="hold" id="hold" hidden></div>
       <div class="row"><span class="delay" id="delay">delay –</span></div>
@@ -454,13 +456,15 @@
     // Nothing to play from (no server listed, or no stream to record): say so up front rather
     // than letting the engine report every server as unreachable.
     const local = settings.source === 'local';
-    const s = !local && !settings.servers?.length
-      ? { state: 'error', text: "No server set — open fone's settings (toolbar icon) and enter its URL" }
-      : local && !String(settings.stream || '').trim()
-        ? { state: 'error', text: "No stream set — open fone's settings (toolbar icon) and paste the streamer's live URL" }
+    const unset = !local && !settings.servers?.length ? 'server' : local && !String(settings.stream || '').trim() ? 'stream' : null;
+    const s = unset === 'server'
+      ? { state: 'error', text: "No server set — ⚙ opens fone's settings: enter its URL" }
+      : unset === 'stream'
+        ? { state: 'error', text: "No stream set — ⚙ opens fone's settings: paste the streamer's live URL (or a fone server's)" }
         : status || { state: 'loading', text: 'Connecting…' };
     $('dot').className = `dot ${s.state}`;
-    $('name').textContent = s.channel || '解说';
+    $('opts').classList.toggle('on', !!unset);
+    $('name').textContent = s.channel || 'Commentary';
     let text = s.text || '';
     if (s.state === 'sync' && s.drift != null) text += ` ±${Math.round(Math.abs(s.drift) * 1000)}ms`;
     if (s.sound?.state === 'locked' && (s.state === 'sync' || s.state === 'syncing')) text += ' · by sound';
@@ -683,6 +687,13 @@
   }
 
   $('head').addEventListener('click', () => { if (dragged) { dragged = false; return; } save({ collapsed: !settings.collapsed }); });
+  // ⚙ in the head: fone's settings, opened by the service worker (a content script can't). Its
+  // presses stay its own: no drag, collapse or back-to-the-corner of the head under it.
+  for (const t of ['pointerdown', 'dblclick']) $('opts').addEventListener(t, (e) => e.stopPropagation());
+  $('opts').addEventListener('click', (e) => {
+    e.stopPropagation();
+    try { chrome.runtime.sendMessage({ target: 'background', type: 'open-options' }).catch(() => {}); } catch { /* orphaned */ }
+  });
   root.querySelectorAll('button[data-d]').forEach((b) => b.addEventListener('click', () => nudge(Number(b.dataset.d))));
   $('mute').addEventListener('click', () => save({ muted: !settings.muted }));
   $('relive').addEventListener('click', () => { send({ type: 'relive' }); toast('Re-synced to live'); });
