@@ -5,10 +5,11 @@ tag names it, and the server image is stamped with the tag (FONE_VERSION).
   tools/check_version.py                     every push: the manifest's version is one Chrome
                                              takes, CHANGELOG.md has its section, newest first,
                                              every older one dated
-  tools/check_version.py --tag v1.0.1        a release: the tag is v + the manifest's version
-                                             (a -suffix after it, as in v1.0.1-rc.1, makes a
-                                             pre-release), its section says something and, for
-                                             a release proper, carries its date
+  tools/check_version.py --tag v1.0.1        a release: the tag is vX.Y.Z, the manifest's version,
+                                             or vX.Y.Z-rc.N for a pre-release (nothing else: the
+                                             image's tags are read from it as semver), its
+                                             section says something and, for a release proper,
+                                             carries its date
       --dry-run                              (release.yml run by hand) an undated section will do
       --notes FILE                           writes that section's text, for the release notes
 
@@ -26,7 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HEADING = re.compile(r"^## \[(?P<name>[^\]]+)\](?:\s+-\s+(?P<date>\S.*?))?\s*$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-TAG = re.compile(r"^v(?P<version>\d+(?:\.\d+){0,3})(?P<suffix>-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+# X.Y.Z or X.Y.Z-rc.N: docker/metadata-action reads the image's tags from it as semver, which a
+# fourth number or a leading zero fails (and the image would go out with no tag)
+TAG = re.compile(r"v(?P<version>(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2})(?P<suffix>-rc\.(?:0|[1-9]\d*))?")
 
 
 class Problem(Exception):
@@ -97,9 +100,9 @@ def check(manifest_version: str, changelog: str, tag: str | None = None, dry_run
                           "CHANGELOG.md")
     version, prerelease = manifest_version, False
     if tag is not None:
-        m = TAG.match(tag)
+        m = TAG.fullmatch(tag)
         if not m:
-            raise Problem(f"tag {tag!r} is not v<version>[-suffix], as in v1.0.1 or v1.0.1-rc.1")
+            raise Problem(f"tag {tag!r} is not vX.Y.Z or vX.Y.Z-rc.N, as in v1.0.1 or v1.0.1-rc.1")
         if key(m["version"]) != mv:
             raise Problem(f"tag {tag} is not the manifest's version {manifest_version}: bump "
                           "extension/manifest.json (and CHANGELOG.md) first", "extension/manifest.json")

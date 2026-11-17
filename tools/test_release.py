@@ -91,8 +91,12 @@ class CheckVersion(unittest.TestCase):
         self.assertEqual((r["version"], r["prerelease"], r["notes"]), ("0.5.4", False, "- The panel dragged anywhere."))
         with self.assertRaisesRegex(cv.Problem, "not the manifest's version"):
             cv.check("0.5.4", CHANGELOG, "v1.0.1")
-        with self.assertRaisesRegex(cv.Problem, "is not v<version>"):
-            cv.check("0.5.4", CHANGELOG, "0.5.4")
+        # vX.Y.Z or vX.Y.Z-rc.N only: anything else gives the image no semver tags
+        for bad in ("0.5.4", "v0.5", "v0.5.4.0", "v00.5.4", "v0.5.4-beta", "v0.5.4-rc", "v0.5.4-rc.01", "v0.5.4-rc.1.2",
+                    "v0.5.4+1", "v0.5.4-RC.1"):
+            with self.assertRaisesRegex(cv.Problem, "is not vX.Y.Z or vX.Y.Z-rc.N", msg=bad):
+                cv.check("0.5.4", CHANGELOG, bad)
+        self.assertEqual(cv.check("0.5.4", CHANGELOG, "v0.5.4-rc.0")["prerelease"], True)
         # 1.0.1 still unreleased: a release candidate or a dry run may go, the release proper not
         with self.assertRaisesRegex(cv.Problem, "give it the release's date"):
             cv.check("1.0.1", CHANGELOG, "v1.0.1")

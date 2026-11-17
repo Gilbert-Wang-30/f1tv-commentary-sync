@@ -20,9 +20,13 @@ under it together. The server takes it from the tag at build time (`FONE_VERSION
 the manifest, CHANGELOG.md and the tag in step. CI runs it on every push, and the release runs
 it against the tag.
 
-Chrome's `version` takes only 1-4 numbers. A pre-release tag, `v1.0.1-rc.1`, keeps the
-manifest at `1.0.1`. The zip's manifest then gets `"version_name": "1.0.1-rc.1"`, the image
-is tagged `1.0.1-rc.1` only (no `latest`), and the GitHub Release is marked as a pre-release.
+A release tag is `vX.Y.Z`, or `vX.Y.Z-rc.N` for a pre-release, and nothing else: the image's
+tags are read from it as semver, and a fourth number, a leading zero or another suffix would
+leave the image with no tag halfway through the release, so `check_version.py --tag` refuses
+them up front. The manifest's `version` is therefore `X.Y.Z` when a release is cut (Chrome's
+`version` takes only numbers). A pre-release tag, `v1.0.1-rc.1`, keeps the manifest at
+`1.0.1`. The zip's manifest then gets `"version_name": "1.0.1-rc.1"`, the image is tagged
+`1.0.1-rc.1` only (no `X.Y`, no `latest`), and the GitHub Release is marked as a pre-release.
 
 ## Cutting a release
 
