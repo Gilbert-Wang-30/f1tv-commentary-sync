@@ -114,11 +114,12 @@ Docker containers and volume, the extension and the install paths all go by that
   from a server's recording, once its file stops growing (90 s).
 - **Replays sync themselves** (with a server). MultiViewer publishes where the official `SessionStatus: Started`
   moment falls in each F1 TV replay, and F1's live-timing archive gives its UTC time. Every 2026
-  session anchored this way checks out to under 0.5 s. Until MultiViewer publishes (live, or just
-  after a session), fone uses the replay's fixed pre-roll (307 s for qualifying and races, 250 s
-  for sprints, ~1165 s for practice). The archive has answered 401 to everyone since 2026-10-18:
-  replays the server anchored before then stay exact, and newer ones use the pre-roll estimate
-  while it refuses.
+  session anchored this way checks out to under 0.5 s. The archive has answered 401 to everyone
+  since 2026-10-18: replays the server anchored before then stay exact, and newer ones are dated
+  by the server's own timing of the session (captured live) or by MultiViewer's own start time,
+  as exact. Until MultiViewer publishes (live, or just after a session), fone uses the replay's
+  fixed pre-roll (307 s for qualifying and races, 250 s for sprints, ~1165 s for practice): a
+  few seconds off, and ten minutes off a session that started late.
 - **The streamer's delay is measured, not guessed**, where they show MultiViewer's "Track time"
   clock on screen: the server reads that clock off their stream (tesseract OCR) to measure how
   far behind real time they are, per recording. It reads FLV recordings, with the picture
@@ -886,7 +887,8 @@ CHANGELOG.md           what changed in each version (a release's notes)
   that setting to the session's length (about 1–2 MB of memory a minute). The platforms' web APIs
   aren't documented and change; Douyin's and Huya's especially.
 - F1's live-timing archive has answered 401 to everyone since 2026-10-18. While it refuses,
-  replays the server anchored before then stay exact and newer ones use the pre-roll estimate, a
+  replays the server anchored before then stay exact and newer ones are dated by the server's
+  timing or MultiViewer's start time (the pre-roll estimate only without either), a
   session the server didn't capture live (`FONE_TIMING_RECORD`) gets its stats from OpenF1's
   history instead (half an hour after it ends; a minute or so to build on first ask: a few
   seconds' lag on tyres after a pit stop, and in practice and qualifying "in the pits" from the
