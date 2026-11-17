@@ -186,6 +186,21 @@ def test_sync_channel_default_only_from_comparable_clocks(server):
     assert get("3", "epoch") == {"delay": 0.4, "source": "channel"}
 
 
+def test_sync_takes_only_a_finite_delay(server):
+    """Python's json reads 'Infinity': stored, it was every comparable clock's starting point,
+    and no answer can carry it (500s for the whole channel)."""
+    client, _ = server
+    q = {"channel": CHANNEL, "clock": "multiviewer"}
+    for bad in ("Infinity", "-Infinity", "NaN", "1e9"):
+        r = client.put("/api/sync/123", content=f'{{"channel": "{CHANNEL}", "clock": "multiviewer", "delay": {bad}}}',
+                       headers={"content-type": "application/json"})
+        assert r.status_code == 422, (bad, r.text)
+    assert client.put("/api/sync/123", json={"channel": "x" * 1000, "clock": "multiviewer", "delay": 1}).status_code == 422
+    assert client.get("/api/sync/456", params=q).json() == {"delay": 40.0, "source": "default"}
+    assert client.put("/api/sync/123", json={**q, "delay": -0.25}).status_code == 200
+    assert client.get("/api/sync/456", params=q).json() == {"delay": -0.25, "source": "channel"}
+
+
 EVIL = {"Origin": "https://example.com"}  # a page the viewer happens to visit
 IMG = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"}  # its <img src=…>
 

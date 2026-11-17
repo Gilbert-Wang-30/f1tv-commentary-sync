@@ -14,7 +14,7 @@ from dataclasses import replace
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import config, recordings
 from .extractor import Extractor, FileState, Piece
@@ -25,6 +25,7 @@ from .timeline import MIN_CLIP_SECONDS, MIN_FILL_SECONDS, content_span, mutes as
 log = logging.getLogger("fone")
 VERSION = os.environ.get("FONE_VERSION") or "dev"  # a release's image is stamped with its own
 SEG_RE = re.compile(r"^seg_\d{5}\.ts$")
+MAX_DELAY = 86400.0  # no streamer's delay is further off than this
 # Screen-clock results good enough to beat the channel's calibrated default.
 MEASURED_CONFIDENCE = ("high", "medium")
 
@@ -284,9 +285,9 @@ async def f1tv(cid: str, refresh: bool = False):
 
 
 class SyncBody(BaseModel):
-    channel: str
-    clock: str
-    delay: float
+    channel: str = Field(max_length=200)
+    clock: str = Field(max_length=40)
+    delay: float  # (put_sync checks it: pydantic's own error would echo an Infinity back, unanswerable)
 
 
 @app.get("/api/sync/{cid}")
@@ -305,6 +306,10 @@ async def get_sync(cid: str, channel: str, clock: str):
 
 @app.put("/api/sync/{cid}")
 def put_sync(cid: str, body: SyncBody):
+    # (Python's json reads Infinity and NaN: stored, the channel's every comparable clock would
+    # start from it, and no answer can carry it)
+    if not abs(body.delay) <= MAX_DELAY:
+        raise HTTPException(422, f"delay must be a number of seconds within ±{MAX_DELAY:.0f}")
     store.set_delay(cid, body.channel, body.clock, round(body.delay, 3))
     return {"ok": True}
 
