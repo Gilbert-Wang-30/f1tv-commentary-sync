@@ -251,6 +251,26 @@ def test_web_pages_can_neither_write_nor_start_work(server):
     assert client.get("/").status_code == 200
 
 
+def test_f1tv_for_a_session_with_no_key_of_its_own(server):
+    """F1 Academy, F2, F3: no session key, so the pre-roll of the session's kind, as the
+    extension's guess reads it (sessionKey null, anchor preroll: sound.js guessed())."""
+    import httpx
+
+    import fone.app
+    from fone.f1 import PREROLL
+    from test_f1 import feeder_metadata
+
+    client, _ = server
+    page = feeder_metadata("1000077807", "F1A Reverse Grid Race")
+    fone.app.mapper.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=page) if "f1tv.formula1.com" in str(r.url) else httpx.Response(404)))
+    r = client.get("/api/f1tv/1000077807")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["sessionKey"], out["anchor"], out["kind"], out["isSessionFeed"]) == (None, "preroll", "race", False)
+    assert out["p0"] == out["scheduledStart"] + PREROLL["race"]
+
+
 def test_what_is_open_to_anyone(server):
     import fone.app
 
