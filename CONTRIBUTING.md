@@ -102,7 +102,8 @@ E2E_CONTENT_SEED=seed.json E2E_NO_TIMING=1 ./e2e/run.sh
 e.g. taken from a server's content cache: `1000011024` (the replay, for its `p0`) and
 `1000011022` (the race, which `run.sh` seeds as LIVE; its `anchor` must be `multiviewer`).
 `E2E_NO_TIMING=1` skips the one check that needs the archive's timing data (the dashboard's
-tower).
+tower), and runs the server under test with `FONE_TIMING_OPENF1=0`, so it doesn't rebuild that
+timing from OpenF1 instead (~66 requests a run, to a rate-limited API).
 
 ```bash
 ./e2e/run.sh                  # replay, Tiledmedia, 2x, live, danmaku, onboards (with the seed above)

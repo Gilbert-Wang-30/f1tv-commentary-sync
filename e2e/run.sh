@@ -10,7 +10,8 @@ PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
 # E2E_CONTENT_SEED=<file.json> ({content id: /api/f1tv answer}, e.g. from a server's cache) seeds
 # the fixtures' F1 TV mapping instead of deriving it: F1's live-timing archive, which the exact
 # anchor comes from, has answered 401 to everyone since 2026-10-18. E2E_NO_TIMING=1 skips the one
-# check that needs that archive's timing data (the dashboard's tower).
+# check that needs that archive's timing data (the dashboard's tower), and the server under test
+# doesn't rebuild timing from OpenF1 instead (FONE_TIMING_OPENF1=0: ~66 requests, ~200 MB a run).
 . e2e/image.sh
 IMAGE=$E2E_IMAGE
 # Container/network names: fone-dev-* per docs/architecture.md; override to run in parallel.
@@ -119,9 +120,11 @@ async def main():
 asyncio.run(main())'
 
 docker network create $NET >/dev/null
+OPENF1=1
+if [ "${E2E_NO_TIMING:-}" = 1 ]; then OPENF1=0; fi
 docker run -d $CAP --name $NAME-server --network $NET \
   -v "$WORK/rec":/rec:ro -v "$WORK/data":/data \
-  -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 \
+  -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 -e FONE_TIMING_OPENF1=$OPENF1 \
   -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 -e FONE_DANMAKU_KEEP_DAYS=3650 "$IMAGE" >/dev/null
 
 echo "== starting a live (growing) commentary recording"
