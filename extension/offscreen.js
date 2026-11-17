@@ -1486,8 +1486,10 @@ async function vodBegin(gen) {
     V.reps = reps;
     vodCuts(V, gen);
     reps.forEach(vodClockKept);
-    const kept = vodKept(V);
-    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept', kept.hand);
+    // (the one holding the moment by where it was put before or the clock; else the last put)
+    const E = S.video ? C.eventTime(S.clock, S.content, C.videoNow(S.video, now()).p, null, now(), { manualBase: S.manualBase }) : null;
+    const kept = (E != null && vodHolder(V, E)) || vodKept(V);
+    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, kept.how || 'kept', kept.hand);
     vodSay(V, 'listening', vodListenText(S.snd));
   } catch (e) {
     if (S.vod !== V) return;
@@ -1832,10 +1834,18 @@ async function vodSearch(V, gen, Q, scan = true) {
 // there's F1 TV's sound to look for; between, the likely places checked with each VOD.STEP s more
 // of it), and, placed, again when sync by sound hasn't confirmed it in VOD.CONFIRM looks of its
 // own while hearing F1 TV (playing on meanwhile).
-function vodTick(t, v) {
+// `outside`: placed, the moment off the replay's end or before its start (none other holds it).
+function vodTick(t, v, outside = false) {
   const V = S.vod, sn = S.snd;
   // (none loaded at all: 'error', vodBegin again)
   if (V?.unloaded.length && V.state !== 'error' && !V.loading && t >= V.loadNext) vodLoadMore(V, S.gen).catch(() => null);
+  const E = C.eventTime(S.clock, S.content, C.videoNow(v, t).p, null, t, { manualBase: S.manualBase });
+  // listening (gone to look in the next replay, say), the moment back in one placed before: there again
+  const h = V?.state === 'listening' && !V.busy ? vodHolder(V, E) : null;
+  if (h) {
+    diag('vod', { back: h.rep.bvid, how: h.how });
+    return vodPlace(V, h.rep, h.T0, h.delay, h.how, h.hand);
+  }
   // repeats ahead of the moment playing (from where it plays, after a seek)
   const r = V?.cur, m = S.lastTarget;
   if (V && r && V.state === 'placed' && S.timeline?.vod === r.bvid && m != null && !V.scanning && !(t < r.scanNext)) {
@@ -1847,7 +1857,6 @@ function vodTick(t, v) {
   }
   if (V && V.reps.length && !V.clockBusy && !v.seeking) {
     V.clockBusy = true;
-    const E = C.eventTime(S.clock, S.content, C.videoNow(v, t).p, null, t, { manualBase: S.manualBase });
     vodClockStep(V, S.gen, E).catch(() => null).finally(() => { V.clockBusy = false; });
   }
   if (!V || V.busy || !sn || v.paused || v.seeking || v.waiting) return;
@@ -1855,13 +1864,11 @@ function vodTick(t, v) {
   // (listening: a look whenever there's STEP s more of F1 TV's sound; after a whole plan missed, RETRY s on)
   const due = V.state === 'listening' && (V.tries < VOD.FULL || since >= VOD.RETRY);
   const check = V.state === 'listening' && !due && V.cands.length > 0;
-  if (V.state === 'listening') {
-    const vn = C.videoNow(v, t);
-    vodPrefetch(V, S.gen, C.eventTime(S.clock, S.content, vn.p, null, t, { manualBase: S.manualBase }));
-  }
-  // (placed by the clock: it says where; sync by sound finds the last second near there itself)
-  const unsure = V.state === 'placed' && V.how !== 'clock' && sn.target == null && (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM
-    && sn.state === 'listening' && since >= (V.rechecks ? VOD.AGAIN : 60);
+  if (V.state === 'listening') vodPrefetch(V, S.gen, E);
+  // (placed by the clock: it says where; sync by sound finds the last second near there itself.
+  // The moment outside a place kept from before, no sound looks there: looked at again all the same)
+  const unsure = V.state === 'placed' && V.how !== 'clock' && sn.target == null && since >= (V.rechecks ? VOD.AGAIN : 60)
+    && (outside ? V.how === 'kept' : (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM && sn.state === 'listening');
   if (!due && !unsure && !check) return;
   const Q = vodQuery(V);
   if (!Q.x) { if (Q.why && V.state === 'listening' && (V.tries === 0 || !/^Not found/.test(V.text || ''))) V.text = Q.why; return; }
@@ -1871,18 +1878,21 @@ function vodTick(t, v) {
   vodSearch(V, S.gen, Q, scan).catch((e) => { if (V.state !== 'placed') vodSay(V, 'listening', `${vodWho()}'s Bilibili replay: ${e.message || e}`); })
     .finally(() => { V.busy = false; if (scan) V.lastTryAt = now(); if (V.state === 'searching') V.state = 'listening'; });
 }
-// Off the end (or before the start) of the replay playing: the streamer's next (or previous) one.
-function vodNeighbour(state) {
-  const V = S.vod, i = V?.reps.indexOf(V.cur);
-  if (!V || i < 0) return null;
-  return state === 'after' ? V.reps[i + 1] || null : state === 'before' ? V.reps[i - 1] || null : null;
-}
-function vodSwitch(r) {
-  const V = S.vod, k = vodKeptOf(r);
-  diag('vod', { switch: r.bvid, kept: !!k });
-  if (k) return vodPlace(V, r, k.T0, k.delay, 'kept', k.hand);
-  Object.assign(V, { tries: 0, lastTryAt: null, seen: null, cands: [] });
-  vodSay(V, 'listening', vodListenText(S.snd));
+// The replay that holds event time E by what's known of them (where each was put before, the clock).
+const vodHolder = (V, E) => FoneVod.holder(V.reps, E, vodKeptOf, VOD_CLOCK);
+// Off the end (or before the start) of the replay playing (FoneVod.outside): to the one that
+// holds the moment, or to look for it in the next (previous) one; {gap} between two; else null.
+function vodOutside(V, E, state) {
+  const out = FoneVod.outside(V.reps, V.cur, E, state, vodKeptOf, VOD_CLOCK);
+  if (out?.to) {
+    diag('vod', { switch: out.to.rep.bvid, how: out.to.how });
+    vodPlace(V, out.to.rep, out.to.T0, out.to.delay, out.to.how, out.to.hand);
+  } else if (out?.listen) {
+    diag('vod', { switch: out.listen.bvid, how: null });
+    Object.assign(V, { tries: 0, lastTryAt: null, seen: null, cands: [] });
+    vodSay(V, 'listening', vodListenText(S.snd));
+  }
+  return out;
 }
 // The replay's own danmaku (the live chat on it) from `from` to `to` on its wall clock (the 弹幕
 // overlay's: danmakuClock's, the audio playing): {items (as /api/danmaku's), live: false}.
@@ -2467,12 +2477,14 @@ function tick() {
 
   if (map.state !== 'ok') {
     pauseAudio();
-    // off the end of a Bilibili replay, or before its start: the streamer's next (previous) one
-    const nb = S.timeline.vod ? vodNeighbour(map.state) : null;
-    if (nb) {
-      vodSwitch(nb);
-      return report({ ...base, state: 'syncing', text: `${vodWho()}'s next Bilibili replay…` });
-    }
+    // off the end of a Bilibili replay, or before its start: the streamer's replay that holds it
+    // (the next or previous one, the streamer restarted), or one nothing's known of yet; between
+    // two (off air), how long till the next. The clock and a look again still: a place kept from
+    // before may be the wrong one.
+    const out = S.timeline.vod && S.vod?.state === 'placed' ? vodOutside(S.vod, E, map.state) : null;
+    if (out?.to || out?.listen) return report({ ...base, state: 'syncing', text: `${vodWho()}'s next Bilibili replay…` });
+    if (out?.gap !== undefined) map = { state: 'gap', wait: out.gap ?? map.wait };
+    if (S.timeline.vod && S.vod) vodTick(t, v, true);
     if (map.state === 'after' && (S.local || serverLive())) {
       return report({ ...base, state: 'waiting', text: `Commentary ${Math.ceil(map.past)}s behind` });
     }

@@ -402,6 +402,39 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.keptOn(null, 1000), null);
   });
 
+  await test('the streamer restarted: which replay holds the moment, and never swapping between two in the gap', () => {
+    // two replays of an hour; A put (before, for this video) on the events 950..4550, B on 4950..8550
+    const rep = (bvid) => ({ bvid, pages: [{ page: 1, dur: 3600 }], total: 3600, cuts: [] });
+    const A = rep('BVa'), B = rep('BVb'), reps = [A, B];
+    const K = new Map([[A, { T0: 1000, delay: 50, hand: 0 }], [B, { T0: 5000, delay: 50, hand: 0.5 }]]);
+    const kept = (r) => K.get(r) || null;
+    assert.deepEqual(V.holder(reps, 2000, kept, CK), { rep: A, T0: 1000, delay: 50, hand: 0, how: 'kept' });
+    assert.equal(V.holder(reps, 6000, kept, CK).rep, B);
+    assert.equal(V.holder(reps, 4700, kept, CK), null);
+    // off the end of A, into B: B; before B's start, back into A: A
+    assert.equal(V.outside(reps, A, 6000, 'after', kept, CK).to.rep, B);
+    assert.equal(V.outside(reps, B, 2000, 'before', kept, CK).to.rep, A);
+    // in the gap between them (paused there, or playing through it): stays, 250 s till B
+    assert.deepEqual(V.outside(reps, A, 4700, 'after', kept, CK), { gap: 250 });
+    assert.deepEqual(V.outside(reps, B, 4700, 'before', kept, CK), { gap: null });
+    assert.equal(V.outside(reps, A, 2000, 'after', kept, CK), null); // (A holds it after all: the clock or sound's to fix)
+    // B never placed: looked for there (by sound, or its clock)
+    K.delete(B);
+    assert.deepEqual(V.outside(reps, A, 6000, 'after', kept, CK), { listen: B });
+    assert.equal(V.outside(reps, A, 6000, 'before', kept, CK), null); // (nothing before A)
+    // B's clock read: it holds 4998.5..8598.5 (its reading's T0 5048.5)
+    B.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 5100 }] };
+    assert.deepEqual(V.placeOf(B, 4700, null, CK), { T0: 5048.5, delay: 50 });
+    assert.deepEqual(V.outside(reps, A, 4700, 'after', kept, CK), { gap: 298.5 });
+    assert.deepEqual(V.outside(reps, A, 6000, 'after', kept, CK).to, { rep: B, T0: 5048.5, delay: 50, hand: 0, how: 'clock' });
+    // the clock says which replay, over a place kept for another (a sound match on the wrong one)
+    K.set(A, { T0: 3000, delay: 50, hand: 0 });
+    assert.equal(V.holder(reps, 6000, kept, CK).rep, B);
+    // and where it was put before, to the sample, when it's that one
+    K.set(B, { T0: 5047.9, delay: 50.2, hand: 0 });
+    assert.equal(V.holder(reps, 6000, kept, CK).how, 'kept');
+  });
+
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
     const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
       + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';

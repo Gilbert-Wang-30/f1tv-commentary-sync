@@ -233,6 +233,11 @@
     for (const pg of rep.pages || []) { if (pg.page === page) return off; off += pg.dur; }
     return null;
   }
+  // T0 by one reading (null: not on this replay's pages).
+  function readingT0(rep, rd, { D0, SCREEN }) {
+    const p0 = pageStart(rep, rd.page);
+    return p0 == null ? null : rd.wall + D0 - contentAt(rep, p0 + rd.at) - SCREEN;
+  }
   // The replay that holds event time E by its clock, and where: {r, T0, d (s from the reading)},
   // by the reading nearest E (the streamer's own delay moves now and then). o: {D0, SCREEN}.
   function clockAt(reps, E, { D0, SCREEN }) {
@@ -240,9 +245,8 @@
     for (const r of reps) {
       if (r.clock?.status !== 'ok') continue;
       for (const rd of r.clock.readings || []) {
-        const p0 = pageStart(r, rd.page);
-        if (p0 == null) continue;
-        const T0 = rd.wall + D0 - contentAt(r, p0 + rd.at) - SCREEN;
+        const T0 = readingT0(r, rd, { D0, SCREEN });
+        if (T0 == null) continue;
         const c = E + D0 - T0; // (E's place in this replay's content, by this reading)
         if (c < 0 || c > contentAt(r, r.total)) continue;
         const d = Math.abs(rd.wall - E);
@@ -295,6 +299,54 @@
     if (!k || !Number.isFinite(k.T0) || !Number.isFinite(k.delay)) return null;
     const dp = Number.isFinite(k.p0) && Number.isFinite(p0) ? p0 - k.p0 : 0;
     return { T0: k.T0 + dp, delay: k.delay, hand: Number(k.hand) || 0, at: k.at || 0 };
+  }
+
+  // ---- which of the streamer's replays ---------------------------------------------------------
+  // What's known of where a replay is, for event time E: where it was put before for this video
+  // (kk: keptOn's), else by its clock's reading nearest E, at the delay D0. {T0, delay} or null.
+  function placeOf(rep, E, kk, o) {
+    if (kk) return { T0: kk.T0, delay: kk.delay };
+    let best = null;
+    for (const rd of rep.clock?.status === 'ok' ? rep.clock.readings || [] : []) {
+      const T0 = readingT0(rep, rd, o), d = Math.abs(rd.wall - E);
+      if (T0 != null && !(best && best.d <= d)) best = { T0, delay: o.D0, d };
+    }
+    return best && { T0: best.T0, delay: best.delay };
+  }
+  // E's place in replay rep's content placed so ({T0, delay}): null outside it.
+  const contentOf = (rep, E, p) => { const c = E + p.delay - p.T0; return c >= 0 && c < contentAt(rep, rep.total) ? c : null; };
+  // The replay that holds event time E by what's known: {rep, T0, delay, hand, how ('kept' |
+  // 'clock')} or null. The clock says which replay; where it was put before, to the sample, is
+  // taken when it's that one. kept(rep): keptOn's for it; o: {D0, SCREEN}.
+  function holder(reps, E, kept, o) {
+    const k = clockAt(reps, E, o);
+    if (k) {
+      const kk = kept(k.r);
+      if (kk && contentOf(k.r, E, kk) != null) return { rep: k.r, T0: kk.T0, delay: kk.delay, hand: kk.hand || 0, how: 'kept' };
+      if (contentOf(k.r, E, { T0: k.T0, delay: o.D0 }) != null) return { rep: k.r, T0: k.T0, delay: o.D0, hand: 0, how: 'clock' };
+    }
+    for (const r of reps) {
+      const kk = kept(r);
+      if (kk && contentOf(r, E, kk) != null) return { rep: r, T0: kk.T0, delay: kk.delay, hand: kk.hand || 0, how: 'kept' };
+    }
+    return null;
+  }
+  // The moment off the end of the replay playing (cur), or before its start (`state`, mapWall's):
+  // {to}: the replay that holds it (holder's); {listen: rep}: the next (previous) one, nothing
+  // known of it yet: found by sound or its clock; {gap: s, or null: till cur}: between that one and
+  // this (the streamer off air, or restarting); null: nothing else. Never to one known not to hold
+  // it: each of two replays placed before put the moment in the other, swapped every tick.
+  function outside(reps, cur, E, state, kept, o) {
+    const h = holder(reps, E, kept, o);
+    if (h) return h.rep !== cur ? { to: h } : null;
+    const i = reps.indexOf(cur), nb = i < 0 ? null : state === 'after' ? reps[i + 1] : state === 'before' ? reps[i - 1] : null;
+    if (!nb) return null;
+    const p = placeOf(nb, E, kept(nb), o);
+    if (!p) return { listen: nb };
+    const c = E + p.delay - p.T0; // (the moment on the neighbour's content)
+    if (state === 'after' && c < 0) return { gap: -c };
+    if (state === 'before' && c >= contentAt(nb, nb.total)) return { gap: null };
+    return null;
   }
 
   // An HLS playlist of the replay's sound (fMP4 by byte range: hls.js plays it as it plays a
@@ -586,5 +638,5 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, keptOn };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, keptOn, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
