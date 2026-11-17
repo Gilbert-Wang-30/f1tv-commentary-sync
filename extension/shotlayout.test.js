@@ -1,6 +1,7 @@
 // The streamer's timing screen read from their picture: the table (either layout), its rows, the
-// map's window, the session bar's pieces, and laying pieces out as large as a panel takes them
-// (node shotlayout.test.js). Synthetic screens drawn like theirs (no frame of theirs is kept here).
+// map's window, the session bar's pieces, laying pieces out as large as a panel takes them, and
+// the layout kept look by look (node shotlayout.test.js). Synthetic screens drawn like theirs (no
+// frame of theirs is kept here).
 'use strict';
 require('./shotlayout.js');
 const assert = require('node:assert/strict');
@@ -170,6 +171,43 @@ test('same: two looks at the same layout agree; another layout doesn’t', () =>
   const r = canvas(960, 540);
   tags(r.fill, 4, 74, 15.83, 13, 22, { text: 640 });
   assert.ok(!F.same(a, F.detect(r.img, { cars: 22 })));
+});
+
+// ---- the layout kept look by look (FoneShot.follow, the dashboard's): a new one once two looks
+// agree, a look missing some columns not taken for one, unless it holds ----------------------------
+
+// a look's layout as detect() gives it (what same() compares): the table's kind, rows, pitch, top, columns
+const look = (xs, o = {}) => ({ table: { kind: 'columns', rows: 11, p: 25.2, top: 56, cols: xs.map((x) => ({ x, w: 230 })), ...o } });
+const TWO = [20, 260], ONE = [260];
+const run = (st, looks, o) => looks.reduce((s, d) => F.follow(s, d, o), st);
+
+test('a new layout taken once two looks agree; one look of another scene, not', () => {
+  let st = F.follow({ lay: null, cand: null }, look(TWO));
+  assert.equal(st.lay.table.cols.length, 2); // (the first: taken)
+  st = F.follow(st, look(TWO, { top: 140, rows: 10 })); // (a frame of something else)
+  assert.ok(st.lay.table.top === 56 && st.cand);
+  st = F.follow(st, look(TWO));
+  assert.ok(st.lay.table.top === 56 && !st.cand);
+  st = run(st, [look(TWO, { top: 140, rows: 10 }), look(TWO, { top: 141, rows: 10 })]); // (the streamer changed it)
+  assert.equal(st.lay.table.top, 141);
+});
+
+test('a look missing a column keeps the layout; the same column gone look after look: closed', () => {
+  const st0 = run({ lay: null, cand: null }, [look(TWO), look(TWO)]);
+  // a position just gained: the box green, one column not read this time, then read again
+  let st = run(st0, [look(ONE), look(ONE), look(TWO), look(ONE)]);
+  assert.equal(st.lay.table.cols.length, 2);
+  // misses that aren't the same column each time: never a layout
+  st = run(st0, Array.from({ length: 12 }, (_, i) => look(i % 2 ? ONE : [20])));
+  assert.equal(st.lay.table.cols.length, 2);
+  // the streamer closed the first column: 8 looks (~12 s at one a 1.5 s) and it's the one column
+  st = run(st0, Array.from({ length: 7 }, () => look(ONE)));
+  assert.equal(st.lay.table.cols.length, 2);
+  st = F.follow(st, look(ONE));
+  assert.deepEqual(st.lay.table.cols.map((c) => c.x), [260]);
+  // ...and opened again: taken once two looks agree
+  st = run(st, [look(TWO), look(TWO)]);
+  assert.equal(st.lay.table.cols.length, 2);
 });
 
 console.log(`${n} passed`);
