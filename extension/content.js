@@ -403,7 +403,7 @@
     if (typeof p.l === 'number') { wrap.style.left = `${Math.max(0, Math.min(w - 80, p.l))}px`; wrap.style.right = 'auto'; }
     else { wrap.style.right = `${Math.max(0, Math.min(w - 80, p.r ?? 14))}px`; wrap.style.left = 'auto'; }
   }
-  let drag = null, dragged = false;
+  let drag = null, dragged = 0; // (dragged: when a drag ended, performance.now())
   $('head').addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const r = wrap.getBoundingClientRect();
@@ -420,12 +420,14 @@
     wrap.style.right = 'auto';
     wrap.style.top = `${Math.max(0, Math.min(window.innerHeight - 30, drag.t + dy))}px`;
   });
-  const dragEnd = () => {
+  const dragEnd = (e) => {
     const d = drag;
     drag = null;
     wrap.classList.remove('dragging');
     if (!d?.moved) return;
-    dragged = true; // (the click this ends with doesn't open or close it)
+    // (the click a drag's pointerup ends with doesn't open or close it; a cancelled one ends with
+    // none, and the next click is yours)
+    dragged = e.type === 'pointerup' ? performance.now() : 0;
     const r = wrap.getBoundingClientRect();
     const p = r.left + r.width / 2 < window.innerWidth / 2 ? { l: Math.round(r.left), t: Math.round(r.top) }
       : { r: Math.round(window.innerWidth - r.right), t: Math.round(r.top) };
@@ -682,7 +684,12 @@
     toast(`${d > 0 ? '+' : '−'}${Math.abs(d)} s → commentary ${d > 0 ? 'sooner' : 'later'}${next != null ? ` (delay ${next.toFixed(1)} s)` : ''}`);
   }
 
-  $('head').addEventListener('click', () => { if (dragged) { dragged = false; return; } save({ collapsed: !settings.collapsed }); });
+  $('head').addEventListener('click', () => {
+    const d = dragged;
+    dragged = 0;
+    if (d && performance.now() - d < 500) return; // (a drag's own click: see dragEnd)
+    save({ collapsed: !settings.collapsed });
+  });
   root.querySelectorAll('button[data-d]').forEach((b) => b.addEventListener('click', () => nudge(Number(b.dataset.d))));
   $('mute').addEventListener('click', () => save({ muted: !settings.muted }));
   $('relive').addEventListener('click', () => { send({ type: 'relive' }); toast('Re-synced to live'); });
