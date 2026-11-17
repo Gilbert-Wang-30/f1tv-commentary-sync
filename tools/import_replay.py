@@ -20,7 +20,8 @@ A live recorder sees one continuous stream, so the duplicates are cut out and th
 parts joined. Cut points should sit on video keyframes (the fragment joins do).
 
 What makes the result look like a live 录播姬 recording, as far as fone can tell:
-  * layout and name: <streamer>/<yyyyMMdd-HHmmss-fff Beijing>-<room title>.flv
+  * layout and name: <streamer>/<yyyyMMdd-HHmmss-fff>-<room title>.flv, the time in
+    FONE_FILENAME_TZ (the zone the server reads names in; Asia/Shanghai, 录播姬's, by default)
   * FLV with the stream's H.264 + AAC, timestamps from 0
   * name time = when the recorder connected; mtime = when it wrote the last byte
 It is written under a non-media name and renamed into place only after the mtime is
@@ -36,7 +37,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-SH = ZoneInfo("Asia/Shanghai")
+# The zone file names are written in: the server's (fone/config.py FILENAME_TZ, the same default).
+NAME_TZ = ZoneInfo((os.environ.get("FONE_FILENAME_TZ") or "Asia/Shanghai").strip())
 
 
 def run(*cmd):
@@ -111,7 +113,7 @@ def main(spec_path):
         sys.exit(f"duration check failed: audio {dur:.2f}s, video {vdur:.2f}s, expected {expected:.2f}s")
 
     arrive = spec["content_start_unix"] + spec["arrival_latency_s"]
-    stamp = datetime.fromtimestamp(arrive, SH).strftime("%Y%m%d-%H%M%S-") + f"{int(round(arrive * 1000)) % 1000:03d}"
+    stamp = datetime.fromtimestamp(arrive, NAME_TZ).strftime("%Y%m%d-%H%M%S-") + f"{int(round(arrive * 1000)) % 1000:03d}"
     final = out_dir / f"{stamp}-{spec['title']}.flv"
     staging = final.with_name(final.name + ".part")  # not a media extension: fone ignores it
     run("cp", str(flv), str(staging))

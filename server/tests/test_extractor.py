@@ -357,6 +357,19 @@ def test_zone_offset_tells_a_file_name_zone_from_a_later_touch():
     assert zone_offset(t + 25 * 60, t) is None  # under an hour: a touch, a copy
     assert zone_offset(t + 3 * 3600 + 7 * 60, t) is None  # not a whole quarter-hour
     assert zone_offset(t, t) is None
+    assert zone_offset(t + 3 * 86400 + 30, t) is None  # touched 3 days later: no zone is 72 h off
+
+
+def test_zone_offset_only_for_a_zone_that_exists():
+    from zoneinfo import ZoneInfo
+    sh, t = ZoneInfo("Asia/Shanghai"), 1_790_000_000.0  # (2026-09-21: no DST anywhere it matters)
+    assert zone_offset(t + 8 * 3600, t, sh) == -8.0  # names in UTC
+    assert zone_offset(t + 15 * 3600 + 20, t, sh) == -15.0  # in Los Angeles (UTC-7 in September)
+    assert zone_offset(t + 20 * 3600, t, sh) == -20.0  # UTC-12, the furthest west
+    assert zone_offset(t + 21 * 3600, t, sh) is None  # UTC-13: no such zone, a touch 21 h later
+    assert zone_offset(t - 6 * 3600, t, sh) == 6.0  # UTC+14
+    assert zone_offset(t - 7 * 3600, t, sh) is None  # UTC+15
+    assert zone_offset(t + 26 * 3600, t) == -26.0 and zone_offset(t + 27 * 3600, t) is None  # (no zone given)
 
 
 def test_end_lag_warns_of_a_file_name_zone_mismatch(tmp_path, caplog):
@@ -370,4 +383,8 @@ def test_end_lag_warns_of_a_file_name_zone_mismatch(tmp_path, caplog):
         # The recorder wrote the name in UTC, the server reads it in Asia/Shanghai: the name still
         # wins (a touched mtime is far likelier), but the log says why the file sits 8 h off.
         assert ex._end_lag(r, t + 8 * 3600 + 10, 8) == t
-    assert "-8 h" in caplog.text and "FONE_FILENAME_TZ (Asia/Shanghai)" in caplog.text
+    assert "-8 h" in caplog.text and "in UTC+0" in caplog.text and "FONE_FILENAME_TZ (Asia/Shanghai)" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="fone.extractor"):
+        assert ex._end_lag(r, t + 2 * 86400 + 10, 8) == t  # touched 2 days later: the name, and no zone advice
+    assert not caplog.records
