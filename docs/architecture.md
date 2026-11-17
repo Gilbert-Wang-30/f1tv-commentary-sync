@@ -570,9 +570,12 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   frames as an ADTS file through `OfflineAudioContext.decodeAudioData` at 8 kHz), around where
   the sound was last (or the lock has it): ±25 s until it's found, every 5 min, after two looks
   that missed, and after a sure match more than 1 s from where it was (till that's confirmed);
-  ±4 s otherwise. The stretch looked for is the newest; after a look that missed, every other
-  look an older one of the run (not a silent one), so the look reaches past where it was within
-  what's recorded (the streamer's latency grown past the commentary's lead).
+  ±4 s otherwise. On a replay whose start is only a guess till it's found (F1 TV's F1 Academy, F2
+  and F3 videos: no session of F1's own to anchor them, F1's pre-roll borrowed) the wide look is
+  ±4 min (`SND.FAR`), matched a stretch at a time (`FoneSound.locateLong`). The stretch looked
+  for is the newest; after a look that missed, every other look an older one of the run (not a
+  silent one), so the look reaches past where it was within what's recorded (the streamer's
+  latency grown past the commentary's lead).
   Nothing new heard since the last look: no look (old sound would only confirm old news). GCC-PHAT (both
   spectra whitened, 150–3600 Hz) gives one sharp peak where a quiet copy lines up; its height in
   standard deviations is how sure (`score`: ~4-5 with no copy, 10-30 for one 10-20 dB under the
@@ -583,8 +586,11 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   segment of a Bilibili replay, followed only ~50 s later). **⟳ resync sound** (the Sync row,
   `R`: `{type: 'resync'}`) looks again at once, widely, every `SND.QUICK` (3) s for up to
   `SND.RESYNC_MAX` (90) s, and takes the first sure match (jumped to unless it's within 50 ms);
-  by hand too (found once, then the delay it set is the user's to nudge). A Bilibili replay not
-  placed yet is looked for again. The panel says resyncing / resynced (`sound.resync`).
+  on a ±4 min look, the first two that agree, as any look does (`FoneSound.judge`'s `long`): so
+  long a look is sure on a repeat now and then (0.44 % of them on real replays, 2026-11, scoring
+  14-106, which no score or ratio to the runner-up leaves out), never two agreeing. By hand too
+  (found once, then the delay it set is the user's to nudge). A Bilibili replay not placed yet is
+  looked for again. The panel says resyncing / resynced (`sound.resync`).
 - **Getting there unheard** (`sndSteer`): the lock's offset is brought to the match plus your
   bias by a speed eased off 1× and back: `v` heads for `sign(err)·min(2 %, √(2·0.001·|err|))`,
   changing by at most 0.1 % a second (so it stops right there: 0.6 s took 78 s in the e2e). The
@@ -674,29 +680,52 @@ section):
   playing (`vodClockAt`) gives `T0 = wall + 50 − content(m) − 1.5` (`VOD.SCREEN`: their screen's
   clock runs ~1.5 s ahead of the sound they pass on; 1.2 and 1.7 s on the 2026 Italian GP race),
   the delay at 50 s, and sync by sound then finds the last second near there itself (no looks
-  over the hour). A reading within 4 min of the moment rules: a place off it by more than 15 s
-  (`VOD.TRUST`; sync by sound's own window is ±25 s) is moved there, whatever put it there (a
-  sound match, the place kept from last time); a further one only bounds: off by more than 2 min
-  (`VOD.BOUND`), moved. Sound's own placements must agree with it the same way, and while the
-  server still reads (up to 5 min) sound places only when sure at once: on 2026-11-17 a lap
-  replayed after qualifying matched F1 TV's sound at 13.9 (1.8× anything else) 28 min from
-  where the clock put that moment. Without a server, or a clock on the streamer's screen, by
-  sound alone as follows.
+  over the hour, on an exact anchor: see below for the pre-roll's guess). A reading within 4 min
+  of the moment rules: a place off it by more than 15 s (`VOD.TRUST`; sync by sound's own window
+  is ±25 s) is moved there, whatever put it there (a sound match, the place kept from last time);
+  a further one only bounds: off by more than 2 min (`VOD.BOUND`), moved. Sound's own placements
+  must agree with it the same way, and while the server still reads (up to 5 min) sound places
+  only when sure at once: on 2026-11-17 a lap replayed after qualifying matched F1 TV's sound at
+  13.9 (1.8× anything else) 28 min from where the clock put that moment. Without a server, or a
+  clock on the streamer's screen, by sound alone as follows.
+- **The clock on F1 TV's pre-roll guess.** Their screen tells the event time rightly; F1 TV's is
+  exact on an exact anchor (MultiViewer's: any but the pre-roll's, `FoneVod.anchorGuessed`) but
+  only a guess on the pre-roll's, minutes off now and then (the 2026 Japanese GP race: F1 TV's
+  video began 599 s later than the pre-roll has it), and the clock's place is as far off, for all
+  of the video. So on the guess the clock's place is looked for again as a place by sound is
+  (`FoneVod.recheckDue`, below: sync by sound not finding it near there), over the hour and 20 min
+  more either side (`VOD.WIDER`, `FoneVod.lookWider`: the hour is around F1 TV's event time, as
+  far off; that race's moment lay 50 s past the hour's last stretch). A sure match there that
+  the clock refuses is kept (a likely place marked `sure`) and wins once it's found there again,
+  by another look (`FoneVod.foundAgain`) or by F1 TV's sound heard after it
+  (`FoneVod.checkLikely`): two agreeing, since a lone one is a repeat now and then
+  (`vodOverrule`; not while the server still reads). The clock is then put right by as much
+  (`FoneVod.clockShift`: `dE`, F1 TV's event time that far from the screen's), kept for the video
+  (`vodShift|<cid>`: `{dE, p0}`, moved with `p0` as F1 TV's anchor is refined,
+  `FoneVod.shiftOn`; none on an exact anchor), so it doesn't move the replay back, places the
+  replays after it rightly and asks the server for readings near the screen's own moment
+  (`E − dE`). On an exact anchor none of this: the clock rules as above.
 - **Where this moment is.** Found by sound: the newest 25 s of F1 TV's sound heard (sync by
   sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
   stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
   −2…+3 min of delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
   kept as 16-bit while it looks, the matching a stretch at a time so the rest of fone runs
   between; after five misses, all of each replay, then every eighth look: its stretches past the
-  hour's aren't kept, so the hour's stay). Taken when sure (score ≥ 9.5 and 1.5× anything else
-  anywhere; ≥ 14 and twice: at once): real sync-by-sound matches scored a median of 14
-  (2026-11-11). A look that isn't sure keeps its likeliest places (`FoneVod.keepLikely`: its top
-  three ≥ 7, the eight strongest kept), and each is checked (`FoneVod.checkLikely`) against F1
-  TV's sound heard after it, at least 12 s of it past the sound that found it (that sound would
-  find the same place again, right or not), looked for ±3 s around where the place says it now
-  is: found there again (within 0.3 s, ≥ 6.5) is where this moment is; checked ten times without,
-  let go. Checks run with every 8 s more of F1 TV's sound, between looks too. (The 2026 Italian
-  GP, F1 TV's Track FX against 胡闹P房's replay: the formation lap's look found the place at 11.8
+  hour's aren't kept, so the hour's stay). Every stretch of the hour is looked at before the best
+  is taken (`FoneVod.lookOver`): stopping at the first match sure at once (≥ 14, twice the rest so
+  far) stopped a sweep over real replays on a repeat (F1's music beds, a stretch the streamer
+  showed again) scoring 15-44 in all 7 of its wrong places, the place itself scoring 45-96
+  further on (2026-11: without the stop none wrong, and 0.62 % of looks for sound that isn't
+  there sure, not 0.97 %). A look over all of each replay stops at such a match only once the
+  hour's stretches are done. Taken when sure (score ≥ 9.5 and 1.5× anything else anywhere; ≥ 14
+  and twice when placed already, or while the server still reads the clock): real sync-by-sound
+  matches scored a median of 14 (2026-11-11). A look that isn't sure keeps its likeliest places
+  (`FoneVod.keepLikely`: its top three ≥ 7, the eight strongest kept), and each is checked
+  (`FoneVod.checkLikely`) against F1 TV's sound heard after it, at least 12 s of it past the
+  sound that found it (that sound would find the same place again, right or not), looked for ±3 s
+  around where the place says it now is: found there again (within 0.3 s, ≥ 6.5) is where this
+  moment is; checked ten times without, let go. Checks run with every 8 s more of F1 TV's sound,
+  between looks too. (The 2026 Italian GP, F1 TV's Track FX against 胡闹P房's replay: the formation lap's look found the place at 11.8
   but not sure, a broadcast replay of the start or the like scoring 10 elsewhere; the next minute
   under 7, then 10.9, 13.6, 23.6 at the same place; 6½ min to a place when only two looks in a
   row agreeing counted, and each look after the fifth fetched all 6 h of the replay again.) The
@@ -704,10 +733,13 @@ section):
   stream's nudge bias), `T0 = E + 50 − content(m)`, and sync by sound runs on it as on any replay,
   reading its sound from Bilibili (`vodRead`: segments by one range request, `FoneDemux.mp4Audio`
   to ADTS, decoded at 8 kHz). Where it was put (`T0`, delay) is kept per video and replay
-  (`vodPlace|<cid>|<bvid>`): the next time it starts there at once. Sync by sound not confirming a
-  place in 8 looks of its own (2 min) while hearing F1 TV: looked for again, playing on (then
-  every 10 min). Off the end (or start) of the replay playing: the streamer's next (previous)
-  one, kept or looked for. Placed by sound, the replay carries F1 TV's sound: F1 TV's own is
+  (`vodPlace|<cid>|<bvid>`; F1 TV's guessed anchor put right by sound, `vodShift|<cid>`, above):
+  the next time it starts there at once. Sync by sound not confirming a place in 8 looks of its
+  own (2 min) while hearing F1 TV: looked for again, playing on (then every 10 min;
+  `FoneVod.recheckDue`). That's a place by sound or one kept from before; one the clock made only
+  on F1 TV's pre-roll guess (above), over the hour and 20 min more either side, as a kept one is
+  then. Off the end (or start) of the replay playing: the streamer's next (previous) one, kept or
+  looked for. Placed by sound, the replay carries F1 TV's sound: F1 TV's own is
   turned off at once (`sound.carries`), not only once sync by sound locks (on the 2025 British GP
   its looks scored 5-6 for long stretches against Track FX, then 17-108). A nudge on a replay is
   kept for that replay (`soundBias|vod:<bvid>`), not the channel's: the streamer's setup then may

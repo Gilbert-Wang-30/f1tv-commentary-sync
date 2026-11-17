@@ -158,6 +158,18 @@ test("a look's verdict: sure, and a second that agrees locks it, at their median
   assert.deepEqual(S.judge(st, look(50, 12, 5), 181, P).est.map((e) => e.at), [110, 120, 130, 181]);
   // a resync asked for: the first sure one will do
   assert.ok(S.judge({ target: 50, bias: 0, est: [], quick: 1 }, look(51.3, 9, 5), 200, P).o === 51.3);
+  assert.ok(S.judge({ target: 50, bias: 0, est: [], quick: 1 }, { ...look(51.3, 9, 5), long: false }, 200, P).why === 'resynced');
+  // ...but not on a ±240 s look (a start only guessed): sure on a repeat now and then (13.9-106,
+  // 0.44% of looks), never twice agreeing: two agreeing, as without a resync
+  const rs = { target: null, bias: 0, est: [], quick: 1 }, far = (val, score) => ({ ...look(val, score, 5), long: true });
+  J = S.judge(rs, far(212.4, 106), 200, P);
+  assert.ok(J.sure && J.o === null && J.why === 'waiting for a second match', JSON.stringify(J));
+  rs.est = J.est;
+  J = S.judge(rs, far(-87.9, 30), 203, P); // (the next somewhere else: the first was a repeat)
+  assert.ok(J.sure && J.o === null, JSON.stringify(J));
+  rs.est = J.est;
+  J = S.judge(rs, far(-87.93, 28), 206, P); // (and again there: that's it)
+  assert.ok(J.o === -87.9 && J.why === 'matched', JSON.stringify(J)); // (their median)
   // how far off it's jumped rather than eased
   assert.equal(S.jumpOver({ quick: true, fresh: false }, P), 0.05);
   assert.equal(S.jumpOver({ quick: false, fresh: true }, P), 1.5);

@@ -181,17 +181,20 @@
   // looked for where that place says it is now (`near` s either side). Found there again (within
   // `agree` s, `need` high, and `ratio` over the best elsewhere around it: a stretch of the stream
   // that's like anything has peaks all over it): this moment is there. One checked `drop` times
-  // without is let go.
+  // without is let go. (A hit marked `sure`: a sure match the clock refused, kept as such.)
   function keepLikely(cands, hits, look, L, { weak = 7, top = 3, max = 8 } = {}) {
     const got = [];
     for (const h of [...hits].sort((a, b) => b.score - a.score)) {
       if (h.score < weak || got.length >= top) break;
       if (!got.some((o) => o.rep === h.rep && Math.abs(o.m - h.m) < 1)) got.push(h);
     }
-    for (const h of got) cands.push({ rep: h.rep, m: h.m, score: h.score, look, E: L.E, pa: L.pa, pb: L.pb, run: L.run, fails: 0 });
+    for (const h of got) cands.push({ rep: h.rep, m: h.m, score: h.score, look, E: L.E, pa: L.pa, pb: L.pb, run: L.run, fails: 0, ...(h.sure ? { sure: true } : {}) });
     while (cands.length > max) cands.splice(cands.indexOf(cands.reduce((a, b) => (b.score < a.score ? b : a))), 1);
     return got.length;
   }
+  // A sure match kept (keepLikely's, `sure`) that another puts at the same place: replay rep
+  // placed at T0 (its first sample's wall time, the delay at D0), within `agree` s. Null: none.
+  const foundAgain = (cands, rep, T0, { D0, agree }) => cands.find((c) => c.sure && c.rep === rep && Math.abs(c.E + D0 - contentAt(rep, c.m) - T0) <= agree) || null;
   // L: this look's sound {q (at sr), pa..pb (the picture's), E (the event at pa), run}; read(rep,
   // a, len): the replay's sound over a..a+len at sr {m0, y} (or more of it), null if it can't.
   // {hit: {cand, m (where the fresh sound starts in the replay), E (its event), score, d}, checked}.
@@ -226,6 +229,14 @@
   // clock as a sound match does (T0, the wall time of its first sample, with the delay at D0;
   // SCREEN: their screen's clock runs that far ahead of the sound they pass on). The rules here;
   // asking the server and acting on them: offscreen.js's vodClock*.
+  // dE: F1 TV's own event time that far after the screen's (0: as given). Their screen tells the
+  // event time rightly; F1 TV's is exact on an exact anchor (MultiViewer's), but only a guess on
+  // the pre-roll's (the schedule's), minutes off now and then (the 2026 Japanese GP: 599 s), the
+  // clock's place as far off. Sound puts that right (clockShift).
+
+  // Whether F1 TV's anchor (its event time: the content's `anchor`) is only a guess: the
+  // pre-roll's, or none. Any other is taken as exact (MultiViewer's, and the like).
+  const anchorGuessed = (anchor) => anchor == null || anchor === 'preroll';
 
   // Where page `page` starts on the replay's m axis (null: no such page).
   function pageStart(rep, page) {
@@ -234,40 +245,56 @@
     return null;
   }
   // T0 by one reading (null: not on this replay's pages).
-  function readingT0(rep, rd, { D0, SCREEN }) {
+  function readingT0(rep, rd, { D0, SCREEN, dE = 0 }) {
     const p0 = pageStart(rep, rd.page);
-    return p0 == null ? null : rd.wall + D0 - contentAt(rep, p0 + rd.at) - SCREEN;
+    return p0 == null ? null : rd.wall + dE + D0 - contentAt(rep, p0 + rd.at) - SCREEN;
   }
   // The replay that holds event time E by its clock, and where: {r, T0, d (s from the reading)},
-  // by the reading nearest E (the streamer's own delay moves now and then). o: {D0, SCREEN}.
-  function clockAt(reps, E, { D0, SCREEN }) {
+  // by the reading nearest E (the streamer's own delay moves now and then). o: {D0, SCREEN, dE}.
+  function clockAt(reps, E, { D0, SCREEN, dE = 0 }) {
     let best = null;
     for (const r of reps) {
       if (r.clock?.status !== 'ok') continue;
       for (const rd of r.clock.readings || []) {
-        const T0 = readingT0(r, rd, { D0, SCREEN });
+        const T0 = readingT0(r, rd, { D0, SCREEN, dE });
         if (T0 == null) continue;
         const c = E + D0 - T0; // (E's place in this replay's content, by this reading)
         if (c < 0 || c > contentAt(r, r.total)) continue;
-        const d = Math.abs(rd.wall - E);
+        const d = Math.abs(rd.wall + dE - E);
         if (!best || d < best.d) best = { r, T0, d };
       }
     }
     return best;
   }
+  // The dE (s) that puts replay rep's clock where sound found it (at T0, for event time E): by its
+  // reading nearest E so put right. Null: no reading on it to put it right by. o: {D0, SCREEN}.
+  function clockShift(rep, T0, E, { D0, SCREEN }) {
+    let best = null;
+    for (const rd of rep.clock?.status === 'ok' ? rep.clock.readings || [] : []) {
+      const t0 = readingT0(rep, rd, { D0, SCREEN });
+      if (t0 == null) continue;
+      const dE = T0 - t0, d = Math.abs(rd.wall + dE - E);
+      if (!best || d < best.d) best = { dE, d };
+    }
+    return best ? best.dE : null;
+  }
+  // The dE kept for a video ({dE, p0 (its anchor then)}) on the anchor it has now: moved with p0
+  // as F1 TV's event time is (keptOn's); 0 on an exact one (`guessed` false), or none kept.
+  const shiftOn = (k, p0, guessed) => (!guessed || !Number.isFinite(k?.dE) ? 0
+    : k.dE + (Number.isFinite(k.p0) && Number.isFinite(p0) ? p0 - k.p0 : 0));
   // The clock may still come, `waited` s on: a replay not asked about yet, or being read, for
   // `wait` s at most. (`can` false: it can't be asked, a video with no session key, F1 Academy,
   // F2, F3: nothing to wait for.)
   const clockPending = (reps, waited, { can = true, wait }) => can && waited < wait && reps.some((r) => !r.clock || r.clock.status === 'working');
   // The replays to ask the server about at t: while it reads (every `poll` s), after an error
   // (`retry` s on), and with readings but none within `near` s of E (every `again` s).
-  function clockAsks(reps, E, t, { poll, again, near, retry = 30 }) {
+  function clockAsks(reps, E, t, { poll, again, near, retry = 30, dE = 0 }) {
     return reps.filter((r) => {
       const c = r.clock;
       if (!c || c.status === 'working' || c.more) return t - (c?.askedAt || 0) >= poll;
       if (c.status === 'error') return t - c.askedAt >= retry;
       if (c.status !== 'ok' || E == null) return false;
-      return !(c.readings || []).some((rd) => Math.abs(rd.wall - E) < near) && t - (c.askedAt || 0) >= again;
+      return !(c.readings || []).some((rd) => Math.abs(rd.wall + dE - E) < near) && t - (c.askedAt || 0) >= again;
     });
   }
   // How far replay `rep` placed at T0, playing at `delay`, is from where the clock (k, clockAt's)
@@ -354,11 +381,12 @@
   // it's the same replay, at the same T0, playing within 1 s of the same delay.
   const placeResets = (was, now) => !(was && was.rep === now.rep && Math.abs(was.T0 - now.T0) < 1e-3 && Math.abs(was.delay - now.delay) < 1);
   // Placed, whether to look for the moment over the hour again: not placed by the clock (it says
-  // where) and sync by sound not locked, `since` s since the last look and the placement (`first`
-  // the first time, `again` after); sound's own looks not finding it in `confirm` of them since
-  // (listening), or the moment outside a place kept from before (no sound looks there).
-  function recheckDue({ how, locked, since, rechecks, looks, listening, outside }, { first = 60, again, confirm }) {
-    if (how === 'clock' || locked || !(since >= (rechecks ? again : first))) return false;
+  // where; unless F1 TV's anchor is only a guess, `guessed`: then it's as far off) and sync by
+  // sound not locked, `since` s since the last look and the placement (`first` the first time,
+  // `again` after); sound's own looks not finding it in `confirm` of them since (listening), or
+  // the moment outside a place kept from before (no sound looks there).
+  function recheckDue({ how, locked, since, rechecks, looks, listening, outside, guessed = false }, { first = 60, again, confirm }) {
+    if ((how === 'clock' && !guessed) || locked || !(since >= (rechecks ? again : first))) return false;
     return outside ? how === 'kept' : looks >= confirm && listening;
   }
   // The wait before trying again after a failure: `first` s, twice the last one each time, `max` at most.
@@ -371,7 +399,7 @@
     if (kk) return { T0: kk.T0, delay: kk.delay };
     let best = null;
     for (const rd of rep.clock?.status === 'ok' ? rep.clock.readings || [] : []) {
-      const T0 = readingT0(rep, rd, o), d = Math.abs(rd.wall - E);
+      const T0 = readingT0(rep, rd, o), d = Math.abs(rd.wall + (o.dE || 0) - E);
       if (T0 != null && !(best && best.d <= d)) best = { T0, delay: o.D0, d };
     }
     return best && { T0: best.T0, delay: best.delay };
@@ -440,11 +468,12 @@
   // hold it (it starts in its slot's hour; the commentary dmin..dmax s after the event; a minute
   // for the repeats), or all of it (`full`); nearest a middle guess first. (dmax: the streamer's
   // delay is 40-55 s; 600 let a lap replayed after a session match 10 minutes before the slot)
-  function searchPlan(reps, E, { dmin = -120, dmax = 180, chunk = 200, win = 20, guess = 50, full = false } = {}) {
+  // `wider`: s more either side, E only a guess (lookWider).
+  function searchPlan(reps, E, { dmin = -120, dmax = 180, chunk = 200, win = 20, guess = 50, full = false, wider = 0 } = {}) {
     const out = [];
     for (const r of reps) {
-      const lo = full ? 0 : Math.max(0, E + dmin - (r.slot + 3600) - 60);
-      const hi = full ? r.total : Math.min(r.total, E + dmax - r.slot + 60 + win);
+      const lo = full ? 0 : Math.max(0, E + dmin - wider - (r.slot + 3600) - 60);
+      const hi = full ? r.total : Math.min(r.total, E + dmax + wider - r.slot + 60 + win);
       const mid = E + guess - (r.slot + 1800);
       let off = 0;
       for (let i = 0; i < r.pages.length; i++) {
@@ -458,6 +487,44 @@
       }
     }
     return out.sort((x, y) => x.dist - y.dist);
+  }
+
+  // How much wider a look over the hour is (searchPlan's `wider`, s either side): placed by the
+  // clock on the streamer's screen, or where it was put before (the clock's place, maybe), F1 TV's
+  // anchor only a guess (`guessed`, anchorGuessed's: the pre-roll's), `wider`; else 0. The hour
+  // is around F1 TV's event time, as far off as the guess is, the clock's place with it, and the
+  // moment may lie past the hour's last stretch for all of the video: the 2026 Japanese GP's race
+  // (F1 TV's guess 599 s before the screen's) had it at 3682 s into the replay, the hour's plan
+  // ending at 3632 (and holding it on the screen's event time). A look over all of each replay
+  // would find it, but placed the first is the sixth look again, ~50 min on (offscreen's vodFull).
+  const lookWider = ({ placed, how, guessed }, wider) => (placed && guessed && (how === 'clock' || how === 'kept') ? wider : 0);
+
+  // What a look's hit h stands out from: its own runner-up, or the best of the others (another
+  // replay, or more than 1 s from it).
+  const rivalOf = (hits, h) => Math.max(h.next, 0, ...hits.filter((o) => o !== h && (o.rep !== h.rep || Math.abs(o.m - h.m) > 1)).map((o) => o.score));
+  // One look over a plan (searchPlan's), `par` stretches at once: look(ch) matches one, a hit
+  // {rep, m, score, next} or null (a throw: none, the first error kept). Every stretch of the
+  // hour (hour(ch): all of the hour's own plan) is looked at: stopped at the first match sure at
+  // once (`sure`, `twice` its rival so far), it stopped on a repeat (F1's music beds, a stretch the
+  // streamer showed again) at 15-44 in all 7 wrong places of a sweep over real replays, the place
+  // itself 45-96 further on (2026-11). Past the hour's (a look over all of each replay): stopped
+  // by one. gone(): moved on meanwhile, stopped. {hits, err}.
+  async function lookOver(plan, look, { par = 3, hour = () => true, sure = 14, twice = 2, gone = () => false } = {}) {
+    const hits = [];
+    let k = 0, left = plan.filter(hour).length, stop = false, err = null;
+    const worker = async () => {
+      while (!stop && k < plan.length) {
+        const ch = plan[k++];
+        let h = null;
+        try { h = await look(ch); } catch (e) { err = err || e; }
+        if (gone()) { stop = true; return; }
+        if (hour(ch)) left--;
+        if (h) hits.push(h);
+        if (left <= 0 && hits.some((x) => x.score >= sure && x.score >= twice * rivalOf(hits, x))) stop = true;
+      }
+    };
+    await Promise.all(Array.from({ length: par }, worker));
+    return { hits, err };
   }
 
   // ---- Bilibili ---------------------------------------------------------------------------------
@@ -718,7 +785,7 @@
   }
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
-    playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, checkClock, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
+    playlist, searchPlan, lookWider, rivalOf, lookOver, keepLikely, foundAgain, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
+    pageStart, anchorGuessed, clockAt, clockShift, shiftOn, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, checkClock, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
     placing, placeResets, recheckDue, backoff, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
