@@ -1436,7 +1436,8 @@ function sndSteer(t, v) {
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
   WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
-  CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120 };
+  CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, RELOAD: 60, RELOAD_MAX: 1800 };
+// (RELOAD: a replay that wouldn't load tried again this many s on, twice as long each time to RELOAD_MAX)
 // (the clock on the streamer's screen, read by a fone server: vodClock*. CLOCK_POLL s between asks
 // while it reads, CLOCK_AGAIN for a reading near a new moment; sound waits CLOCK_WAIT s for it
 // (unless sure at once). SCREEN: their screen's clock runs this far ahead of the sound they pass
@@ -1465,7 +1466,7 @@ function vodListenText(sn) {
 }
 async function vodBegin(gen) {
   const V = S.vod = { state: 'finding', text: `Looking for ${vodWho()}'s Bilibili replay of this session…`, reps: [], cur: null,
-    tries: 0, checks: 0, cands: [], chunks: new Map(), busy: false, lastTryAt: null, at: now() };
+    tries: 0, checks: 0, cands: [], chunks: new Map(), busy: false, lastTryAt: null, at: now(), unloaded: [] };
   try {
     const room = /(\d+)\/?$/.exec(S.room)?.[1];
     if (!room) throw new Error('no Bilibili room');
@@ -1476,14 +1477,12 @@ async function vodBegin(gen) {
     const cands = FoneVod.candidates(list, E0, E1);
     diag('vod', { found: cands.map((r) => ({ bvid: r.bvid, slot: r.slot, dur: r.dur })), list: list.length });
     if (!cands.length) return vodSay(V, 'none', `No recording covers this session, nor any Bilibili replay of ${vodWho()}'s`);
-    for (const r of cands) await FoneVod.load(r);
+    const reps = await vodLoad(V, cands);
     if (gen !== S.gen || S.vod !== V) return;
-    V.reps = cands;
+    if (!reps.length) throw V.loadErr;
+    V.reps = reps;
     vodCuts(V, gen);
-    for (const r of vodClockCan() ? cands : []) { // (the clock's readings kept from before: placed by them at once, asked again)
-      const k = FoneVod.store.get(vodClockKey(r));
-      if (k?.readings?.length) r.clock = { status: 'ok', readings: k.readings, askedAt: 0, kept: true };
-    }
+    reps.forEach(vodClockKept);
     const kept = vodKept(V);
     if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept', Number(kept.hand) || 0);
     vodSay(V, 'listening', vodListenText(S.snd));
@@ -1492,6 +1491,39 @@ async function vodBegin(gen) {
     vodSay(V, 'error', `${vodWho()}'s Bilibili replay: ${e.message || e}`);
     V.failedAt = now();
     diag('vod', { err: String(e?.message || e).slice(0, 160) });
+  }
+}
+// The replays that may hold it, each loaded on its own: one that won't (taken down, still being
+// transcoded, its sound not AAC, a 412) doesn't keep the others from being used; it's tried again
+// in a while (vodLoadMore). Those that loaded, by time.
+async function vodLoad(V, cands) {
+  const ok = [];
+  for (const r of cands) {
+    try {
+      await FoneVod.load(r);
+      ok.push(r);
+    } catch (e) {
+      V.unloaded.push(r);
+      V.loadErr = e;
+      diag('vod', { loadErr: r.bvid, err: String(e?.message || e).slice(0, 120) });
+    }
+  }
+  if (V.unloaded.length) V.loadNext = now() + (V.loadWait = VOD.RELOAD);
+  return ok;
+}
+async function vodLoadMore(V, gen) {
+  V.loading = true;
+  const wait = Math.min(VOD.RELOAD_MAX, 2 * (V.loadWait || VOD.RELOAD));
+  try {
+    const got = await vodLoad(V, V.unloaded.splice(0));
+    if (gen !== S.gen || S.vod !== V || !got.length) return;
+    V.reps = [...V.reps, ...got].sort((a, b) => a.slot - b.slot);
+    got.forEach(vodClockKept);
+    diag('vod', { loaded: got.map((r) => r.bvid) });
+    vodCuts(V, gen);
+  } finally {
+    V.loading = false;
+    if (V.unloaded.length) V.loadNext = now() + (V.loadWait = wait);
   }
 }
 function vodStop() {
@@ -1522,8 +1554,9 @@ async function vodRead(r, m, d) {
 // The replays' ~5 s repeats, found once (kept by replay), in the background: the one playing is
 // put on its timeline again with the moment playing where it was.
 async function vodCuts(V, gen) {
-  for (const r of V.reps) {
-    if (r.cutsDone) continue;
+  for (const r of [...V.reps]) {
+    if (r.cutsDone || r.cutting) continue; // (another's looking: a replay loaded later started one)
+    r.cutting = true;
     try {
       const joins = await FoneVod.findCuts(r, (i, t0, t1) => vodFrames(r, i, t0, t1));
       // (with the ones found ahead of playing meanwhile, where they aren't a join's)
@@ -1535,6 +1568,8 @@ async function vodCuts(V, gen) {
     } catch (e) {
       diag('vod', { cutsErr: String(e?.message || e).slice(0, 120) });
       return;
+    } finally {
+      r.cutting = false;
     }
     if (gen !== S.gen || S.vod !== V) return;
     if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
@@ -1788,6 +1823,8 @@ async function vodSearch(V, gen, Q, scan = true) {
 // own while hearing F1 TV (playing on meanwhile).
 function vodTick(t, v) {
   const V = S.vod, sn = S.snd;
+  // (none loaded at all: 'error', vodBegin again)
+  if (V?.unloaded.length && V.state !== 'error' && !V.loading && t >= V.loadNext) vodLoadMore(V, S.gen).catch(() => null);
   // repeats ahead of the moment playing (from where it plays, after a seek)
   const r = V?.cur, m = S.lastTarget;
   if (V && r && V.state === 'placed' && S.timeline?.vod === r.bvid && m != null && !V.scanning) {
@@ -1884,6 +1921,12 @@ const vodClockKey = (r) => `vodClock|${r.bvid}|${S.content?.sessionKey}`;
 const VOD_CLOCK = { D0: VOD.D0, SCREEN: VOD.SCREEN, near: VOD.CLOCK_NEAR, trust: VOD.TRUST, bound: VOD.BOUND };
 // The replay that holds event time E by its clock, and where (T0): {r, T0, d (s from the reading)}.
 const vodClockAt = (V, E) => FoneVod.clockAt(V.reps, E, VOD_CLOCK);
+// The clock's readings kept from before: placed by them at once (asked again all the same).
+function vodClockKept(r) {
+  if (!vodClockCan()) return;
+  const k = FoneVod.store.get(vodClockKey(r));
+  if (k?.readings?.length) r.clock = { status: 'ok', readings: k.readings, askedAt: 0, kept: true };
+}
 // (none to wait for without a session key, F1 Academy, F2, F3: vodClockStep never asks)
 const vodClockCan = () => !!(S.base && S.content?.sessionKey);
 const vodClockPending = (V) => FoneVod.clockPending(V.reps, now() - V.at, { can: vodClockCan(), wait: VOD.CLOCK_WAIT });
