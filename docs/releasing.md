@@ -93,6 +93,41 @@ written by one tag could never be read by the next. Tags therefore only read: th
 from the last dry run on main (`scope=server-multiarch`, written by that run alone). Neither
 is needed: without them the build is slower, not different.
 
+## The server image's pinned versions
+
+`server/Dockerfile` starts from an exact Python image (`python:3.12.16-alpine3.24`) and installs
+the Python packages at the versions in `server/constraints.txt`
+(`pip install -c constraints.txt -r requirements.txt`): `requirements.txt` says what fone needs,
+`constraints.txt` what the image is built with. A rebuild of the same commit gets the same
+Python and packages; only Alpine's own packages (ffmpeg, tesseract) follow Alpine 3.24's fixes.
+A package added to `requirements.txt` installs unpinned until the pins are refreshed.
+
+To move them on (a Python patch release, a fix in a dependency), on a branch:
+
+1. **The base.** The newest `python:3.12.X-alpine3.Y` tag on Docker Hub, on `FROM`. It must be
+   built for both architectures: `docker manifest inspect python:3.12.X-alpine3.Y` lists
+   `amd64` and `arm64`.
+2. **The packages.** Build with no pins and keep what pip chose:
+
+   ```bash
+   cp server/constraints.txt /tmp/pins && grep '^#' /tmp/pins > server/constraints.txt  # its header alone
+   docker build --pull --no-cache -t fone:pins server
+   { grep '^#' /tmp/pins; docker run --rm fone:pins pip freeze; } > server/constraints.txt
+   ```
+
+3. **arm64 finds a wheel for each** (the image has no compiler, and arm64 builds under QEMU):
+
+   ```bash
+   docker run --rm -v "$PWD/server":/s:ro python:3.12.X-alpine3.Y pip download -q -d /tmp/w \
+     --only-binary=:all: --platform musllinux_1_2_aarch64 --platform musllinux_1_1_aarch64 \
+     --python-version 3.12 --implementation cp --abi cp312 -c /s/constraints.txt -r /s/requirements.txt
+   ```
+
+   A package with no aarch64 wheel at the chosen version fails it by name: pin the last version
+   that has one.
+4. **Test** the image the new pins build (the server tests in CONTRIBUTING.md), and the dry run
+   (step 2 of Cutting a release) builds both architectures.
+
 ## When it goes wrong
 
 What has been published depends on the job that failed:

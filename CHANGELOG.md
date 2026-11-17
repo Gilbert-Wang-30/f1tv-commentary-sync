@@ -58,6 +58,8 @@ image to run with your own streamer, recorder and storage.
   `tools/import_replay.py`); an unknown zone is an error, and a name and last write a whole
   number of hours apart are logged as a likely zone mismatch. An empty setting is its default.
 - fone-janitor also runs with the `streamlink` profile.
+- The server image is built from an exact Python (3.12.16 on Alpine 3.24) and exact package
+  versions (`server/constraints.txt`), so rebuilding a release gives the same server.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
   what it can't use with the reason, and saves everything else; a first run's server is saved
   as the source. The panel's name before a channel is known is "Commentary".
