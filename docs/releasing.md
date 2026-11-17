@@ -45,7 +45,9 @@ them up front. The manifest's `version` is therefore `X.Y.Z` when a release is c
    way to know arm64 still builds). It pushes and releases nothing. The run's `extension`
    artifact is the zip: unzip it and load it in Chrome to try the real thing.
 
-3. **Merge** the branch into main (a pull request; CI must pass).
+3. **Merge** the branch into main (a pull request; CI must pass). Optionally run the dry run
+   once more, on main: that is the one run that leaves both architectures' layers in the build
+   cache (see below), so the tag's arm64 build starts warm instead of taking its full time.
 
 4. **Tag main**, and push only the tag:
 
@@ -71,21 +73,40 @@ repository.
 | job | what | fails when |
 |---|---|---|
 | verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `v` + the manifest's version; its CHANGELOG section is empty or undated; personal config is committed; the tag isn't on main |
-| tests | all of `ci.yml`: syntax of every extension script, the packaging check, unit tests, server tests, ruff, the release-tool tests | any of them |
-| extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS` | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
-| server image | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built and pushed | the smoke run fails; arm64 doesn't build |
+| tests | all of `ci.yml`: syntax of every extension script, the packaging check, the extension, server and recorder tests, ruff, the release-tool tests | any of them |
+| extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS`, kept as the run's artifact | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
+| server image (after the zip) | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built, and only then pushed | the smoke run fails; arm64 doesn't build; the push fails |
 | GitHub release | notes from CHANGELOG.md, `gh release create` with the zip and `SHA256SUMS` | the release already exists |
 
-A dry run (Run workflow) does all but the push and the release. It tags the image `dry-run` and
-does not push it.
+The jobs run in that order, and only the last two publish anything: the image job's final build
+pushes `X.Y.Z`, `X.Y` and `latest` (a pre-release: only `X.Y.Z-rc.N`), and the release job makes
+the GitHub Release. A dry run (Run workflow) does all but the push and the release. It tags the
+image `dry-run` and does not push it.
+
+The build cache: GitHub lets a run read only the caches of its own ref and of main, so a cache
+written by one tag could never be read by the next. Tags therefore only read: the amd64 layers
+`ci.yml` caches on main (`scope=server`; tags don't write it), and both architectures' layers
+from the last dry run on main (`scope=server-multiarch`, written by that run alone). Neither
+is needed: without them the build is slower, not different.
 
 ## When it goes wrong
 
-- **Before anything was pushed** (verify, tests or the zip failed): fix on main, move the tag
-  (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`, then tag again).
-- **The image was pushed but the release failed**: re-run the failed job (Actions → the run →
-  Re-run failed jobs). If the release itself must change, `gh release delete vX.Y.Z` and
-  re-run.
+What has been published depends on the job that failed:
+
+- **verify, tests, the extension zip, or the image job before its push** (the smoke run, the
+  arm64 build): nothing was pushed or released. ghcr.io, `latest` included, is as it was. A
+  fluke (a runner or network hiccup): re-run the failed jobs. Code to fix: fix it on a branch,
+  merge, then move the tag to the fixed commit on main
+  (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`, tag main again, push the tag).
+- **The image's push itself** (a network error midway): some of `X.Y.Z`, `X.Y`, `latest` may
+  point at the new image and others not; there is no GitHub Release yet. Re-run the failed jobs
+  (Actions → the run → Re-run failed jobs): the same image is pushed under every tag again.
+- **The GitHub release job** (or the "what was pushed" step): the image is on ghcr.io under
+  `X.Y.Z`, `X.Y` and `latest`, which now point at this version, but there is no Release and so
+  no zip for anyone. Re-run the failed jobs; the release job takes the zip this run already
+  built. If the release itself must change, `gh release delete vX.Y.Z` and re-run.
+  If the code must change instead, it is a new version: don't move the tag (the image is
+  already public under it); release the next patch.
 - **A release went out broken**: don't move its tag, since people have the zip and the image.
   Fix it and release the next patch version.
 
@@ -115,6 +136,16 @@ other:
   tree.
 - An install keeps its ID and settings only while Chrome loads it from the same folder. Moving
   a machine from the share to a release zip, or back, starts its settings over.
+
+## Updating an install from a zip
+
+The release notes say it for each system; the rule behind it: Chrome tells an unpacked
+extension, and keeps its settings, by its folder's path. An update is the new zip extracted into
+the same place, so its `fone` folder replaces the old one's files at the same path (Windows:
+Extract All, browse to the folder that holds `fone`, and replace the files; elsewhere
+`unzip -o … -d <that folder>`), then ↻ on fone's card. Extracted anywhere else, `fone` is a new
+extension with fresh settings. Files an older release had and this one doesn't stay behind,
+unused.
 
 ## Repository settings (once, by the owner)
 

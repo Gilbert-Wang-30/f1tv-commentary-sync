@@ -19,8 +19,10 @@ image to run with your own streamer, recorder and storage.
 
 ### Added
 - GitHub Releases: `fone-extension-<version>.zip` holds one folder, `fone/`, to load unpacked
-  (chrome://extensions → Developer mode → Load unpacked). Unzip the next release over the same
-  folder and click ↻: Chrome keeps the extension and its settings. `SHA256SUMS` beside it.
+  (chrome://extensions → Developer mode → Load unpacked). To update, extract the next zip into
+  the same place, so it replaces the files of that same `fone` folder (Windows: Extract All →
+  the folder that holds `fone` → replace the files), and click ↻: Chrome keeps the extension
+  and its settings while the folder's path stays the same. `SHA256SUMS` beside it.
 - The server image on GitHub's registry, `ghcr.io/gilbert-wang-30/fone:<version>` (and
   `:latest`), for linux/amd64 and linux/arm64. It knows its version (`FONE_VERSION`, shown by
   `/api/health`) and has a Docker health check on `/api/health`.

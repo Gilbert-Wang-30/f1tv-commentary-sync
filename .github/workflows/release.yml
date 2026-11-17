@@ -86,9 +86,10 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # After the zip: nothing goes to ghcr.io unless the extension built too.
   image:
     name: server image
-    needs: [verify, tests]
+    needs: [verify, tests, extension]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -108,7 +109,7 @@ jobs:
           load: true
           tags: fone:smoke
           build-args: FONE_VERSION=${{ env.VERSION }}
-          cache-from: type=gha,scope=server
+          cache-from: type=gha,scope=server   # main's CI (ci.yml): see the build below
       # Started as a stranger would with nothing recorded yet: it must come up, answer
       # /api/health and turn healthy. The services that reach out (F1 timing, backfill,
       # danmaku) stay off.
@@ -154,7 +155,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # arm64 under QEMU: every dependency is an apk package or a musllinux wheel, so nothing
-      # compiles (a dry run is how to find out it still holds).
+      # compiles (a dry run is how to find out it still holds). Both platforms are built before
+      # anything is pushed: a failed arm64 build pushes nothing.
+      # The cache: a run reads only its own ref's and main's, so whatever a tag wrote, the next
+      # tag could never read. Tags only read: amd64 layers from main's CI (scope=server), and both
+      # platforms' from the last dry run on main (scope=server-multiarch), the one run that
+      # writes it. Without that it builds cold, which only takes longer.
       - name: build linux/amd64 and linux/arm64 (pushed for a tag)
         uses: docker/build-push-action@v6
         with:
@@ -166,8 +172,8 @@ jobs:
           build-args: FONE_VERSION=${{ env.VERSION }}
           cache-from: |
             type=gha,scope=server
-            type=gha,scope=server-release
-          cache-to: type=gha,scope=server-release,mode=max
+            type=gha,scope=server-multiarch
+          cache-to: ${{ github.event_name != 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && 'type=gha,scope=server-multiarch,mode=max' || '' }}
       - name: what was pushed
         if: github.event_name == 'push'
         run: docker buildx imagetools inspect "$IMAGE:$VERSION"
@@ -199,18 +205,29 @@ jobs:
 
           ## Install
 
-          **Extension.** Download `fone-extension-@VERSION@.zip` below and unzip it somewhere you'll
-          keep it: it holds one folder, `fone`. In Chrome open `chrome://extensions`, turn on
-          Developer mode, click **Load unpacked** and pick that `fone` folder. fone's settings then
-          ask for your streamer's live URL, or your fone server.
-          To update, unzip the next release over the same folder and click ↻ on fone's card in
-          `chrome://extensions`: Chrome keeps the extension and its settings.
+          **Extension.** Download `fone-extension-@VERSION@.zip` below and extract it into a folder
+          you'll keep (not Downloads): it holds one folder, `fone`. In Chrome open
+          `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick that `fone`
+          folder. fone's settings then ask for your streamer's live URL, or your fone server.
+
+          **Updating.** Chrome tells an unpacked extension, and its settings, by its folder's path.
+          Extract each new zip into the same place, so that its `fone` lands on the old `fone` folder
+          and replaces its files, then click ↻ on fone's card in `chrome://extensions`. A `fone`
+          folder anywhere else is a new extension, with its settings starting over.
+          - Windows: right-click the zip → **Extract All…** → **Browse** to the folder that holds
+            your `fone` (not the new `fone-extension-…` folder it offers) → **Extract**, then
+            **Replace the files in the destination**.
+          - macOS, Linux: `unzip -o fone-extension-@VERSION@.zip -d <the folder that holds fone>`.
+            (Double-clicking the zip on a Mac never replaces a folder: it extracts a new one next
+            to the zip.)
 
           **Server** (optional: replays, stats, 弹幕): `docker pull @IMAGE@:@VERSION@`
           (linux/amd64, linux/arm64). The README covers running it on your recordings with
           `docker compose`.
 
-          Check the download with `sha256sum -c SHA256SUMS`.
+          **Checking the download** against `SHA256SUMS`: `sha256sum -c SHA256SUMS` (Linux),
+          `shasum -a 256 -c SHA256SUMS` (macOS), or on Windows
+          `certutil -hashfile fone-extension-@VERSION@.zip SHA256` and compare the two.
           EOF
           sed -i "s|@VERSION@|$VERSION|g; s|@IMAGE@|$IMAGE|g" notes.md
           flags=()
