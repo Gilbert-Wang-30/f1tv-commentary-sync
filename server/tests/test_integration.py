@@ -269,8 +269,10 @@ def test_sync_priority_manual_measured_channel_default(boot):
 def test_every_service_is_mounted_and_each_can_be_switched_off(boot):
     app, _, imp = boot(start=(), FONE_ROOMS="23954427=胡闹P房")
     with TestClient(app.app) as client:
-        assert client.get("/api/health").json()["services"] == ["ads", "backfill", "danmaku", "screenclock", "timing", "video"]
+        assert client.get("/api/health").json()["services"] == ["ads", "backfill", "danmaku", "screenclock", "timing", "video",
+                                                                "vodclock"]
         assert client.get("/api/ads/nope").json() == {"detail": "unknown file"}
+        assert client.get("/api/vod/clock", params={"bvid": "nope", "key": 1}).status_code == 400
         assert client.get("/api/screenclock/nope").json() == {"detail": "unknown file nope"}
         assert client.get("/api/video/nope/info").status_code == 404
         assert client.get("/api/timing/session/0/state", params={"t": 1}).status_code == 422
@@ -282,9 +284,10 @@ def test_every_service_is_mounted_and_each_can_be_switched_off(boot):
         assert client.get("/api/danmaku/status").json()["rooms"]["23954427"]["channel"] == CHANNEL
         assert client.get("/api/danmaku", params={"channel": CHANNEL, "from": 0, "to": 1}).json()["items"] == []
 
-    app, _, _ = boot(start=(), FONE_VIDEO="0", FONE_ADS="off", FONE_BACKFILL="false", FONE_DANMAKU="0")
+    app, _, _ = boot(start=(), FONE_VIDEO="0", FONE_ADS="off", FONE_BACKFILL="false", FONE_DANMAKU="0", FONE_VODCLOCK="0")
     with TestClient(app.app) as client:
         assert client.get("/api/health").json()["services"] == ["screenclock", "timing"]
+        assert client.get("/api/vod/clock", params={"bvid": "BV1ATbL6dEp9", "key": 1}).status_code == 404
         assert client.get("/api/ads/nope").json() == {"detail": "Not Found"}
         assert client.get("/api/video/nope/info").json() == {"detail": "Not Found"}
         assert client.get("/api/backfill/status").status_code == 404

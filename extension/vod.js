@@ -236,8 +236,9 @@
   // Where to look for F1 TV's sound heard at event time E (its picture's): stretches of `chunk` s
   // (+ win + 2, so a match across two is in one) of each replay's pages, over where the replay may
   // hold it (it starts in its slot's hour; the commentary dmin..dmax s after the event; a minute
-  // for the repeats), or all of it (`full`); nearest a middle guess first.
-  function searchPlan(reps, E, { dmin = -120, dmax = 600, chunk = 200, win = 20, guess = 50, full = false } = {}) {
+  // for the repeats), or all of it (`full`); nearest a middle guess first. (dmax: the streamer's
+  // delay is 40-55 s; 600 let a lap replayed after a session match 10 minutes before the slot)
+  function searchPlan(reps, E, { dmin = -120, dmax = 180, chunk = 200, win = 20, guess = 50, full = false } = {}) {
     const out = [];
     for (const r of reps) {
       const lo = full ? 0 : Math.max(0, E + dmin - (r.slot + 3600) - 60);

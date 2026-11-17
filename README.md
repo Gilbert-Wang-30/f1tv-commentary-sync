@@ -73,10 +73,13 @@ extension and the install paths all go by that name.
 - **Old replays play the streamer's Bilibili replay.** A session your server has nothing for
   (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
   直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
-  session, finds this moment in it by F1 TV's sound (its title only says which hour the stream
-  started in: the first look takes 10-60 s, F1 TV at 1× meanwhile; where the race sound is faint
-  under the streamer's voice no one look is sure, so the likeliest places are checked against the
-  sound F1 TV plays on with, and the first found there again is taken), cuts Bilibili's ~4 s repeats
+  session and this moment in it by the clock on the streamer's screen (your server reads their
+  MultiViewer header off the replay's video, the session and its clock, and the session's timing
+  says when it showed that: placed within ~10-20 s, F1 TV's sound then taking it the last second;
+  without a server, by F1 TV's sound alone: its title only says which hour the stream started in,
+  so the first look takes 10-60 s, F1 TV at 1× meanwhile; where the race sound is faint under the
+  streamer's voice no one look is sure, so the likeliest places are checked against the sound F1
+  TV plays on with, and the first found there again is taken), cuts Bilibili's ~4 s repeats
   every half hour and any other stretch Bilibili's recording has twice (a whole ~5 s segment now
   and then: found a minute ahead of what plays, so it's never heard twice and never puts the
   commentary 5 s late), turns F1 TV's own sound off and keeps it in sync by sound, with the replay's own
@@ -411,7 +414,7 @@ The server reads environment variables (see `docker-compose.yml`):
 | `FONE_DEFAULT_DELAY` | `40` | streamer delay (s) before anything is known |
 | `FONE_REACTION_SECONDS` | `0.9` | the streamer's reaction time, added to the measured screen delay when the panel's *Anticipate reactions* is on |
 | `FONE_SEGMENT_SECONDS` | `2` | HLS segment length |
-| `FONE_TIMING`, `FONE_ADS`, `FONE_SCREENCLOCK`, `FONE_VIDEO`, `FONE_BACKFILL`, `FONE_DANMAKU` | `1` | each optional service; `0` turns it off (`/api/health` lists the running ones) |
+| `FONE_TIMING`, `FONE_ADS`, `FONE_SCREENCLOCK`, `FONE_VIDEO`, `FONE_BACKFILL`, `FONE_DANMAKU`, `FONE_VODCLOCK` | `1` | each optional service; `0` turns it off (`/api/health` lists the running ones) |
 | `FONE_TIMING_RECORD` | `1` | capture live sessions' timing from 15 min before the start (while F1's archive refuses, since 2026-10-18, the stats' best source: the rest is rebuilt from OpenF1) |
 | `FONE_TIMING_OPENF1` | `1` | rebuild the timing of a session the server didn't capture from OpenF1's history (any past session, any year; half an hour after it ends) |
 | `FONE_DANMAKU_CAPTURE`, `FONE_DANMAKU_ARCHIVE` | `1` | the two danmaku sources: our own listening, and danmakus.com for the rest |
@@ -633,10 +636,13 @@ docs/                  architecture, F1 data sources, README images
   history instead (half an hour after it ends; a minute or so to build on first ask: a few
   seconds' lag on tyres after a pit stop, and in practice and qualifying "in the pits" from the
   in-lap's end), and nothing stored is pruned.
-- An old replay from the streamer's Bilibili replays needs F1 TV's sound to be in the stream at
-  the moment you're at: until fone hears it there (the streamer talking over a muted F1 TV, or
-  before their stream began), it says it's still looking and plays nothing. F1 TV's sound
-  should be what the streamer had on (Track FX or English Int.).
+- An old replay from the streamer's Bilibili replays is placed by the clock on their screen only
+  where the session's clock runs (before the session or in a break, by the nearest reading:
+  their delay may have moved since, which sync by sound then corrects) and only if the session's
+  timing is there (your server's, or OpenF1's half an hour after it). Without a server it needs
+  F1 TV's sound to be in the stream at the moment you're at: until fone hears it there (the
+  streamer talking over a muted F1 TV, or before their stream began), it says it's still looking
+  and plays nothing. F1 TV's sound should be what the streamer had on (Track FX or English Int.).
 - Pre- and post-race shows and other non-session videos have no anchor: they play in *manual* mode
   and you line them up by ear.
 - Danmaku from before fone listened (the danmakus.com archive) have no levels, colours or

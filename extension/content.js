@@ -542,7 +542,7 @@
       const looking = (v.state === 'listening' || v.state === 'searching') && v.tries > 0
         ? `looking for this moment: ${v.tries} look${v.tries > 1 ? 's' : ''}${v.likely ? `, ${v.likely === 1 ? 'a likely place' : `${v.likely} likely places`} being checked` : ''}` : null;
       rows.push(['recording', `Bilibili 直播回放${v.bvid ? ` ${v.bvid}` : ''}${v.title ? ` · ${v.title}` : ''}`
-        + ` · ${looking || { placed: v.how === 'kept' ? 'where it was last time' : 'found by sound', finding: 'looking it up', listening: 'listening for F1 TV', searching: 'looking for this moment', none: 'none for this session', error: 'failed' }[v.state] || v.state}`
+        + ` · ${looking || { placed: { kept: 'where it was last time', clock: "found by the clock on the streamer's screen" }[v.how] || 'found by sound', finding: 'looking it up', listening: v.clock === 'working' ? "reading the clock on the streamer's screen" : 'listening for F1 TV', searching: 'looking for this moment', none: 'none for this session', error: 'failed' }[v.state] || v.state}`
         + `${v.cuts != null ? ` · ${v.cuts} repeats cut` : ''}`]);
       rows.push(['server', `${s.server || '–'} (nothing recorded for this session)`]);
     } else {
