@@ -253,7 +253,10 @@ shows data for `E`, and the danmaku appear at their send time on the `W` clock.
 3. fone's settings open by themselves. Chrome tucks a new extension's icon under the puzzle piece
    in its toolbar: pin fone there to get back to them, or use **⚙** in fone's panel on F1 TV.
 
-**Updating:** unzip the new release over the same folder, then click ↻ on fone's card in
+**Updating:** extract the new zip into the folder that holds your `fone` folder, so its `fone`
+replaces the old one's files (Windows: *Extract All…* → *Browse* to that folder, not the
+`fone-extension-…` one it offers → *Replace the files in the destination*; macOS, Linux:
+`unzip -o fone-extension-<version>.zip -d <that folder>`), then click ↻ on fone's card in
 `chrome://extensions`. The same folder keeps the same extension, and with it your settings (a
 copy loaded from another folder is another extension, starting from scratch). A release
 install doesn't update itself: the repository's releases page says when there's a new one.
@@ -318,9 +321,9 @@ than being created empty. `.env.example` says what each setting does; the
 [Configuration](#configuration) tables list them all.
 
 The status page is at `http://<host>:8788/`. The server keeps everything it computes in the
-`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. Its log
-(`docker logs fone`) says at start what the configuration leaves out (no Bilibili room, a
-missing folder). A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
+`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. What the
+configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
+(`docker logs fone`), on the status page and in the settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
 then `docker compose build fone`.
 
 ### 2. A recorder: configure your streamer
@@ -335,8 +338,8 @@ you already run.
 In fone's settings choose **A fone server** and enter its address, `http://<host>:8788`
 (`192.168.1.20` or `my-server:8788` is read as that), one per line, tried in order: an address
 that works away from home first (a VPN name, say), the LAN one second. *Test connection* shows
-which one answers, the server's version, its channels and whether it has the channel's Bilibili
-room. The page also sets the commentary channel, live auto-hold and whether live comes straight
+which one answers, the server's version, its channels, whether it has the channel's Bilibili
+room and what its setup leaves out. The page also sets the commentary channel, live auto-hold and whether live comes straight
 from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
 a `user:password@`), *Save* says which and why and keeps the server list as it was; the rest of
 the page is saved.
@@ -589,12 +592,16 @@ FLV recordings only, and `fone-streamlink` writes MPEG-TS, by default audio only
 
 ## Server API
 
-The status page, health, channels, the commentary audio, 弹幕, sponsor clips and screen clock
-are open to anything on the LAN. Writes, and the reads that start work or hand out what viewers
-played (`/api/timeline`, `/api/f1tv`, `/api/sync`, `/api/timing/session/…`,
-`/api/timing/content/…`, `/api/video/…`, `/api/vod/…` and `GET /api/diag`), answer only the
-extension or a client that sends the `X-Fone` header (curl, fone's `tools/`); a web page is
-refused ([Privacy and security](#privacy-and-security)).
+Open to anything that can reach the port: the status page (`/`), `/api/health`,
+`/api/channels`, the commentary audio (`/api/playlist.m3u8`, `/hls/…`), 弹幕 (`/api/danmaku`),
+sponsor clips (`/api/ads/…`), the screen clock (`/api/screenclock/…`) and the services' status
+(`/api/timing/status`, `/api/danmaku/status`, `/api/backfill/status`). Everything else, the
+writes and the reads that start work or hand out what viewers played (`/api/timeline`,
+`/api/f1tv`, `/api/sync`, `/api/timing/session/…`, `/api/timing/content/…`, `/api/video/…`,
+`/api/vod/…`, `GET /api/diag`), answers only the extension (its `chrome-extension://` origin,
+or no origin and the header `X-Fone: 1`, which it sends on every request) or a script that sends
+no origin and `X-Fone: 1` (`curl -H 'X-Fone: 1' …`; `tools/diag.py` sends it). Anything else
+gets 403, a web page included ([Privacy and security](#privacy-and-security)).
 
 | | |
 |---|---|
@@ -653,9 +660,11 @@ DASH=real ./e2e/layout_run.sh # the split view on a mock F1 TV page
 ```
 
 The server tests that need a real recording (the 2026-10-03 KL qualifying, 胡闹P房's, not in the
-repository) skip without it: `FONE_TEST_KL_FLV=<path>` (ads, video) and `FONE_KL_FLV=<path>`
-(screen clock) point them at a copy mounted into the container, and `FONE_LIVE_TEST=1` lets one
-test connect to the real live-timing feed. `e2e/livepos/run.sh` runs on an internal Docker network (no traffic to F1 or Bilibili);
+repository) skip without it. They find it under a recordings folder mounted at `/rec`
+(`-v <recordings>:/rec:ro`), or `FONE_TEST_KL_FLV=<path>` (ads, video, backfill's start) and
+`FONE_KL_FLV=<path>` (screen clock) point them at a copy mounted into the container;
+`FONE_TEST_KL_REPLAY=<folder>` is that session's Bilibili replay download (`p1`/`p2_audio.m4a`,
+backfill). `FONE_LIVE_TEST=1` lets one test connect to the real live-timing feed. `e2e/livepos/run.sh` runs on an internal Docker network (no traffic to F1 or Bilibili);
 `LIVEPOS_ONLY=node|chrome|ext` runs one of its three phases. `e2e/run.sh` looks up real F1 TV
 and MultiViewer data, so it needs internet access. F1's live-timing archive, where the exact
 replay anchor and the timing come from, has refused everyone (401) since 2026-10-18, so run it
@@ -758,13 +767,17 @@ CHANGELOG.md           what changed in each version (a release's notes)
 
 - **The server has no login.** Anything that can reach port 8788 can read its open routes, so
   keep it on your LAN or a private network (a VPN such as Tailscale), never open to the
-  internet. A web page you visit is refused everything that changes or starts something: the
-  writes (`PUT /api/sync`, the `POST` routes) and the reads that start work (a Bilibili replay's
-  frames downloaded and read, an OpenF1 rebuild, old recordings extracted, F1 TV looked up) or
-  hand out every viewer's playback history (`GET /api/diag`), whether it asks by `fetch` or
-  with an `<img>`, a `<script>`, a link or a form. Those answer only the extension (its
-  `chrome-extension://` origin) or a client that sends the `X-Fone` header (curl, fone's
-  `tools/`): a page can't re-tune delays, start downloads or read what you watched.
+  internet. A web page you visit is refused everything but the open reads
+  ([Server API](#server-api)): the writes (`PUT /api/sync`, the `POST` routes) and the reads
+  that start work (a Bilibili replay's frames downloaded and read, an OpenF1 rebuild, old
+  recordings extracted, F1 TV looked up) or hand out every viewer's playback history
+  (`GET /api/diag`), whether it asks by `fetch` or with an `<img>`, a `<script>`, a link or a
+  form. Those answer only the extension (its `chrome-extension://` origin, or no origin and the
+  header `X-Fone: 1`) or a script that sends `X-Fone: 1` (`curl -H 'X-Fone: 1' …`;
+  `tools/diag.py` sends it). A page's fetch carries its own origin, its `<img>`, link or form
+  can't carry a header, and a fetch adding one needs a CORS preflight, which is refused: a page
+  can't re-tune delays, start downloads or read what you watched. CORS allows the extension's
+  origins only, so a page's script can't read the open routes' answers either.
 - **Your F1 TV login stays in the browser.** The extension reads it there to connect to F1's live
   timing for car positions; only the positions go to the fone server.
 - **Bilibili is listened to logged out.** Bilibili masks nicknames for that; the overlay never
@@ -773,8 +786,8 @@ CHANGELOG.md           what changed in each version (a release's notes)
   files carry), not the uid.
 - **Diagnostics are playback state** (positions, speeds, drift, seeks, the player's SDK calls and
   errors) and the engine's status text, plus a random client id, the build and the OS name, so
-  two browsers can be told apart. No tokens, no cookies, no URLs. The extension and clients
-  on the network that send the `X-Fone` header can read them (`GET /api/diag`, `tools/diag.py`);
+  two browsers can be told apart. No tokens, no cookies, no URLs. The extension and scripts on
+  the network that send `X-Fone: 1` can read them (`GET /api/diag`; `tools/diag.py` sends it);
   web pages can't. Each day's file stops at 64 MB.
 - **The stream recorded in the browser** stays in the offscreen document's memory and is gone
   when Chrome closes. The audio goes nowhere. With a server listed in the settings, that server
