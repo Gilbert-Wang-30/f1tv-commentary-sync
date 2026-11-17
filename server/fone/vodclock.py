@@ -315,22 +315,27 @@ def _ocr(img: np.ndarray, box: Box, scale: int, whitelist: str | None, margin: b
     big = sm.upscale(sm.crop(img, sm.tighten(img, box)), scale)
     if margin:
         # (white round the text: cut tight to it, tesseract drops or misreads an edge's digit, a
-        # leading '3' most of all. 225 header crops of 8 replays: the clock read right 78% -> 90%,
-        # wrong 13 -> 2, 30:00-39:59 wrong 9 -> 0; laps right 90 -> 141 of 146)
+        # leading '3' most of all. 225 header crops of 8 replays' 1080p frames, read with it alone
+        # as read_with reads them: the clock right 78% -> 90%, wrong 13 -> 2, 30:00-39:59 wrong
+        # 9 -> 0; laps right 90 -> 141 of 146)
         big = np.pad(big, 6 * scale, constant_values=255)
     args = ["--psm", "7"] + (["-c", f"tessedit_char_whitelist={whitelist}"] if whitelist else [])
     return sm.tesseract(sm.pgm(big), *args).strip()
 
 
 def read_with(img: np.ndarray, hd: Header) -> tuple[str, int | None, tuple[int, int] | None, str]:
-    """The header `hd` found: (session, clock s, lap, text), its clock and lap read again closely:
-    with a margin, and without one where that reads nothing (tesseract finds no text at all in a
-    1440p header's bold digits with one; the 20 of the 225 crops it left unread: 14 right, 4 wrong)."""
+    """The header `hd` found: (session, clock s, lap, text), its clock and lap read again closely,
+    with a margin round them (_ocr). A frame taller than 1080 lines is read again without one
+    where that reads nothing: tesseract finds no text at all in a 1440p header's bold digits with
+    one. The service's own frames are 1080p at most (_video) and get no second read: on the 225
+    crops, the 20 the margin left unread read 14 right and 4 wrong without it, 3 of those a
+    leading digit (34:48 as 24:48, 35:59 as 45:59), the misreads the margin is there to remove."""
     session = hd.session
     sizes = (hd.scale, hd.scale + 1, hd.scale + 2)
+    margins = (True, False) if img.shape[0] > 1080 else (True,)
     # (read at three sizes, the most of them wins: one may drop a digit, '5:39' for '55:39')
     reads: list[tuple[str, int]] = []
-    for margin in (True, False):
+    for margin in margins:
         reads = [(raw, v) for sc in sizes if (v := parse_clock(raw := _ocr(img, hd.clock, sc, "0123456789:", margin))) is not None]
         if reads:
             break
@@ -341,7 +346,7 @@ def read_with(img: np.ndarray, hd: Header) -> tuple[str, int | None, tuple[int, 
         raw = next(r for r, v in reads if v == shown)
     lap = None
     if hd.lap:  # ('N/M' read the same at two of three sizes, else none: it only rules readings out)
-        for margin in (True, False):
+        for margin in margins:
             laps = [(int(m[1]), int(m[2])) for sc in sizes
                     if (m := re.fullmatch(r"(\d{1,2})/(\d{2})", _ocr(img, hd.lap, sc, "0123456789/", margin))) and int(m[1]) <= int(m[2])]
             lap = max(laps, key=laps.count) if laps and laps.count(max(laps, key=laps.count)) >= 2 else None
