@@ -866,6 +866,27 @@ class TimingService:
         return f"timing archive unavailable ({last.result})"
 
     # ---- queries
+    def started(self, key: int) -> float | None:
+        """UTC of the session's first SessionStatus Started in what's stored for it (a live
+        capture, the archive's copy or an OpenF1 rebuild): f1.py's replay anchor. None without
+        one, or when the stream opens on Started: a capture that connected after the start
+        dates it by when it connected."""
+        meta = self.store.meta(key) or {}
+        if meta.get("t0") is None or meta.get("source") == RELAY:
+            return None
+        try:
+            lines = read_stream(self.store.dir(key) / "SessionStatus.jsonStream")
+        except OSError:
+            return None
+        for i, (off, raw) in enumerate(lines):
+            try:
+                status = json.loads(raw).get("Status")
+            except (ValueError, AttributeError):
+                continue
+            if status == "Started":
+                return None if i == 0 else float(meta["t0"]) + off
+        return None
+
     def state(self, key: int, t: float) -> dict:
         tl = self.timeline(key)
         if tl is None:

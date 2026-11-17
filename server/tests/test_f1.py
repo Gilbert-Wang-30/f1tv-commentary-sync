@@ -7,6 +7,7 @@ import httpx
 
 from fone.f1 import PREROLL, F1Mapper, session_kind
 from fone.store import Store
+from test_timing import make_service
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -246,3 +247,232 @@ def test_a_feeder_video_that_isnt_a_session_has_no_anchor(tmp_path):
     out = asyncio.run(m.content("1000078525"))
     assert out["sessionKey"] is None and out["kind"] is None and out["anchor"] is None and out["p0"] is None
     assert asked == []
+
+
+# ---- exact anchors without F1's archive (401 to everyone since 2026-10-18) ----------------------
+
+Q_CID = "1000011024"
+Q_STARTED = ts("2026-10-03T08:00:00.172")  # Q1 green: the archive's StatusSeries (sessiondata fixture)
+Q_SSV = 307.04  # MultiViewer's session_start
+Q_EXACT = Q_STARTED - Q_SSV  # the archive's anchor, test_replay_anchored_by_multiviewer
+Q_PDT = "2026-10-03T08:00:07.520Z"  # MultiViewer's session_start_pdt for 11730, as it answered 2026-11-17
+
+
+def world_mapper(tmp_path, pages=None, mvs=None, archive=401, **mv):
+    """A mapper whose world can change between lookups: F1 TV's pages (the fixtures and `pages`),
+    MultiViewer's sessions (the fixtures, `mvs` {(mk, sk): answer}, and `mv` merged into
+    11730's: None removes a field), F1's archive answering `archive` (200: the fixture), the
+    server's timing (w["timing"]: session key -> Started). w["asked"]: every URL asked."""
+    w = {"pages": pages or {}, "mvs": mvs or {}, "archive": archive, "timing": {}, "asked": []}
+    q = load("mv_1308_11730.json")
+    q.update(mv)
+    w["mvs"].setdefault((1308, 11730), {k: v for k, v in q.items() if v is not None})
+
+    def handler(request):
+        url = str(request.url)
+        w["asked"].append(url)
+        if "f1tv.formula1.com" in url:
+            cid = url.split("/VIDEO/")[1].split("/")[0]
+            if cid in w["pages"]:
+                return httpx.Response(200, json=w["pages"][cid])
+        if "api.multiviewer.app" in url:
+            mk, sk = url.split("/meetings/")[1].split("/sessions/")
+            if (int(mk), int(sk)) in w["mvs"]:
+                return httpx.Response(200, json=w["mvs"][int(mk), int(sk)])
+            return httpx.Response(404)
+        if "livetiming.formula1.com" in url and w["archive"] != 200:
+            return httpx.Response(w["archive"])
+        return mock_transport().handle_request(request)
+
+    m = F1Mapper(Store(tmp_path / "db.sqlite3"))
+    m.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    m.timing_started = lambda key: w["timing"].get(key)
+    return m, w
+
+
+def session_page(cid, mk, sk, title, start):
+    """F1 TV's page for a session's replay, from the qualifying's (onboards and all)."""
+    d = load("f1tv_1000011024.json")
+    m = d["resultObj"]["containers"][0]["metadata"]
+    m.update(contentId=int(cid), title=title)
+    m["emfAttributes"].update(MeetingKey=str(mk), MeetingSessionKey=str(sk), sessionStartDate=str(int(start * 1000)),
+                              sessionEndDate=str(int((start + 7200) * 1000)))
+    return d
+
+
+def mv_session(mk, sk, cid, name, start=None, pdt=None, listed=()):
+    """MultiViewer's answer for a session: `cid` its f1tv_content_id, `listed` the content ids its
+    sync_offsets name ((content id, channel) or (content id, channel, session key))."""
+    rows = []
+    for x in listed:
+        c, ch, key = (*x, sk) if len(x) == 2 else x
+        rows.append({"diff": 0, "streamData": {"channelId": ch, "contentId": str(c), "meetingKey": str(mk),
+                                               "sessionKey": str(key), "title": "INTERNATIONAL", "type": "additional"}})
+    out = {"session_info": {"Name": name, "Path": f"2026/x/{sk}/", "Key": sk}, "f1tv_content_id": str(cid),
+           "session_start": None if start is None else str(start), "sync_offsets": {"sync_offsets": rows}}
+    if pdt is not None:
+        out["session_start_pdt"] = pdt
+    return out
+
+
+def test_without_the_archive_the_servers_timing_gives_the_exact_anchor(tmp_path):
+    # Started from the server's own capture of the session, checked against MultiViewer's pdt
+    # (7.348 s after it: 7.469 ± 0.5 for a qualifying): the archive's anchor, to the ms
+    m, w = world_mapper(tmp_path, session_start_pdt=Q_PDT)
+    w["timing"][11730] = Q_STARTED
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "timing" and out["isSessionFeed"] and out["kind"] == "qualifying"
+    assert (out["startedUtc"], out["sessionStartVideo"], out["timingStarted"]) == (Q_STARTED, Q_SSV, Q_STARTED)
+    assert abs(out["p0"] - Q_EXACT) < 1e-6
+    assert any("livetiming.formula1.com" in u for u in w["asked"])  # (the archive is still asked first)
+    # without a pdt to check against (2026 Italian GP race, 11361), the timing is taken as it is
+    (tmp_path / "nopdt").mkdir()
+    m, w = world_mapper(tmp_path / "nopdt")
+    w["timing"][11730] = Q_STARTED
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "timing" and abs(out["p0"] - Q_EXACT) < 1e-6
+
+
+def test_the_anchor_from_a_live_capture_of_the_session(tmp_path):
+    # the timing service's own Started (TimingService.started, as app.py wires it in)
+    svc = make_service(tmp_path)
+    w = svc._writer(11730)
+    w.write("SessionStatus", {"Status": "Inactive", "Started": "Inactive"}, ts("2026-10-03T07:45:00.020"))
+    w.write("SessionStatus", {"Status": "Started", "Started": "Started", "_kf": True}, Q_STARTED)
+    m, _ = world_mapper(tmp_path, session_start_pdt=Q_PDT)
+    m.timing_started = svc.started
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "timing" and abs(out["p0"] - Q_EXACT) < 1e-3
+
+
+def test_the_archive_still_comes_first(tmp_path):
+    m, w = world_mapper(tmp_path, archive=200, session_start_pdt=Q_PDT)
+    w["timing"][11730] = Q_STARTED + 0.3
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "multiviewer" and out["startedUtc"] == Q_STARTED and abs(out["p0"] - Q_EXACT) < 1e-6
+
+
+def test_multiviewers_pdt_alone_is_exact_to_a_fraction_of_a_second(tmp_path):
+    m, w = world_mapper(tmp_path, session_start_pdt=Q_PDT)
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "pdt" and "timingStarted" not in out
+    assert out["startedUtc"] == ts("2026-10-03T08:00:07.520") - 7.469 and out["sessionStartVideo"] == Q_SSV
+    assert abs(out["p0"] - Q_EXACT) < 0.17
+    # a pdt that isn't a time: the pre-roll
+    (tmp_path / "bad").mkdir()
+    m, _ = world_mapper(tmp_path / "bad", session_start_pdt="soon")
+    assert asyncio.run(m.content(Q_CID))["anchor"] == "preroll"
+
+
+def test_a_capture_that_joined_late_fails_the_pdt_check(tmp_path):
+    """2026 Mexico City FP3 (11399): the capture connected 15 min into the session, so its
+    Started is when it connected (MultiViewer's pdt 879 s before it). TimingService.started
+    skips a stream that opens on Started; one that came back after a drop says nothing of the
+    kind, and MultiViewer's pdt is what tells. The check is ±0.5 s around pdt - 7.469."""
+    pdt = ts("2026-10-03T08:00:07.520")
+    for timing, anchor in ((pdt + 879, "pdt"), (pdt - 7.469 + 0.45, "timing"), (pdt - 7.469 - 0.45, "timing"),
+                           (pdt - 7.469 + 0.55, "pdt"), (pdt - 7.469 - 0.55, "pdt")):
+        d = tmp_path / str(timing)
+        d.mkdir()
+        m, w = world_mapper(d, session_start_pdt=Q_PDT)
+        w["timing"][11730] = timing
+        out = asyncio.run(m.content(Q_CID))
+        assert out["anchor"] == anchor and out["timingStarted"] == timing, timing
+        assert out["startedUtc"] == (timing if anchor == "timing" else pdt - 7.469)
+        if anchor == "pdt":
+            assert abs(out["p0"] - Q_EXACT) < 0.17
+
+
+def test_without_multiviewers_session_start_the_pre_roll_whatever_the_timing(tmp_path):
+    # live, or the first hours after: no session_start, so no position in the video to put Started at
+    m, w = world_mapper(tmp_path, session_start=None, session_start_pdt=Q_PDT)
+    w["timing"][11730] = Q_STARTED
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "preroll" and out["p0"] == 1791014400 + PREROLL["qualifying"]
+    assert out["timingStarted"] == Q_STARTED  # (noted: content() doesn't look again for it)
+
+
+def test_a_session_that_started_late_is_anchored_on_its_start_not_the_schedule(tmp_path):
+    """2026 Japanese GP race (11253, content 1000010209): scheduled 05:00Z, started 842 s later.
+    The pre-roll put its replay at the schedule's -307.3 s, 599 s off; the session's Started (the
+    server's timing: here OpenF1's rebuild) or MultiViewer's pdt (7.822 s after it) puts it right."""
+    sched = ts("2026-03-29T05:00:00")
+    started = sched + 842.078
+    page = session_page("1000010209", 1281, 11253, "2026 Japanese Grand Prix", sched)
+    mv = mv_session(1281, 11253, "1000010209", "Race", 550.38, "2026-03-29T05:14:09.900Z",
+                    listed=[("1000010209", 1025), ("1000010209", 1033)])
+    for timing, anchor, within in ((started, "timing", 1e-6), (None, "pdt", 0.06)):
+        d = tmp_path / anchor
+        d.mkdir()
+        m, w = world_mapper(d, pages={"1000010209": page}, mvs={(1281, 11253): mv})
+        if timing:
+            w["timing"][11253] = timing
+        out = asyncio.run(m.content("1000010209"))
+        assert (out["anchor"], out["kind"], out["scheduledStart"]) == (anchor, "race", sched)
+        assert abs(out["p0"] - (sched + 291.698)) < within, out["p0"] - sched  # not sched - 307.3
+    # nothing exact to be had: the pre-roll, ten minutes off
+    (tmp_path / "pre").mkdir()
+    m, _ = world_mapper(tmp_path / "pre", pages={"1000010209": page}, mvs={(1281, 11253): {**mv, "session_start_pdt": None}})
+    assert asyncio.run(m.content("1000010209"))["p0"] == sched + PREROLL["race"]
+
+
+def test_a_preroll_anchor_is_upgraded_once_the_servers_timing_has_the_start(tmp_path):
+    """The capture (or OpenF1's rebuild) often has Started only after the replay was first looked
+    up: the next lookup re-resolves at once, not 10 min on, and only once for each Started."""
+    m, w = world_mapper(tmp_path)  # (MultiViewer has session_start, no pdt; the archive 401)
+    first = asyncio.run(m.content(Q_CID))
+    assert first["anchor"] == "preroll" and "timingStarted" not in first
+    n = len(w["asked"])
+    assert asyncio.run(m.content(Q_CID)) == first and len(w["asked"]) == n  # (cached)
+    w["timing"][11730] = Q_STARTED
+    up = asyncio.run(m.content(Q_CID))
+    assert up["anchor"] == "timing" and abs(up["p0"] - Q_EXACT) < 1e-6 and len(w["asked"]) > n
+    n = len(w["asked"])
+    assert asyncio.run(m.content(Q_CID)) == up and len(w["asked"]) == n  # exact: settled
+    # live (no session_start yet): looked again once for the Started, then left for 10 min as before
+    (tmp_path / "live").mkdir()
+    m, w = world_mapper(tmp_path / "live", session_start=None)
+    assert asyncio.run(m.content(Q_CID))["anchor"] == "preroll"
+    w["timing"][11730] = Q_STARTED
+    n = len(w["asked"])
+    again = asyncio.run(m.content(Q_CID))
+    assert again["anchor"] == "preroll" and again["timingStarted"] == Q_STARTED and len(w["asked"]) > n
+    n = len(w["asked"])
+    asyncio.run(m.content(Q_CID))
+    assert len(w["asked"]) == n
+    # a pdt anchor gets the timing's too; a timing one isn't looked at again for it
+    (tmp_path / "pdt").mkdir()
+    m, w = world_mapper(tmp_path / "pdt", session_start_pdt=Q_PDT)
+    assert asyncio.run(m.content(Q_CID))["anchor"] == "pdt"
+    w["timing"][11730] = Q_STARTED
+    assert asyncio.run(m.content(Q_CID))["anchor"] == "timing"
+    w["timing"][11730] = Q_STARTED + 0.2
+    n = len(w["asked"])
+    assert asyncio.run(m.content(Q_CID))["startedUtc"] == Q_STARTED and len(w["asked"]) == n
+
+
+def test_an_exact_anchor_is_never_traded_for_a_lesser_one(tmp_path):
+    # ranked multiviewer > timing > pdt > preroll: a re-resolve (for the stream list, or a
+    # refresh) that can only make a lesser anchor keeps the one cached; a better one replaces it
+    ways = {"multiviewer": dict(archive=200), "timing": dict(timing=Q_STARTED + 0.1),
+            "pdt": dict(session_start_pdt=Q_PDT), "preroll": {}}
+    for old in ("multiviewer", "timing", "pdt", "preroll"):
+        for new in ("multiviewer", "timing", "pdt", "preroll"):
+            d = tmp_path / f"{old}-{new}"
+            d.mkdir()
+            way = dict(ways[new])
+            timing = way.pop("timing", None)
+            m, w = world_mapper(d, **way)
+            if timing:
+                w["timing"][11730] = timing
+            fresh = asyncio.run(m.content(Q_CID, refresh=True))
+            assert fresh["anchor"] == new
+            m.store.put_content(Q_CID, {**fresh, "anchor": old, "p0": 1.0, "startedUtc": 2.0, "sessionStartVideo": 3.0})
+            out = asyncio.run(m.content(Q_CID, refresh=True))
+            keep = old != "preroll" and ["multiviewer", "timing", "pdt", "preroll"].index(old) < \
+                ["multiviewer", "timing", "pdt", "preroll"].index(new)
+            if keep:
+                assert (out["anchor"], out["p0"], out["startedUtc"], out["sessionStartVideo"]) == (old, 1.0, 2.0, 3.0)
+            else:
+                assert (out["anchor"], out["p0"]) == (new, fresh["p0"]), (old, new)
+            assert m.store.get_content(Q_CID)[0]["anchor"] == out["anchor"]

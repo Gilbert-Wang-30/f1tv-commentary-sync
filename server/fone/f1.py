@@ -7,10 +7,16 @@
 
     event_utc(p) = p0 + p,   p0 = started_utc - session_start
 
-Verified across 2026 sessions: the anchor is consistent to <0.5 s. Until
-MultiViewer publishes (live, or the first hours after a session) we fall back to
-`scheduled_start + PREROLL[type]`, the replay's fixed pre-roll measured from
-every 2026 session.
+Verified across 2026 sessions: the anchor is consistent to <0.5 s. The archive has answered
+401 to everyone since 2026-10-18, so the Started UTC comes, in this order, from:
+    multiviewer  F1's live-timing archive (SessionData.json)
+    timing       the server's own timing of the session (live capture, archive copy or
+                 OpenF1 rebuild: timing.py), checked against MultiViewer's session_start_pdt
+    pdt          MultiViewer's session_start_pdt, which runs PDT_LAG[kind] after Started
+Without session_start (live, or the first hours after a session) we fall back to
+`scheduled_start + PREROLL[type]` (preroll), the replay's fixed pre-roll measured from
+every 2026 session: right on the median, but up to ~6 s off on a session, and ten minutes
+off on one that started late (2026 Japanese GP race, +599 s).
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -41,6 +48,21 @@ PREROLL = {
     "sprint": -249.7,
     "race": -307.3,
 }
+# MultiViewer's session_start_pdt less the official Started (s), median of 19 sessions of 2025-26
+# whose Started is known exactly: races and sprints 7.822..8.016, the rest 7.304..7.571, so
+# pdt - PDT_LAG is Started to within 0.17 s. (MultiViewer documents none of its fields.)
+PDT_LAG = {"race": 7.872, "sprint": 7.872, "practice": 7.469, "qualifying": 7.469, "sprint_qualifying": 7.469}
+# The server's own Started further than this from pdt - PDT_LAG isn't the session's (a capture
+# that connected late, or came back after a drop, dates Started by when it did).
+PDT_CHECK = 0.5
+# How a replay's anchor was made, best first. The first three are exact (to well under a second);
+# an exact anchor known is never traded for one further down.
+ANCHORS = ("multiviewer", "timing", "pdt", "preroll")
+EXACT = ANCHORS[:3]
+
+
+def _rank(anchor: str | None) -> int:
+    return ANCHORS.index(anchor) if anchor in ANCHORS else len(ANCHORS)
 
 
 def session_kind(name: str) -> str | None:
@@ -77,6 +99,13 @@ def _iso(ts: str) -> float:
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
+def _pdt(mv: dict) -> float | None:
+    try:
+        return _iso(mv["session_start_pdt"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def _streams(raw: list) -> list[dict]:
     """The content's channels (F1 TV's additionalStreams): an onboard camera per driver
     (type "obc") and the other feeds (F1 LIVE, INTERNATIONAL, TRACKER, DATA: "additional"),
@@ -97,6 +126,9 @@ class F1Mapper:
     def __init__(self, store: Store):
         self.store = store
         self.http = httpx.AsyncClient(timeout=15, headers=UA, follow_redirects=True)
+        # A session's Started UTC from the server's own timing, if it has it (app.py hands the
+        # timing service's in; TimingService.started).
+        self.timing_started: Callable[[int], float | None] = lambda key: None
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -123,9 +155,11 @@ class F1Mapper:
         if cached and not refresh:
             data, fetched_at = cached
             # Anchored replays never change; everything else is re-checked so a live
-            # session upgrades to the exact anchor once MultiViewer publishes it. An entry
-            # cached before the stream list existed is fetched once more for it.
-            if "streams" in data and (data.get("anchor") == "multiviewer" or time.time() - fetched_at < 600):
+            # session upgrades to an exact anchor once MultiViewer publishes it, and at once when
+            # the server's timing has dated the session's Started since. An entry cached before
+            # the stream list existed is fetched once more for it.
+            if "streams" in data and not self._timing_news(data) \
+                    and (data.get("anchor") in EXACT or time.time() - fetched_at < 600):
                 return data
         try:
             data = await self._resolve(cid)
@@ -138,13 +172,25 @@ class F1Mapper:
         if cached and data.get("error") and not cached[0].get("error"):
             return cached[0]
         # A video's exact anchor never changes. One known already is kept when this lookup
-        # couldn't make it again: F1's live-timing archive, its Started time, has answered 401 to
-        # everyone since 2026-10-18, so re-resolving an old replay (for its stream list) would
-        # otherwise trade the exact anchor for the pre-roll estimate.
-        if cached and cached[0].get("anchor") == "multiviewer" and data.get("anchor") != "multiviewer" and not data.get("error"):
+        # couldn't make it as well again: F1's live-timing archive, its Started time, has answered
+        # 401 to everyone since 2026-10-18, and the server's timing of an old session may be gone,
+        # so re-resolving an old replay (for its stream list) would otherwise trade the exact
+        # anchor for a lesser one, or the pre-roll estimate.
+        old = cached[0].get("anchor") if cached else None
+        if old in EXACT and _rank(old) < _rank(data.get("anchor")) and not data.get("error"):
             data.update({k: cached[0][k] for k in ("anchor", "p0", "startedUtc", "sessionStartVideo") if k in cached[0]})
         self.store.put_content(cid, data)
         return data
+
+    def _timing_news(self, data: dict) -> bool:
+        """The server's timing has a Started for this session feed that its anchor, a lesser one
+        than timing's, wasn't made with: the capture (or OpenF1's rebuild) often only has it after
+        the anchor was looked up, and a replay watched after the session should get it at once."""
+        key = data.get("sessionKey")
+        if not data.get("isSessionFeed") or not key or _rank(data.get("anchor")) <= _rank("timing"):
+            return False
+        started = self.timing_started(key)
+        return started is not None and started != data.get("timingStarted")
 
     async def _find_nearby_session(self, cid: str) -> tuple[dict, dict] | None:
         """F1 TV hides metadata for pre-live content, but MultiViewer already lists the
@@ -217,15 +263,32 @@ class F1Mapper:
                 if str(o.get("streamData", {}).get("contentId")) == str(cid)
             }
 
-        if is_main and mv.get("session_start") and mv.get("session_info"):
-            sd = await self._json(LT_SESSION_DATA.format(path=mv["session_info"]["Path"]))
-            started = [
-                e["Utc"] for e in (sd or {}).get("StatusSeries", []) if e.get("SessionStatus") == "Started"
-            ]
-            if started:
-                started_utc = _iso(started[0])
-                video_s = float(mv["session_start"])
-                out.update(anchor="multiviewer", startedUtc=started_utc, sessionStartVideo=video_s,
+        # The server's own Started for the session, noted whether used or not (content() looks
+        # again when its timing gains one this answer wasn't made with).
+        timing = self.timing_started(sk) if is_main and sk else None
+        if timing is not None:
+            out["timingStarted"] = timing
+        if is_main and mv.get("session_start"):
+            video_s = float(mv["session_start"])
+            anchor, started_utc = None, None
+            if mv.get("session_info"):
+                sd = await self._json(LT_SESSION_DATA.format(path=mv["session_info"]["Path"]))
+                started = [
+                    e["Utc"] for e in (sd or {}).get("StatusSeries", []) if e.get("SessionStatus") == "Started"
+                ]
+                if started:
+                    anchor, started_utc = "multiviewer", _iso(started[0])
+            pdt, lag = _pdt(mv), PDT_LAG.get(out["kind"])
+            if anchor is None and timing is not None:
+                if pdt is None or lag is None or abs(pdt - timing - lag) <= PDT_CHECK:
+                    anchor, started_utc = "timing", timing
+                else:
+                    log.info("content %s: session %s's timing has Started %+.1f s off MultiViewer's; not used",
+                             cid, sk, timing - (pdt - lag))
+            if anchor is None and pdt is not None and lag is not None:
+                anchor, started_utc = "pdt", pdt - lag
+            if anchor is not None:
+                out.update(anchor=anchor, startedUtc=started_utc, sessionStartVideo=video_s,
                            p0=started_utc - video_s)
                 return out
 
