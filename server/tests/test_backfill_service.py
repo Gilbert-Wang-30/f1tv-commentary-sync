@@ -462,3 +462,32 @@ def test_import_route_when_not_configured(tmp_path):
     app.include_router(make_router(svc))
     r = TestClient(app).post("/api/backfill/import", json={"bvid": "BV1ePHq6DE8B"})
     assert r.status_code == 409
+
+
+def test_s0_reads_the_lives_danmaku_off_the_event_loop(tmp_path, monkeypatch):
+    """(BV1P1as6hE9y, as test_backfill_start: S0 = live_time + 6) A multi-hour live's danmakus.com
+    record is seconds of pure-Python msgpack, then the replay's XML of regexes: not on the loop
+    the commentary's /hls is served from."""
+    import threading
+
+    svc = make_service(tmp_path)
+    where = []
+    for name in ("parse_dmks_live", "danmaku_origin"):
+        real = getattr(bf, name)
+        monkeypatch.setattr(bf, name, lambda *a, real=real: where.append(threading.current_thread()) or real(*a))
+
+    async def lives(http, uid):
+        return [{"id": "7a5add15", "start": 1790412961.0, "stop": 1790420000.0, "danmaku": 219}]
+
+    async def full(http, live):
+        return (FIX / "dmks_live_7a5add15.msgpack").read_bytes()
+
+    async def dm_xml(cid):
+        return (FIX / "dm_42232054404.xml").read_bytes()
+
+    monkeypatch.setattr(bb, "dmks_lives", lives)
+    monkeypatch.setattr(bb, "dmks_live_full", full)
+    svc.bili.dm_xml = dm_xml
+    s0, _events, live_time = asyncio.run(svc._s0(UID, 1790409600.0, 42232054404))
+    assert (s0, live_time) == (1790412967.0, 1790412961.0)
+    assert len(where) == 2 and threading.main_thread() not in where

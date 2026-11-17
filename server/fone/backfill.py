@@ -659,8 +659,9 @@ class BackfillService:
         live_time = live["start"] if slot <= live["start"] < slot + 3600 else None
         if not live["danmaku"]:
             return None, [], live_time
-        full = parse_dmks_live(await bb.dmks_live_full(self.http, live["id"]))
-        s0, _ = danmaku_origin(await self.bili.dm_xml(cid), full.messages)
+        # (in threads: a multi-hour live is seconds of pure-Python msgpack, then of regexes)
+        full = await asyncio.to_thread(parse_dmks_live, await bb.dmks_live_full(self.http, live["id"]))
+        s0, _ = await asyncio.to_thread(danmaku_origin, await self.bili.dm_xml(cid), full.messages)
         return s0, [e for e in full.live_events if slot <= e < slot + 3600], live_time
 
     async def _process(self, job: Job) -> None:

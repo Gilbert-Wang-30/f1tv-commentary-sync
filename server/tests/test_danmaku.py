@@ -180,6 +180,39 @@ def test_archive_fills_only_what_the_capture_did_not_hear(tmp_path, monkeypatch)
     assert asyncio.run(svc.archive_once(None, now=t1 + 120)) == 0
 
 
+def test_spans_heard_by_bisection(tmp_path, monkeypatch):
+    import random
+    import threading
+
+    rnd = random.Random(7)
+    spans = [(a, a + rnd.uniform(0, 900)) for a in (rnd.uniform(0, 20000) for _ in range(60))]
+    heard = D.covering(spans)
+    for t in [rnd.uniform(-100, 21000) for _ in range(3000)] + [a - D.SPAN_SLACK[0] for a, _ in spans] \
+            + [b + D.SPAN_SLACK[1] for _, b in spans]:
+        assert heard(t) == any(a - D.SPAN_SLACK[0] <= t <= b + D.SPAN_SLACK[1] for a, b in spans), t
+    assert not D.covering([])(5.0)
+    # and a live's archive is decoded, sifted and stored off the event loop
+    svc = service(tmp_path, archive=True)
+    svc.uids[ROOM] = 1
+    where = []
+    real = D.archive_items
+    monkeypatch.setattr(D, "archive_items", lambda raw: where.append(threading.current_thread()) or real(raw))
+
+    raw = (FIX / "backfill" / "dmks_live_7a5add15.msgpack").read_bytes()
+    stop = real(raw)[-1]["t"] + 60
+
+    async def lives(http, uid):
+        return [{"id": "7a5add15", "start": stop - 7200, "stop": stop, "title": "x", "danmaku": 219}]
+
+    async def full(http, live):
+        return raw
+
+    monkeypatch.setattr("fone.backfill_bili.dmks_lives", lives)
+    monkeypatch.setattr("fone.backfill_bili.dmks_live_full", full)
+    assert asyncio.run(svc.archive_once(None, now=stop + 3600)) == 1
+    assert where and where[0] is not threading.main_thread() and len(svc.store.range(ROOM, 0, 2e9)) == 219
+
+
 def test_api_serves_a_window_of_items(tmp_path):
     svc = service(tmp_path)
     shutil.copy(CAPTURE, svc.capture_dir / f"{ROOM}-20261010.jsonl")
