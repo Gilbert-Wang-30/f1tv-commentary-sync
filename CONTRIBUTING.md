@@ -59,7 +59,7 @@ switches in the README's Development section.
 docker run --rm -v "$PWD":/r -w /r node:22-alpine \
   sh -c 'for f in extension/*.js extension/vendor/*.min.js tools/*.js; do node --check "$f" || exit 1; done'
 tools/build_ext.sh "$(mktemp -d)"   # the release zip: fails on a file the extension loads that's missing
-python3 tools/check_version.py      # the manifest's version has its CHANGELOG.md section
+python3 tools/check_version.py      # the manifest's version has its CHANGELOG.md section, no older image named
 tools/check_public.sh               # nothing from one install's own setup
 python3 tools/test_release.py       # the release tools themselves (needs git, bash, rsync)
 docker run --rm -v "$PWD":/w:ro -w /w python:3.12-alpine \

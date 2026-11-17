@@ -106,6 +106,22 @@ class CheckVersion(unittest.TestCase):
         with self.assertRaisesRegex(cv.Problem, "says nothing"):
             cv.check("0.5.3", CHANGELOG.replace("- Own sound.\n", ""), "v0.5.3")
 
+    def test_images_not_older_than_the_version(self):
+        compose = "services:\n  fone:\n    image: ${FONE_IMAGE:-ghcr.io/someone/fone:1.0.1}\n"
+        for v in ("0.5.4", "1.0.1", "1.0.1.0", "1.0"):  # (not bumped yet: the coming release's will do)
+            cv.check_images(v, {"docker-compose.yml": compose, "README.md": "no image named here"})
+        with self.assertRaisesRegex(cv.Problem, "fone:1.0.1, older than the manifest's 1.0.2") as e:
+            cv.check_images("1.0.2", {"docker-compose.yml": compose})
+        self.assertEqual(e.exception.file, "docker-compose.yml")
+        with self.assertRaisesRegex(cv.Problem, "fone:1.0.0"):
+            cv.check_images("1.0.1", {"docker-compose.yml": compose, ".env.example": "#FONE_IMAGE=ghcr.io/x/fone:1.0.0\n"})
+        with tempfile.TemporaryDirectory() as t:  # (the command reads the files)
+            git_repo(Path(t), {"extension/manifest.json": '{"version": "1.0.2"}', "docker-compose.yml": compose,
+                               "CHANGELOG.md": CHANGELOG.replace("[1.0.1]", "[1.0.2]")})
+            p = run("python3", str(TOOLS / "check_version.py"), "--root", t)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("check_version: docker-compose.yml: names the server image fone:1.0.1", p.stderr)
+
     def test_cli_on_this_repo(self):
         p = run("python3", str(TOOLS / "check_version.py"))
         self.assertEqual(p.returncode, 0, p.stderr)

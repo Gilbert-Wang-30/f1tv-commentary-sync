@@ -16,9 +16,12 @@ job and `contents: write` for the release job only.
 
 fone's version is `version` in `extension/manifest.json`; the extension and the server ship
 under it together. The server takes it from the tag at build time (`FONE_VERSION`, which
-`/api/health` reports), so there is no second place to bump. `tools/check_version.py` keeps
-the manifest, CHANGELOG.md and the tag in step. CI runs it on every push, and the release runs
-it against the tag.
+`/api/health` reports). The one other place it is written is the server image a checkout runs
+by default, `ghcr.io/gilbert-wang-30/fone:X.Y.Z` in `docker-compose.yml` (and, as its default,
+in `.env.example` and the README's Configuration table), so a checkout of a release runs that
+release's server. `tools/check_version.py` keeps the manifest, CHANGELOG.md, the tag and those
+image names in step (an image name may run ahead of the manifest, never behind it). CI runs it
+on every push, and the release runs it against the tag.
 
 A release tag is `vX.Y.Z`, or `vX.Y.Z-rc.N` for a pre-release, and nothing else: the image's
 tags are read from it as semver, and a fourth number, a leading zero or another suffix would
@@ -30,7 +33,8 @@ them up front. The manifest's `version` is therefore `X.Y.Z` when a release is c
 
 ## Cutting a release
 
-1. **On a branch**, bump `version` in `extension/manifest.json`. In CHANGELOG.md, the top
+1. **On a branch**, bump `version` in `extension/manifest.json`, and the image's version in
+   `docker-compose.yml`, `.env.example` and the README's `FONE_IMAGE` row. In CHANGELOG.md, the top
    section becomes `## [X.Y.Z] - YYYY-MM-DD`: what changed for someone running fone, grouped
    under Added / Changed / Fixed. Check it locally:
 
@@ -72,7 +76,7 @@ repository.
 
 | job | what | fails when |
 |---|---|---|
-| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty or undated; personal config is committed; the tag isn't on main |
+| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty or undated; `docker-compose.yml` (or `.env.example`, the README) names an older server image; personal config is committed; the tag isn't on main |
 | tests | all of `ci.yml`: syntax of every extension script, the packaging check, the extension, server and recorder tests, ruff, the release-tool tests | any of them |
 | extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS`, kept as the run's artifact | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
 | server image (after the zip) | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built, and only then pushed | the smoke run fails; arm64 doesn't build; the push fails |

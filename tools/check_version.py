@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """fone's version is extension/manifest.json's: CHANGELOG.md has a section for it, a release
-tag names it, and the server image is stamped with the tag (FONE_VERSION).
+tag names it, the server image is stamped with the tag (FONE_VERSION), and docker-compose.yml
+runs that image by default.
 
   tools/check_version.py                     every push: the manifest's version is one Chrome
                                              takes, CHANGELOG.md has its section, newest first,
-                                             every older one dated
+                                             every older one dated; the server image the setup
+                                             files name (docker-compose.yml, .env.example, the
+                                             README) is not older than it
   tools/check_version.py --tag v1.0.1        a release: the tag is vX.Y.Z, the manifest's version,
                                              or vX.Y.Z-rc.N for a pre-release (nothing else: the
                                              image's tags are read from it as semver), its
@@ -30,6 +33,9 @@ DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # X.Y.Z or X.Y.Z-rc.N: docker/metadata-action reads the image's tags from it as semver, which a
 # fourth number or a leading zero fails (and the image would go out with no tag)
 TAG = re.compile(r"v(?P<version>(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2})(?P<suffix>-rc\.(?:0|[1-9]\d*))?")
+# The released server image a checkout runs by default (and the docs name): one release's own
+IMAGE = re.compile(r"ghcr\.io/[\w.-]+/fone:(\d+\.\d+\.\d+)\b")
+IMAGE_FILES = ("docker-compose.yml", ".env.example", "README.md")
 
 
 class Problem(Exception):
@@ -115,6 +121,18 @@ def check(manifest_version: str, changelog: str, tag: str | None = None, dry_run
     return {"version": version, "prerelease": prerelease, "notes": mine["body"]}
 
 
+def check_images(manifest_version: str, texts: dict[str, str]) -> None:
+    """The server image each setup file names ({file: its text}) is the manifest's version, or
+    the coming one's while the manifest isn't bumped yet: never an older release's (a checkout
+    of 1.0.2 running the 1.0.1 server). Problem otherwise."""
+    mv = key(manifest_version)
+    for f, text in texts.items():
+        for v in IMAGE.findall(text):
+            if key(v) < mv:
+                raise Problem(f"names the server image fone:{v}, older than the manifest's {manifest_version}: "
+                              "bump it with the version", f)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--tag", help="the release tag, as in v1.0.1")
@@ -127,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest = json.loads((root / "extension/manifest.json").read_text(encoding="utf-8"))
         changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
         r = check(manifest["version"], changelog, a.tag, a.dry_run)
+        check_images(manifest["version"], {f: (root / f).read_text(encoding="utf-8")
+                                           for f in IMAGE_FILES if (root / f).is_file()})
     except FileNotFoundError as e:
         return fail(Problem(f"{e.filename} is missing"))
     except Problem as e:
