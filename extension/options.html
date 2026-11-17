@@ -13,8 +13,18 @@
   fieldset { border: 1px solid #ddd; border-radius: 8px; margin-top: 14px; padding: 4px 14px 14px; }
   fieldset.off { opacity: .55; }
   legend { font-weight: 600; padding: 0 6px; } legend label { display: inline; margin: 0; }
+  .welcome { background: #fff8e1; border: 1px solid #f5c542; border-radius: 8px; padding: 10px 14px; margin-top: 14px; }
+  [hidden] { display: none !important; }
 </style>
 <h1>fone — F1 TV × live commentary sync</h1>
+
+<div class="welcome" id="welcome" hidden>
+  <b>Welcome.</b> Tell fone where the commentary comes from: paste the streamer's live URL under
+  <b>This computer</b> (live sessions, nothing else to run), or your fone server's address under
+  <b>A fone server</b> (replays too). <i>Save</i>, then open a video on F1 TV: fone's panel shows
+  up on it, with ⚙ to come back here. Pinning fone in Chrome's toolbar (the puzzle piece) puts
+  its icon there too.
+</div>
 
 <p class="hint">Where the commentary comes from. Without a server this browser records the streamer's
 live stream while an F1 TV live video is open, so it works for live sessions (and rewinding them).
@@ -23,11 +33,11 @@ measured delay and 弹幕.</p>
 
 <fieldset id="localBox">
   <legend><label><input type="radio" name="source" value="local" id="srcLocal"> This computer (no server)</label></legend>
-  <label>The streamer's live URL <span class="hint">— their Bilibili, Twitch, YouTube, Douyin or Huya page (live.bilibili.com/23954427,
-    twitch.tv/name, youtube.com/@name, live.douyin.com/123, huya.com/room), or any stream URL (HTTP-FLV, HLS, AAC), e.g. from
+  <label>The streamer's live URL <span class="hint">— their Bilibili, Twitch, YouTube, Douyin or Huya page (live.bilibili.com/&lt;room&gt;,
+    twitch.tv/&lt;name&gt;, youtube.com/@&lt;name&gt;, live.douyin.com/&lt;id&gt;, huya.com/&lt;room&gt;), or any stream URL (HTTP-FLV, HLS, AAC), e.g. from
     <code>streamlink --stream-url &lt;page&gt; worst</code> (<code>audio_only</code> where the site has it). Such URLs are
     usually signed and expire within hours: get a fresh one for each session.</span>
-    <input type="text" id="stream" placeholder="https://live.bilibili.com/23954427" spellcheck="false"></label>
+    <input type="text" id="stream" placeholder="https://www.twitch.tv/name" spellcheck="false"></label>
   <label>Keep the last <input type="number" id="bufferMin" min="1" max="180" step="1"> minutes
     <span class="hint">— how far back you can rewind F1 TV and still have the commentary (about 1–2 MB of memory a
     minute). To rewind to a session's start, set this to the session's length and open the live video before it starts.</span></label>
@@ -37,14 +47,16 @@ measured delay and 弹幕.</p>
 
 <fieldset id="serverBox">
   <legend><label><input type="radio" name="source" value="server" id="srcServer"> A fone server</label></legend>
-  <label>Server URLs <span class="hint">— one per line, tried in order (e.g. a Tailscale name first so it works away from home).
+  <label>Server URLs <span class="hint">— one per line, tried in order (e.g. an address that works away from home first,
+    the LAN one second). <code>192.168.1.20</code> or <code>myserver:8788</code> is read as <code>http://…:8788</code>.
     With "This computer" above, a server listed here still gives you the stats.</span>
-    <textarea id="servers" rows="3" placeholder="http://your-server:8788"></textarea></label>
+    <textarea id="servers" rows="3" placeholder="http://your-server:8788" spellcheck="false"></textarea></label>
   <label>Commentary channel <span class="hint">— recorder folder name; empty = whichever was recorded most recently</span>
     <select id="channel"><option value="">(most recent)</option></select></label>
   <label><input type="checkbox" id="liveDirect"> Live: the commentary straight from the streamer's Bilibili room
     <span class="hint">— this browser pulls the stream while the session is live, about 3 s fresher than the server's
-    recording (which grows a few seconds at a time). The server still gives replays, the stats, 弹幕 and the sponsor clips to mute.</span></label>
+    recording (which grows a few seconds at a time). The server still gives replays, the stats, 弹幕 (the room's live chat)
+    and the sponsor clips to mute. Needs the channel's room on the server (FONE_ROOMS: <i>Test connection</i> says).</span></label>
   <button id="test">Test connection</button>
   <div class="out" id="out"></div>
 </fieldset>
