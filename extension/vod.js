@@ -277,10 +277,10 @@
   // moment, `bound` from one further away (the streamer's delay may have moved since).
   const clockRoom = (k, { near, trust, bound }) => (k.d <= near ? trust : bound);
   // Placed by the clock now? When not placed yet, or off it (off: clockOff's) by more than its
-  // room; once sync by sound has found the place itself (or a nudge by hand put it there), `held`:
-  // only by more than `bound`. (Sound heard now against a reading some minutes away: the streamer's
-  // delay stepped between. Re-placed by the reading each tick, sound found it again each look:
-  // the commentary jumped back and forth.)
+  // room; once sync by sound has found the place itself, `held`: only by more than `bound`. (Sound
+  // heard now against a reading some minutes away: the streamer's delay stepped between.
+  // Re-placed by the reading each tick, sound found it again each look: the commentary jumped
+  // back and forth.)
   function clockMoves(k, off, { placed, held = false, near, trust, bound }) {
     if (!k) return false;
     if (!placed) return true;

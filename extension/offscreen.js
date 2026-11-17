@@ -1437,10 +1437,12 @@ function sndSteer(t, v) {
 // this video and replay, and the replay's ~5 s repeats (FoneVod.findCuts) for the replay. Sync by
 // sound not confirming it in VOD.CONFIRM looks: looked for again, playing on meanwhile (then every
 // VOD.AGAIN s while it still doesn't). Off the end of one replay (the streamer restarted): the
-// next, found the same way. With a fone server: first and foremost by the clock on the streamer's
-// screen (their MultiViewer header, the session and its clock: when the session's clock showed
-// that is the event time on their screen there; vodclock.py reads it), sound then taking it the
-// last second; sound alone, over the hour, only without one (or no clock on their screen).
+// next, where it was put before or by its clock, else found the same way. With a fone server:
+// first and foremost by the clock on the streamer's screen (their MultiViewer header, the session
+// and its clock: when the session's clock showed that is the event time on their screen there;
+// vodclock.py reads it), sound then taking it the last second (and, once it's locked, the
+// streamer's delay as it moves: the clock then only bounds it); sound alone, over the hour, only
+// without one (or no clock on their screen).
 // (real matches, 2026-11-11, 4 kHz: a median 14, a tenth under 8.1; the runner-up 4-7 over ±25 s)
 // (WIN..WIN_MAX s of F1 TV's sound, a look every STEP s more of it; the replay fetched and decoded
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
