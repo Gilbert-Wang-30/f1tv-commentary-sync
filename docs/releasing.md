@@ -36,7 +36,7 @@ them up front. The manifest's `version` is therefore `X.Y.Z` when a release is c
 1. **On a branch**, bump `version` in `extension/manifest.json`, and the image's version in
    `docker-compose.yml`, `.env.example` and the README's `FONE_IMAGE` row. In CHANGELOG.md, the top
    section becomes `## [X.Y.Z] - YYYY-MM-DD`: what changed for someone running fone, grouped
-   under Added / Changed / Fixed. Check it locally:
+   under Added / Changed / Fixed / Security. Check it locally:
 
    ```bash
    python3 tools/check_version.py --tag vX.Y.Z

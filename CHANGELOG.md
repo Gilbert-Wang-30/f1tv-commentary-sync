@@ -18,45 +18,86 @@ The first release for other people: the extension as a zip to load in Chrome, th
 image to run with your own streamer, recorder and storage.
 
 ### Added
-- GitHub Releases: `fone-extension-<version>.zip` holds one folder, `fone/`, to load unpacked
-  (chrome://extensions → Developer mode → Load unpacked). To update, extract the next zip into
-  the same place, so it replaces the files of that same `fone` folder (Windows: Extract All →
-  the folder that holds `fone` → replace the files), and click ↻: Chrome keeps the extension
-  and its settings while the folder's path stays the same. `SHA256SUMS` beside it.
-- The server image on GitHub's registry, `ghcr.io/gilbert-wang-30/fone:<version>` (and
-  `:latest`), for linux/amd64 and linux/arm64. It knows its version (`FONE_VERSION`, shown by
-  `/api/health`) and has a Docker health check on `/api/health`.
-- A release pipeline (`.github/workflows/release.yml`): a `v*` tag on main is checked against
-  the manifest and this file, tested, packaged, smoke-run and published; run by hand it is a
-  dry run that builds both architectures and publishes nothing.
-- Checks on every push: each extension script parsed, every file the manifest and the pages
-  load present in the zip, the recorder gate's tests, ruff on the server, the recorder and the
-  tools, the version and this file in step, and no personal configuration committed
-  (`tools/check_public.sh`: Tailscale names and NAS paths anywhere, home-network addresses
-  outside the docs and `*.example` files, a filled-in `extension/local.js`, a `.env`).
+- GitHub Releases: `fone-extension-<version>.zip` (one folder, `fone/`, to load unpacked; to
+  update, extract the next zip into the folder that holds `fone` and click ↻) with `SHA256SUMS`,
+  and the server image `ghcr.io/gilbert-wang-30/fone:<version>` (also `:X.Y`, `:latest`) for
+  linux/amd64 and linux/arm64. A `v*` tag on main is checked, tested, packaged, smoke-run and
+  published (`.github/workflows/release.yml`); run by hand it is a dry run.
+- The server image knows its version: `/api/health` reports `version` (`FONE_VERSION`, `dev`
+  for a local build), and Docker checks its health on `/api/health`.
+- `/api/health`'s `notes`, also on the status page and in the settings' *Test connection*: what
+  the setup leaves out (no `FONE_ROOMS`, a recordings or import folder that isn't there, no
+  ffmpeg or tesseract).
+- First run: fone's settings open on install, and **⚙** in the panel opens them (lit while
+  nothing is set up). *Test connection* shows the server's version, its channels and whether
+  it has the channel's Bilibili room.
+- Checks on every push: every extension script parsed, every file the extension loads in the
+  zip, the extension, server and recorder tests, ruff (`ruff.toml`), the version, CHANGELOG.md
+  and the compose image in step (`tools/check_version.py`), nothing of one install's own setup
+  committed (`tools/check_public.sh`), actionlint, shellcheck. The offline e2e suites run on
+  GitHub by hand (`.github/workflows/e2e.yml`).
+- `FONE_ADS_REFS` and `FONE_ADS_CHANNELS` (your own sponsor clips, and where to look for them),
+  `GATE_ACTION`, and `FONE_TIMING_KEEP_DAYS` passed from `.env`.
 
 ### Changed
-- Your own setup, not the author's: `docker-compose.yml` reads your recordings folder, rooms
-  and channel aliases from a `.env` (start from `.env.example`) and runs the released image;
-  the author's extension update server (fone-ext) only starts under its own profile.
+- Your setup, not the author's: `docker-compose.yml` takes the recordings folder, rooms,
+  aliases, time zone, uid, CPUs and port from a `.env` (start from `.env.example`) and runs the
+  released image; the recorders and the extension update server (fone-ext) are profiles
+  (`recorder`, `streamlink`, `ext-update`). A bind whose folder is missing stops with an error
+  instead of creating it empty.
+- No streamer by default: a Bilibili room is watched only when `FONE_ROOMS` names it, and it is
+  the one setting for the server and the recorder (`recorder/seed.sh` writes the recorder's
+  config from it, a folder per room number, which is that room's channel). With no room named
+  the recorder doesn't start, and its log says what to set.
+- The recorder gate's default filter is any streamer's F1 titles, and it only logs what it would
+  stop until `GATE_ACTION=stop`; `GATE_RECORD` replaces the default filter.
+- The bundled sponsor clips are matched only on the channel they were made from; other channels
+  get none unless `FONE_ADS_REFS` / `FONE_ADS_CHANNELS` say so.
+- `FONE_FILENAME_TZ` is the one recording-name time zone (server, recorders, gate,
+  `tools/import_replay.py`); an unknown zone is an error, and a name and last write a whole
+  number of hours apart are logged as a likely zone mismatch. An empty setting is its default.
+- fone-janitor also runs with the `streamlink` profile.
+- The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
+  what it can't use with the reason, and saves everything else; a first run's server is saved
+  as the source. The panel's name before a channel is known is "Commentary".
 - The README installs from a release; building and self-hosting the extension's updates
-  (`tools/publish_ext.sh`, fone-ext, the Mac sync) is described as an advanced setup.
-- `tools/publish_ext.sh` packages through `tools/build_ext.sh`, the release's packager, and
-  publishes what it always did. A release zip has no `build.js`, so it never polls an update
-  server.
+  (`tools/publish_ext.sh`, fone-ext, the Mac sync) is an advanced setup. `tools/publish_ext.sh`
+  packages through `tools/build_ext.sh`, the release's packager.
 
 ### Fixed
 - Bilibili replays: the clock on the streamer's screen and sync by sound no longer pull the
-  commentary back and forth when the streamer's delay steps; no tight loop in the gap where a
-  streamer restarted; a backward seek no longer confirms a wrong likely place; one replay that
-  won't load no longer stops all of them; failing repeat scans back off; F1 Academy, F2 and F3
-  replays are placed by sound without waiting five minutes for a clock that is never read; a
-  replay published since the list was fetched is found.
-- Server: pages you visit can no longer start downloads, OpenF1 rebuilds or extractions through
-  GET requests; the screen clock retries a temporary failure, doesn't hold its two slots while
-  waiting for timing, recomputes cached readings and survives one bad frame; the danmaku
-  capture only counts time as heard once Bilibili answers; a browser's car-position upload no
-  longer blocks that session's OpenF1 rebuild.
+  commentary back and forth when the streamer's delay steps (a pause no longer counts against
+  sound's look again); no swapping between two replays in a restart's gap; a backward seek no
+  longer confirms a wrong likely place; one replay that won't load no longer stops the others;
+  failing repeat scans back off; F1 Academy, F2 and F3 replays don't wait for a clock that is
+  never read; a replay published after the list was read is found within minutes; a kept place
+  follows F1 TV's anchor; nudges survive the clock's placement.
+- Sync by sound: a ±4 min look no longer holds up the engine or fetches the whole stretch again.
+- The streamer's screen: a column they closed is let go after about 12 s. A drag the browser
+  cancels no longer swallows the panel's next click.
+- The replay clock on the server: a temporary failure is asked again with backoff, not answered
+  'none' for good; waiting for timing holds no frame slot; readings are worked out again when
+  the timing changes; one bad frame or mirror fails alone, downloads are streamed and capped; a
+  reading near the moment that can't be had isn't asked for every 20 s; a missing ffmpeg or
+  tesseract is said.
+- Timing: car positions relayed for a session with no capture no longer block its OpenF1
+  rebuild; OpenF1 rebuilds are pruned after `FONE_TIMING_KEEP_DAYS` even while F1's archive
+  refuses.
+- 弹幕: time counts as heard only once Bilibili answers a heartbeat, and a silent connection is
+  dropped after 70 s; the archive import and backfill's decoding run off the event loop.
+- Every ffmpeg, tesseract and re-encode the server waits for has a timeout. An F1 TV,
+  MultiViewer or OpenF1 answer that isn't the JSON expected is a failed lookup, the cached one
+  kept. `PUT /api/sync` takes only a finite delay within a day. Diagnostics keep a numeric `t`
+  and a short type, and a day's file stops at 64 MB.
+
+### Security
+- Web pages can no longer use the server: every write and every read that starts work or hands
+  out what viewers played (`/api/timeline`, `/api/f1tv`, `/api/sync`, `/api/timing/session`,
+  `/api/timing/content`, `/api/video`, `/api/vod`, `GET /api/diag`) answers only the extension
+  (its origin, or no origin and `X-Fone: 1`) or a script sending `X-Fone: 1`
+  (`curl -H 'X-Fone: 1' …`), on plain http too; a page's `<img>`, link, form or fetch gets 403.
+  CORS allows the extension's origins only. Update the extension before the server: an older
+  one gets 403 on those routes.
 
 ## [0.5.4] - 2026-11-17
 
