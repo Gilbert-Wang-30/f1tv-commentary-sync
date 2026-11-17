@@ -1,0 +1,56 @@
+name: e2e (offline)
+
+# The end-to-end suites that need nothing outside the runner: the no-server mode against mock
+# platforms (e2e/local), the live car-position relay against a mock F1 feed (e2e/livepos), the
+# split view on a mock F1 TV page (e2e/layout_run.sh). Each pulls the Playwright image (a few
+# GB) and runs for minutes. By hand only, until a few runs on GitHub's runners say how long they
+# take and how often their timing checks miss; then a nightly schedule, and a gate in
+# release.yml. The suites that need the internet or live streams (e2e/run.sh, e2e/vod,
+# tools/platform_check.sh, e2e/dash_shots.sh) stay off CI.
+on:
+  workflow_dispatch:
+    inputs:
+      suites:
+        description: 'which: local livepos layout (space-separated)'
+        default: 'local livepos layout'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # One retry each: a first miss on a shared runner says little; two in a row is a failure.
+      - name: e2e/local (no server, mock platforms)
+        if: contains(inputs.suites, 'local')
+        run: ./e2e/local/run.sh || { echo "::warning::e2e/local failed once, again"; ./e2e/local/run.sh; }
+      - name: e2e/livepos (mock F1 feed, internal network)
+        if: ${{ !cancelled() && contains(inputs.suites, 'livepos') }}
+        run: ./e2e/livepos/run.sh || { echo "::warning::e2e/livepos failed once, again"; ./e2e/livepos/run.sh; }
+      - name: e2e/layout_run.sh (mock F1 TV page, no network)
+        if: ${{ !cancelled() && contains(inputs.suites, 'layout') }}
+        env:
+          FFMPEG_IMAGE: fone:e2e   # only its ffmpeg; the script's default is a production tag
+          SHOTS: ${{ runner.temp }}/layout-shots
+        run: |
+          docker build -q -t fone:e2e server
+          ./e2e/layout_run.sh || { echo "::warning::e2e/layout failed once, again"; ./e2e/layout_run.sh; }
+      - name: layout screenshots
+        if: ${{ !cancelled() && contains(inputs.suites, 'layout') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-shots
+          path: ${{ runner.temp }}/layout-shots
+          if-no-files-found: ignore
