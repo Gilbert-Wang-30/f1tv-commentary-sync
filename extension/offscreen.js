@@ -112,7 +112,7 @@ async function attach(msg, key) {
     if (S.skew == null || now() - (S.skewAt ?? 0) > SKEW.EVERY) refreshSkew(gen);
     S.channels = await api('/api/channels');
     if (!S.channel) S.channel = S.channels[0]?.name ?? null;
-    if (!S.channel) throw new Error('No recordings found on the server yet');
+    if (!S.channel) throw new Error('No recordings on the server yet: is a recorder writing into its FONE_RECORDINGS?');
     S.bufferMin = msg.settings.bufferMin;
     S.room = await directStream(S.channel); // (its live page, ↗; and live straight from it)
     S.direct = msg.settings.liveDirect === false ? null : S.room;
@@ -134,7 +134,7 @@ async function attach(msg, key) {
 // recording, and rewinding F1 TV works as far back as the recording goes. A server listed in
 // the settings is still used for what only it has (the stats, the diagnostics), if reachable.
 async function attachLocal(msg, gen) {
-  if (!S.stream) throw new Error("No stream set: open fone's settings (toolbar icon) and paste the streamer's live URL");
+  if (!S.stream) throw new Error("No stream set: ⚙ opens fone's settings, paste the streamer's live URL there");
   S.local = true;
   S.bufferMin = msg.settings.bufferMin;
   S.channel = FoneStreams.parse(S.stream).label;

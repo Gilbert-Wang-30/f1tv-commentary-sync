@@ -1,8 +1,9 @@
 # Contributing
 
-fone is a personal project: it is built around one streamer's room and one person's home
-server, and it changes when that setup does. Pull requests are welcome all the same,
-especially ones that make it work for another streamer, platform or recorder. Please open an
+fone is a personal project: it grew up around one streamer's room and one person's home
+server, and since 1.0.1 it runs with anyone's streamer, recorder and storage (`.env`); it
+still changes when its author's setup does. Pull requests are welcome, especially ones that
+make it work for another streamer, platform or recorder. Please open an
 issue first for anything larger than a fix, so the work isn't wasted on something that is
 being rewritten.
 
