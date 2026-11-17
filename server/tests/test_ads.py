@@ -55,7 +55,9 @@ def synth_refs_dir(tmp_path_factory) -> Path:
 
 @pytest.fixture
 def synth_refs(synth_refs_dir, monkeypatch):
-    monkeypatch.setattr(ads, "REFS_DIR", synth_refs_dir)
+    """A set of your own (FONE_ADS_REFS): matched on every channel."""
+    monkeypatch.setenv("FONE_ADS_REFS", str(synth_refs_dir))
+    monkeypatch.delenv("FONE_ADS_CHANNELS", raising=False)
 
 
 def make_hls(x: np.ndarray, out_dir: Path) -> None:
@@ -334,3 +336,49 @@ def test_redone_extraction_and_new_refs_are_reanalysed(tmp_path, synth_refs):
 
     assert [(s["name"], round(s["start"])) for s in asyncio.run(reload())] == [(C, 12)]
     assert json.loads((out / "ads.json").read_text())["version"] == version
+
+
+def test_which_channels_are_matched(tmp_path):
+    base = replace(config.load(), ads_refs=None, ads_channels=None)
+    # the bundled clips are one streamer's: matched on their channel, not on yours
+    assert ads.channels_for(base) == ads.BUNDLED_CHANNELS == {"胡闹P房"}
+    assert ads.channels_for(replace(base, ads_refs=tmp_path)) == {"*"}  # a set of your own: everywhere
+    assert ads.channels_for(replace(base, ads_refs=tmp_path, ads_channels=frozenset({"A"}))) == {"A"}
+    assert ads.channels_for(replace(base, ads_channels=frozenset({"*"}))) == {"*"}
+    svc = AdService(replace(base, ads_refs=tmp_path), Files())
+    assert svc.covers("anyone")
+    svc.refs, svc.version = load_refs(tmp_path)  # an empty folder: no clips, nothing matched
+    assert not svc.covers("anyone")
+
+
+def test_other_channels_are_left_alone(tmp_path, synth_refs_dir):
+    """A channel the clips aren't for isn't decoded or matched, and has no ad state (the
+    timeline then has nothing to mute or wait for there)."""
+    cfg = replace(config.load(), data_dir=tmp_path / "data", ads_refs=synth_refs_dir,
+                  ads_channels=frozenset({"Mine"}))
+    states = []
+    for fid, channel in (("mine", "Mine"), ("other", "Other")):
+        out = tmp_path / "data" / "hls" / fid
+        make_hls(mix([talk(4, 41), clip(C), talk(3, 42)]), out)
+        rec = replace(rec_for(tmp_path / f"{fid}.flv", fid), channel=channel, relpath=f"{channel}/{fid}.flv")
+        states.append(FileState(rec=rec, out_dir=out, status="done"))
+    files = Files(*states)
+
+    async def main():
+        svc = AdService(cfg, files)
+        await svc.start()
+        try:
+            await until(lambda: svc.analyzed_to("mine") >= states[0].segments()[0][-1].end - 0.01)
+            await asyncio.sleep(0.3)  # (a tick or two more)
+            return svc
+        finally:
+            await svc.stop()
+
+    svc = asyncio.run(main())
+    assert [s["name"] for s in svc.spans("mine")] == [C]
+    assert svc.state("other") is None and svc.spans("other") == []
+    assert "other" not in svc._tracks and not (tmp_path / "data" / "hls" / "other" / "ads.json").exists()
+    app = FastAPI()
+    app.include_router(make_router(svc))
+    r = TestClient(app).get("/api/ads/other")
+    assert r.status_code == 404 and r.json()["detail"] == "no sponsor clips for 'Other'"

@@ -1,8 +1,11 @@
 """Sponsor-reel detection per recording (S2).
 
-The streamer plays the same pre-recorded sponsor clips (refs in fone/ads/) before and
-after sessions; the extension mutes them. For every extracted recording we decode its
-audio HLS to 8 kHz mono and run the streaming detector (ads_detect) over it:
+A streamer plays the same pre-recorded sponsor clips before and after sessions; the
+extension mutes them. The clips are one streamer's: the bundled set (fone/ads/) is
+胡闹P房's and is matched on that channel only; FONE_ADS_REFS points at a set of your own
+(matched on every channel), and FONE_ADS_CHANNELS names the channels either is matched on
+("*": all). For every extracted recording of those channels we decode its audio HLS to
+8 kHz mono and run the streaming detector (ads_detect) over it:
 
   * growing files: each new segment is decoded and fed as soon as the extractor lists
     it, so a clip is known ~2-3 s of its audio after it starts;
@@ -37,6 +40,9 @@ from .extractor import Extractor, FileState, Segment
 log = logging.getLogger("fone.ads")
 
 REFS_DIR = Path(__file__).with_name("ads")
+# The channels the bundled set's clips were cut from (fone/ads/ads.json describes them).
+BUNDLED_CHANNELS = frozenset({"胡闹P房"})
+ALL = "*"
 DETECTOR_VERSION = 1  # bump when detection changes in a way Params don't show
 POLL_SECONDS = 0.5
 BATCH_SEGMENTS = 150  # ~5 min of audio per decode while catching up
@@ -65,6 +71,14 @@ def load_refs(d: Path | None = None) -> tuple[RefSet, str]:
             refs.add(w.stem, read_wav8(w))
     h = hashlib.sha1(f"{DETECTOR_VERSION} {DEFAULT} {refs.digest()}".encode())
     return refs, h.hexdigest()[:12]
+
+
+def channels_for(cfg: Config) -> frozenset[str]:
+    """The channels whose recordings are matched: FONE_ADS_CHANNELS, else the bundled set's own
+    channels, or every channel for a set of your own (FONE_ADS_REFS)."""
+    if cfg.ads_channels is not None:
+        return cfg.ads_channels
+    return BUNDLED_CHANNELS if cfg.ads_refs is None else frozenset({ALL})
 
 
 def decode(paths: list[Path]) -> np.ndarray:
@@ -116,6 +130,7 @@ class _Track:
 class AdService:
     def __init__(self, cfg: Config, extractor: Extractor):
         self.cfg, self.extractor = cfg, extractor
+        self.channels = channels_for(cfg)
         self.refs: RefSet | None = None
         self.version = ""
         self._tracks: dict[str, _Track] = {}
@@ -123,9 +138,18 @@ class AdService:
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        self.refs, self.version = await asyncio.to_thread(load_refs)
-        log.info("ads: %d reference clips (version %s)", len(self.refs.refs), self.version)
+        if self.cfg.ads_refs is not None and not self.cfg.ads_refs.is_dir():
+            log.warning("ads: FONE_ADS_REFS %s isn't a folder: no clips to match", self.cfg.ads_refs)
+        self.refs, self.version = await asyncio.to_thread(load_refs, self.cfg.ads_refs)
+        log.info("ads: %d reference clips from %s (version %s), matched on %s", len(self.refs.refs),
+                 self.cfg.ads_refs or "the bundled set", self.version,
+                 "every channel" if ALL in self.channels else ", ".join(sorted(self.channels)) or "no channel")
         self._task = asyncio.create_task(self._loop())
+
+    def covers(self, channel: str) -> bool:
+        """Whether this channel's recordings are matched: one of the clips' channels, and clips
+        to match (a set with none matches nothing)."""
+        return (ALL in self.channels or channel in self.channels) and (self.refs is None or bool(self.refs.refs))
 
     async def stop(self) -> None:
         if self._task:
@@ -147,7 +171,10 @@ class AdService:
         return tr.analyzed_to if tr else 0.0
 
     def state(self, fid: str) -> dict | None:
-        if fid not in self.extractor.files:
+        """None for a file this service doesn't know, or one of a channel it doesn't match (no
+        sponsor clips to mute there, and nothing to wait for)."""
+        st = self.extractor.files.get(fid)
+        if st is None or not self.covers(st.rec.channel):
             return None
         self._wanted[fid] = time.time()
         return {"spans": self.spans(fid), "analyzedTo": self.analyzed_to(fid)}
@@ -173,6 +200,8 @@ class AdService:
         now = time.time()
         live, backlog = [], []
         for fid, st in list(files.items()):
+            if not self.covers(st.rec.channel):
+                continue  # (another streamer's: their clips aren't these)
             segs, ended = st.segments()
             tr = self._tracks.get(fid)
             if tr is None:
@@ -256,7 +285,8 @@ def make_router(svc: AdService) -> APIRouter:
     def ads(fid: str):
         state = svc.state(fid)
         if state is None:
-            raise HTTPException(404, "unknown file")
+            st = svc.extractor.files.get(fid)
+            raise HTTPException(404, "unknown file" if st is None else f"no sponsor clips for {st.rec.channel!r}")
         return state
 
     return router
