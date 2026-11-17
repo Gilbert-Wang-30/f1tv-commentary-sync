@@ -543,9 +543,10 @@ class VodClockService:
             del self.state[old]  # (on disk, as they were)
         if k not in self.tasks:
             status, now = st.get("status"), time.time()
+            # (timing gone, pruned say, is no other timing: what was worked out from it stands)
             again = status == "working" or (status == "error" and now >= st.get("again", 0)) \
                 or (status == "none" and now - st.get("at", 0) > NONE_TTL) \
-                or (status in ("ok", "none") and st.get("timing") != self._timing_of(key))
+                or (status in ("ok", "none") and (timing := self._timing_of(key)) is not None and st.get("timing") != timing)
             want_near = status == "ok" and E is not None and now >= st.get("near_again", 0) and self._wants(st, E)
             if again or want_near:
                 if again:

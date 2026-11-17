@@ -456,6 +456,42 @@ def test_a_refused_url_is_asked_for_anew_a_mirror_down_is_not(tmp_path, monkeypa
     asyncio.run(run())
 
 
+def test_timing_gone_is_no_other_timing(tmp_path, monkeypatch):
+    """An OpenF1 rebuild pruned (timing.py: after keep_days): its 'ok' stands, no job, no rebuild
+    asked for. Timing that's there again, other than before, is worked out anew."""
+    rig = Rig(tmp_path, monkeypatch)
+    asked = []
+    rig.timing._missing_reason = lambda k: asked.append(k) or "downloading timing from OpenF1"
+
+    async def run():
+        bili = rig.bili()
+        svc = rig.service(bili)
+        await svc.start()
+        st = await settled(svc)
+        assert st["status"] == "ok" and st["timing"] == ["openf1", 1]
+        reads, calls = len(rig.reads), bili.pagelists
+        rig.untimed = {KEY}  # (pruned)
+        assert svc.get(BV, KEY, SLOT)["status"] == "ok" and not svc.tasks
+        await svc.stop()
+        svc = rig.service(bili)  # (and from disk, after a restart)
+        await svc.start()
+        assert svc.get(BV, KEY, SLOT)["status"] == "ok" and not svc.tasks
+        # asked for more near E meanwhile: nothing to read by, a miss (not every 20 s)
+        E = far_E(rig.c)
+        st = await settled(svc, E)
+        assert st["status"] == "ok" and st["near_fails"] == 1 and not svc.get(BV, KEY, SLOT, E).get("more")
+        assert (len(rig.reads), bili.pagelists, asked) == (reads, calls, [])
+        # rebuilt since, the same: as it was; another: worked out again
+        rig.untimed = set()
+        assert svc.get(BV, KEY, SLOT)["status"] == "ok" and not svc.tasks
+        rig.meta = {**rig.meta, "t0": 2}
+        assert svc.get(BV, KEY, SLOT)["status"] == "working"
+        assert (await settled(svc))["timing"] == ["openf1", 2]
+        await svc.stop()
+
+    asyncio.run(run())
+
+
 def test_timing_not_there_yet_is_an_error_asked_again_later_not_a_lasting_none(tmp_path, monkeypatch):
     """An OpenF1 rebuild refused for now (429) outlasting the wait was a 'none' kept for good (in
     memory: NONE_TTL only applied to one read from disk) and for 6 h on disk."""
