@@ -136,12 +136,24 @@ def frame_of(name: str, size: tuple[int, int]) -> np.ndarray:
     ("quali2_1304", (1080, 1920), "Qualifying 2", 784, None),
     ("race_15831_lap2", (1080, 1920), "Race", 7111, (2, 53)),
     ("race2025_13623_lap10", (1080, 1920), "Race", 5783, (10, 52)),
+    # (bold digits tesseract finds no text in with a margin round them: read without one)
     ("fp3_5539_1440p", (1440, 2560), "Practice 3", 3339, None),
+    # (cut tight to the text, 37:59 read as 17:59: a margin round it reads it right)
+    ("dutch2026_sprint_3759_lap18", (1080, 1920), "Sprint", 2279, (18, 24)),
 ])
 def test_ocr_of_the_header(name, size, session, shown, lap):
     got = vc.read_frame(frame_of(name, size))
     assert got is not None, name
     assert vc.kind_of(got[0]) == vc.kind_of(session) and got[1] == shown and got[2] == lap, got
+
+
+@needs_ocr
+def test_a_leading_3_is_read_with_a_margin():
+    # 2026 Japanese GP race, 37:43 on screen: cut tight to it, tesseract read 27:43 at every size.
+    # (the header where find_header put it on the whole frame: on this crop alone tesseract splits
+    # the title, 'Jay' 'nese GP:', and no clock is under it)
+    hd = vc.Header((72, 30, 122, 49), None, 3, "Race")
+    assert vc.read_with(frame_of("japan2026_race_3743_lap50", (1080, 1920)), hd)[1] == 37 * 60 + 43
 
 
 def test_content_and_back():
