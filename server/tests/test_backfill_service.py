@@ -20,7 +20,7 @@ from fone.backfill_dedup import JoinFinder, Timeline, load_part
 from fone.backfill_writer import import_name
 from fone.extractor import Extractor, Piece, Segment
 from fone.store import Store
-from test_backfill_synth import PKT, ff, synth, write_frames  # noqa: F401  (fixture)
+from test_backfill_synth import PKT, ff, write_frames
 
 FIX = Path(__file__).parent / "fixtures" / "backfill"
 ROOM, UID, CHANNEL = 23954427, 1313650809, "胡闹P房"

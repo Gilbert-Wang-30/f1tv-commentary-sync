@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from fone.backfill_dedup import JoinFinder, Timeline, find_joins, load_part, video_packets, video_plan
-from test_backfill_synth import LAG, synth  # noqa: F401  (fixture)
+from test_backfill_synth import LAG
 
 REPLAY = Path(os.environ.get("FONE_TEST_KL_REPLAY", ""))  # the KL replay download (p1/p2_audio.m4a); unset: skipped
 

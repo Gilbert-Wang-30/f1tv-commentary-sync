@@ -60,7 +60,9 @@ def test_match_restart_within_the_hour_uses_session_lengths():
     """Stream stopped 9 min in and restarted at 15:20 with the same title: two replays share the
     15点 slot; our logged sessions tell which is which."""
     s1, s2 = bj(2026, 10, 3, 15, 2), bj(2026, 10, 3, 15, 20)
-    mk = lambda bvid, dur, pub: {"title": "【直播回放】T 2026年10月03日15点场", "bvid": bvid, "duration": dur, "pubdate": pub}
+    def mk(bvid, dur, pub):
+        return {"title": "【直播回放】T 2026年10月03日15点场", "bvid": bvid, "duration": dur, "pubdate": pub}
+
     reps = bb.parse_replays([mk("BVshort", 540, 10), mk("BVlong", 7200, 11)])
     sessions = [(s1, s1 + 540), (s2, s2 + 7200)]
     hits = {h.replay.bvid: h for h in bb.match(reps, s2 + 100, s2 + 900, live_start=s2, sessions=sessions)}
@@ -72,7 +74,9 @@ def test_match_restart_within_the_hour_uses_session_lengths():
 def test_pages_for_window():
     pages = fixture("pagelist.json")["data"]
     assert [p["duration"] for p in pages] == [7222, 3182]
-    sel = lambda a, b: [p["page"] for p in bb.pages_for_window(KL_LIVE, KL_LIVE, pages, KL_LIVE + a, KL_LIVE + b)]
+    def sel(a, b):
+        return [p["page"] for p in bb.pages_for_window(KL_LIVE, KL_LIVE, pages, KL_LIVE + a, KL_LIVE + b)]
+
     assert sel(100, 200) == [1]
     assert sel(8000, 9000) == [2]
     assert sel(7000, 7300) == [1, 2]

@@ -16,8 +16,7 @@ from fastapi.testclient import TestClient
 
 from fone.extractor import Piece
 from fone.timeline import MIN_CLIP_SECONDS, MIN_FILL_SECONDS, mutes, uncovered, union
-from test_ads import synth_refs, synth_refs_dir, write_wav  # noqa: F401 (fixtures: the reel references are synthetic)
-from test_ads_detect import B, C, clip, talk
+from test_ads_detect import B, C, clip, talk, write_wav  # (the reel references, synth_refs: conftest)
 
 SH = ZoneInfo("Asia/Shanghai")
 CHANNEL = "胡闹P房"
