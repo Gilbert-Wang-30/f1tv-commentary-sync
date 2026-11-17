@@ -1485,7 +1485,7 @@ async function vodBegin(gen) {
       if (k?.readings?.length) r.clock = { status: 'ok', readings: k.readings, askedAt: 0, kept: true };
     }
     const kept = vodKept(V);
-    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept');
+    if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept', Number(kept.hand) || 0);
     vodSay(V, 'listening', vodListenText(S.snd));
   } catch (e) {
     if (S.vod !== V) return;
@@ -1586,14 +1586,23 @@ function vodFailed(url) {
   const pg = S.vod?.reps.find((x) => x.bvid === bvid)?.pages[+i];
   if (pg) FoneVod.failed(pg);
 }
-function vodPlace(V, r, T0, delay, how) {
+// `hand`: s of nudges in `delay` (vodClockOff leaves them out: yours on top of the clock's place;
+// placed by sound, the nudge kept for its sound).
+function vodPlace(V, r, T0, delay, how, hand = 0) {
+  const was = V.state === 'placed' ? { r: V.cur, T0: V.cur?.T0, delay: S.delay } : null;
   r.T0 = T0;
-  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [] });
+  Object.assign(V, { cur: r, how, hand, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [] });
   vodSay(V, 'placed', '');
   vodApply(V);
   // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
   if (S.snd) S.snd.bias = Number(FoneVod.store.get(sndBiasKey())?.bias) || 0;
+  if (how === 'sound') V.hand = S.snd?.bias || 0;
   S.delay = Math.round((how === 'sound' ? delay + (S.snd?.bias || 0) : delay) * 1000) / 1000;
+  // (what sync by sound found, a delay on the old place, or one this place overrules: found again from here)
+  const sn = S.snd;
+  if (sn && !(was && was.r === r && Math.abs(was.T0 - T0) < 1e-3 && Math.abs(was.delay - S.delay) < 1)) {
+    Object.assign(sn, { target: null, est: [], miss: 0, state: sn.state === 'locked' ? 'listening' : sn.state });
+  }
   S.delaySource = 'sound';
   S.resync = true;
   vodSave();
@@ -1604,7 +1613,7 @@ const vodKey = (r) => `vodPlace|${S.cid}|${r.bvid}`;
 function vodSave(delay = S.delay) {
   const V = S.vod, r = V?.cur;
   if (!r || V.state !== 'placed' || delay == null) return;
-  FoneVod.store.set(vodKey(r), { T0: r.T0, delay: Math.round(delay * 1000) / 1000, at: Date.now() });
+  FoneVod.store.set(vodKey(r), { T0: r.T0, delay: Math.round(delay * 1000) / 1000, at: Date.now(), ...(V.hand ? { hand: V.hand } : {}) });
 }
 function vodKept(V) {
   let best = null;
@@ -1823,7 +1832,7 @@ function vodNeighbour(state) {
 function vodSwitch(r) {
   const V = S.vod, k = FoneVod.store.get(vodKey(r));
   diag('vod', { switch: r.bvid, kept: !!k });
-  if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept');
+  if (k && Number.isFinite(k.T0) && Number.isFinite(k.delay)) return vodPlace(V, r, k.T0, k.delay, 'kept', Number(k.hand) || 0);
   Object.assign(V, { tries: 0, lastTryAt: null, seen: null, cands: [] });
   vodSay(V, 'listening', vodListenText(S.snd));
 }
@@ -1878,19 +1887,23 @@ const vodClockAt = (V, E) => FoneVod.clockAt(V.reps, E, VOD_CLOCK);
 // (none to wait for without a session key, F1 Academy, F2, F3: vodClockStep never asks)
 const vodClockCan = () => !!(S.base && S.content?.sessionKey);
 const vodClockPending = (V) => FoneVod.clockPending(V.reps, now() - V.at, { can: vodClockCan(), wait: VOD.CLOCK_WAIT });
-// What the clock says against where the replay plays (by T0 and the delay): seconds off, or null.
+// What the clock says against where the replay plays (by T0 and the delay, your nudges left out:
+// yours on top of its place): seconds off, or null.
 function vodClockOff(V, E) {
   const r = V.cur;
-  return V.state !== 'placed' ? null : FoneVod.clockOff(vodClockAt(V, E), r, r?.T0, S.delay ?? VOD.D0, VOD.D0);
+  return V.state !== 'placed' ? null : FoneVod.clockOff(vodClockAt(V, E), r, r?.T0, (S.delay ?? VOD.D0) - (V.hand || 0), VOD.D0);
 }
 // Placed by the clock: when not placed yet, or off it by more than VOD.TRUST (a reading near E),
 // VOD.BOUND (only further ones: the streamer's delay may have moved since; sync by sound has it).
+// Sync by sound locked since it was placed: it has the streamer's delay now, the clock only bounds
+// it. Moved on the same replay: your nudges kept on top.
 function vodClockPlace(V, E) {
   const k = vodClockAt(V, E);
-  const off = vodClockOff(V, E);
-  if (!FoneVod.clockMoves(k, off, { placed: V.state === 'placed', ...VOD_CLOCK })) return;
-  if (V.state === 'placed') diag('vod', { clockMoves: Math.round(Math.min(off, 1e6) * 10) / 10, from: V.how });
-  vodPlace(V, k.r, k.T0, VOD.D0, 'clock');
+  const off = vodClockOff(V, E), placed = V.state === 'placed', held = placed && S.snd?.target != null;
+  if (!FoneVod.clockMoves(k, off, { placed, held, ...VOD_CLOCK })) return;
+  if (placed) diag('vod', { clockMoves: Math.round(Math.min(off, 1e6) * 10) / 10, from: V.how, held: held || undefined });
+  const hand = placed && V.cur === k.r ? V.hand || 0 : 0;
+  vodPlace(V, k.r, k.T0, VOD.D0 + hand, 'clock', hand);
 }
 // Each tick: ask the server while it reads (or for a reading near a moment it has none near), then place.
 async function vodClockStep(V, gen, E) {
@@ -2547,7 +2560,10 @@ function nudge(delta) {
     try { localStorage.setItem(localDelayKey(), JSON.stringify({ delay: S.delay, at: Date.now(), v: 2 })); } catch { /* private mode */ }
     return;
   }
-  if (S.timeline?.vod) return vodSave(); // (a Bilibili replay: its place kept here)
+  if (S.timeline?.vod) { // (a Bilibili replay: its place kept here, the nudges on it too)
+    if (S.vod?.state === 'placed') S.vod.hand = Math.round(((S.vod.hand || 0) + delta) * 1000) / 1000;
+    return vodSave();
+  }
   saveServerDelay(S.delay, 800);
 }
 

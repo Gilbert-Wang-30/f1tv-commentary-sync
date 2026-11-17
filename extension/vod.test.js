@@ -303,6 +303,11 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(moves(20, 400), false); // (a reading minutes away only bounds it)
     assert.equal(moves(130, 400), true);
     assert.equal(moves(Infinity, 400), true);
+    // sync by sound locked since: the streamer's delay stepped 20 s since a reading 100 s back,
+    // sound has it now (re-placed by the reading, the commentary jumped back and forth every look)
+    assert.equal(moves(20, 100, { held: true }), false);
+    assert.equal(moves(130, 100, { held: true }), true); // (still never far from it)
+    assert.equal(moves(Infinity, 100, { held: true }), true);
   });
 
   await test("the clock refuses a sound match far from where it says (a lap shown again after the session)", () => {
