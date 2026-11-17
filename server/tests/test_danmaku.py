@@ -5,7 +5,9 @@ import json
 import shutil
 import struct
 import zlib
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -40,6 +42,57 @@ def test_feed_frames_decode_plain_and_zlib_bundles():
     assert decode(heartbeat_reply + bundle + packet(OP_MESSAGE, b"not json", ver=0)) == [a, b]
     signed = wbi_sign({"id": 1, "type": 0}, "a" * 32, "b" * 32, now=1700000000)
     assert signed["wts"] == "1700000000" and len(signed["w_rid"]) == 32
+
+
+class FakeRoom:
+    """Bilibili's end of the websocket: answers `answers` heartbeats (op 3), then nothing at all,
+    as a half-open connection (the heartbeats still 'sent', into the kernel's buffer)."""
+
+    def __init__(self, answers: int):
+        self.answers, self.sent = answers, []
+        self.inbox: asyncio.Queue = asyncio.Queue()
+
+    async def send(self, data: bytes):
+        self.sent.append(struct.unpack(">IHHII", data[:16])[3])
+        if self.sent[-1] == 2 and self.answers > 0:
+            self.answers -= 1
+            await self.inbox.put(struct.pack(">IHHII", 20, 16, 1, 3, 1) + b"\x00\x00\x00\x07")
+
+    async def recv(self):
+        return await self.inbox.get()
+
+
+def test_a_silent_connection_is_not_taken_for_listening(monkeypatch):
+    """A beat was written as each heartbeat was sent: a half-open websocket (no reset) took them
+    for ~15 min, all marked as heard, and danmakus.com's items for that window were dropped as
+    'heard live'. Now a beat is a heartbeat answered, and silence ends the connection."""
+    import websockets
+
+    from fone import danmaku_feed as F
+
+    room = FakeRoom(answers=2)
+
+    @asynccontextmanager
+    async def connect(url, **kw):
+        yield room
+
+    async def token(self):
+        return "b3", "token", {"host": "example.invalid", "wss_port": 443}
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(F.Feed, "_token", token)
+    monkeypatch.setattr(F, "HEARTBEAT_EVERY", 0.05)
+    monkeypatch.setattr(F, "SILENCE", 0.3)
+    events = []
+
+    async def run():
+        feed = F.Feed(ROOM, http=SimpleNamespace())
+        with pytest.raises(ConnectionError, match="nothing from Bilibili"):
+            await feed.run(lambda rx, msgs: None, events.append)
+        assert not feed.connected
+
+    asyncio.run(run())
+    assert events == ["open", "beat", "beat"] and room.sent.count(2) > 2  # (sent into the void: no beat)
 
 
 def test_captured_messages_become_items():

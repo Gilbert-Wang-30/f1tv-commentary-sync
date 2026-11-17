@@ -1,8 +1,9 @@
 """Bilibili's live danmaku feed (the web player's websocket), listened to anonymously.
 
   getDanmuInfo (WBI-signed, with a buvid3 cookie) -> token + hosts
-  wss://<host>/sub: auth packet (op 7), heartbeat (op 2) every 30 s, messages (op 5) arrive
-  as JSON, or bundles of packets compressed with zlib (protover 2) or brotli (protover 3)
+  wss://<host>/sub: auth packet (op 7), heartbeat (op 2) every 30 s, answered (op 3: the
+  room's popularity), messages (op 5) arrive as JSON, or bundles of packets compressed with
+  zlib (protover 2) or brotli (protover 3)
 
 Every packet: 16-byte header (total length, header length 16, protover, op, sequence) + body.
 Anonymous listeners get nicknames masked and uids as 0 (LOG_IN_NOTICE: 为保护用户隐私，未登录
@@ -36,8 +37,11 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 WBI_TAB = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14,
            39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6,
            63, 57, 62, 11, 36, 20, 34, 44, 52]
-OP_HEARTBEAT, OP_MESSAGE, OP_AUTH = 2, 5, 7
+OP_HEARTBEAT, OP_HEARTBEAT_REPLY, OP_MESSAGE, OP_AUTH = 2, 3, 5, 7
 HEARTBEAT_EVERY = 30
+# Nothing from the server this long (it answers every heartbeat): the connection is dead, though
+# a half-open one (a NAT or Wi-Fi drop without a reset) still takes heartbeats for ~15 min.
+SILENCE = 70
 
 
 def wbi_sign(params: dict, img_key: str, sub_key: str, now: float | None = None) -> dict:
@@ -50,6 +54,18 @@ def wbi_sign(params: dict, img_key: str, sub_key: str, now: float | None = None)
 def packet(op: int, body: bytes | dict, ver: int = 1) -> bytes:
     b = body if isinstance(body, bytes) else json.dumps(body).encode()
     return struct.pack(">IHHII", 16 + len(b), 16, ver, op, 1) + b
+
+
+def ops(data: bytes) -> set[int]:
+    """The ops of a frame's packets (heartbeat and auth replies come as packets of their own)."""
+    out, i = set(), 0
+    while i + 16 <= len(data):
+        n, _, _, op, _ = struct.unpack(">IHHII", data[i:i + 16])
+        if n < 16:
+            break
+        out.add(op)
+        i += n
+    return out
 
 
 def decode(data: bytes) -> list[dict]:
@@ -81,8 +97,9 @@ def decode(data: bytes) -> list[dict]:
 
 class Feed:
     """One room's feed: `run` connects, hands every message batch to `on_messages(rx, msgs)`
-    and calls `on_beat(event)` with "open" once connected and "beat" at every heartbeat;
-    it returns (or raises) when the connection ends."""
+    and calls `on_beat(event)` with "open" once connected and "beat" at every heartbeat the
+    server answers (what says we're listening: the capture's spans); it returns (or raises)
+    when the connection ends, or when nothing has come for SILENCE s."""
 
     def __init__(self, room: int, http: httpx.AsyncClient | None = None):
         self.room = room
@@ -123,14 +140,21 @@ class Feed:
             async def beat() -> None:
                 while True:
                     await ws.send(packet(OP_HEARTBEAT, b"[object Object]"))
-                    on_beat("beat")
                     await asyncio.sleep(HEARTBEAT_EVERY)
 
             hb = asyncio.create_task(beat())
             try:
-                async for raw in ws:
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), SILENCE)
+                    except TimeoutError:
+                        raise ConnectionError(f"nothing from Bilibili for {SILENCE} s") from None
+                    except websockets.ConnectionClosedOK:
+                        return
                     if not isinstance(raw, bytes):
                         continue
+                    if OP_HEARTBEAT_REPLY in ops(raw):  # (a heartbeat sent is no proof: it may go nowhere)
+                        on_beat("beat")
                     msgs = decode(raw)
                     if msgs:
                         self.last_rx = time.time()
