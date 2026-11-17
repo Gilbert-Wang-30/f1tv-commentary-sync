@@ -328,6 +328,8 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.clockPending([ok, reading], 10, { wait: 300 }), true);
     assert.equal(V.clockPending([ok, none], 10, { wait: 300 }), false);
     assert.equal(V.clockPending([ok, reading], 301, { wait: 300 }), false); // (waited long enough)
+    // F1 Academy, F2, F3: no session key, never asked: nothing to wait for
+    assert.equal(V.clockPending([fresh], 10, { can: false, wait: 300 }), false);
     const O = { poll: 3, again: 20, near: 240 };
     ok.clock.askedAt = 100;
     const asks = (reps, E, t) => V.clockAsks(reps, E, t, O).map((r) => r.bvid);

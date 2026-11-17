@@ -1480,7 +1480,7 @@ async function vodBegin(gen) {
     if (gen !== S.gen || S.vod !== V) return;
     V.reps = cands;
     vodCuts(V, gen);
-    for (const r of cands) { // (the clock's readings kept from before: placed by them at once, asked again)
+    for (const r of vodClockCan() ? cands : []) { // (the clock's readings kept from before: placed by them at once, asked again)
       const k = FoneVod.store.get(vodClockKey(r));
       if (k?.readings?.length) r.clock = { status: 'ok', readings: k.readings, askedAt: 0, kept: true };
     }
@@ -1875,7 +1875,9 @@ const vodClockKey = (r) => `vodClock|${r.bvid}|${S.content?.sessionKey}`;
 const VOD_CLOCK = { D0: VOD.D0, SCREEN: VOD.SCREEN, near: VOD.CLOCK_NEAR, trust: VOD.TRUST, bound: VOD.BOUND };
 // The replay that holds event time E by its clock, and where (T0): {r, T0, d (s from the reading)}.
 const vodClockAt = (V, E) => FoneVod.clockAt(V.reps, E, VOD_CLOCK);
-const vodClockPending = (V) => FoneVod.clockPending(V.reps, now() - V.at, { wait: VOD.CLOCK_WAIT });
+// (none to wait for without a session key, F1 Academy, F2, F3: vodClockStep never asks)
+const vodClockCan = () => !!(S.base && S.content?.sessionKey);
+const vodClockPending = (V) => FoneVod.clockPending(V.reps, now() - V.at, { can: vodClockCan(), wait: VOD.CLOCK_WAIT });
 // What the clock says against where the replay plays (by T0 and the delay): seconds off, or null.
 function vodClockOff(V, E) {
   const r = V.cur;
@@ -1893,7 +1895,7 @@ function vodClockPlace(V, E) {
 // Each tick: ask the server while it reads (or for a reading near a moment it has none near), then place.
 async function vodClockStep(V, gen, E) {
   const key = S.content?.sessionKey;
-  if (!S.base || !key) return;
+  if (!vodClockCan()) return;
   const asks = FoneVod.clockAsks(V.reps, E, now(), { poll: VOD.CLOCK_POLL, again: VOD.CLOCK_AGAIN, near: VOD.CLOCK_NEAR });
   await Promise.all(asks.map(async (r) => {
     const q = `bvid=${r.bvid}&key=${key}${r.slot ? `&slot=${r.slot}` : ''}${E != null ? `&E=${Math.round(E)}` : ''}`;
