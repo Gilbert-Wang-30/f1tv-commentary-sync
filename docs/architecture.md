@@ -117,7 +117,7 @@ timing/schedule.json         the OpenF1 calendar; timing/tracks/<meeting>.json (
 video/<fid>.json             FLV keyframe index (video handoff)
 vodclock/<bvid>.<key>.json   what a Bilibili replay's frames showed (vodclock)
 danmaku/                     capture/<room>-<yyyymmdd>.jsonl and danmaku.sqlite3
-diag/<day>.jsonl             playback diagnostics, 7 days, at most 64 MB a day
+diag/<day>.jsonl             playback diagnostics, 7 days after the (UTC) day, at most 64 MB a day
 backfill/                    downloads in progress
 ```
 
@@ -151,7 +151,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | `GET /api/timeline?channel=&from=&to=` | the commentary between two wall times, below |
 | `GET /api/playlist.m3u8?files=a,b,…` | the files stitched into one HLS EVENT playlist (`#EXT-X-DISCONTINUITY` between files, `#EXT-X-ENDLIST` once all are finished) |
 | `GET /hls/{fid}/seg_NNNNN.ts` | an audio segment |
-| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event with a non-finite number is cut down like an oversized one; a day's file stops at 64 MB (later events stay in memory) |
+| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event over 8000 bytes, or with a non-finite number, is kept as `{t, type, truncated}`; a day's file stops at 64 MB (later events stay in memory); a line a restart can't read is skipped, not the rest of its day |
 
 **Timing** (`timing.py`, `timing_state.py`, `livefeed.py`), prefix `/api/timing`
 
