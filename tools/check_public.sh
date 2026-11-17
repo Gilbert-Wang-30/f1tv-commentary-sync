@@ -6,12 +6,14 @@
 #    fills the published copy) and the Mac scripts with their update server filled in
 #  - anywhere: Tailscale names (a host under .ts.net) and addresses (100.64/10), home
 #    directories, and NAS paths (under /mnt, in a first folder named nas)
-#  - outside the docs and the example settings (*.md, *.example): home-network addresses
-#    (10/8, 172.16/12, 192.168/16) and other paths under /mnt
-# So an address a reader puts their own in place of (a 192.168.x.y one) is written in the README,
-# docs/ or a *.example file; code, tests and pages use a name (my-server) or the documentation
-# addresses (192.0.2.x, 198.51.100.x, 203.0.113.x: not private, never flagged). A Tailscale name
-# is written <machine>.<tailnet>.ts.net, which names no host.
+#  - home-network addresses (10/8, 172.16/12, 192.168/16) but the one example address
+#    (EXAMPLE_LAN below) in the docs and the example settings (*.md, *.example); outside those,
+#    other paths under /mnt
+# So an address a reader puts their own in place of is EXAMPLE_LAN, in the README, docs/ or a
+# *.example file (any other one there may be someone's real network); code, tests and
+# pages use a name (my-server) or the documentation addresses (192.0.2.x, 198.51.100.x,
+# 203.0.113.x: not private, never flagged). A Tailscale name is written
+# <machine>.<tailnet>.ts.net, which names no host.
 #   tools/check_public.sh [repo]    (this repository by default)
 set -uo pipefail
 REPO=${1:-$(dirname "$0")/..}
@@ -46,16 +48,20 @@ for f in tools/mac/install-mac.sh tools/mac/fone-sync.sh; do
 done
 
 # Third-party code and binary files aside, every tracked file; EXAMPLES: not the docs or the
-# example settings.
+# example settings; DOCS: only those.
 ALL=(-- . ':!extension/vendor/')
 EXAMPLES=(':!*.md' ':!*.example')
+DOCS=(-- '*.md' '*.example' ':!extension/vendor/')
 each "a Tailscale name (in an example: <machine>.<tailnet>.ts.net)" < <(
   git grep -nIoE '[A-Za-z0-9-]+\.ts\.net' "${ALL[@]}")
 OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 LAN="(10(\.$OCTET){3}|172\.(1[6-9]|2[0-9]|3[01])(\.$OCTET){2}|192\.168(\.$OCTET){2})"
 TAILSCALE="100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])(\.$OCTET){2}"
-each "a home-network address (an example to fill in goes in a *.md or *.example file; elsewhere use 192.0.2.10)" < <(
-  git grep -nIoE "(^|[^0-9.])$LAN([^0-9.]|$)" "${ALL[@]}" "${EXAMPLES[@]}")
+EXAMPLE_LAN=$(printf '%s.' 192 168 1 20)  # (the docs' one; spelt so it's not one here)
+EXAMPLE_LAN=${EXAMPLE_LAN%.}
+each "a home-network address (an example to fill in is $EXAMPLE_LAN, in a *.md or *.example file; elsewhere use 192.0.2.10)" < <(
+  git grep -nIoE "(^|[^0-9.])$LAN([^0-9.]|$)" "${ALL[@]}" "${EXAMPLES[@]}"
+  git grep -nIoE "(^|[^0-9.])$LAN([^0-9.]|$)" "${DOCS[@]}" | grep -vE ":[0-9]+:([^0-9.])?${EXAMPLE_LAN//./\\.}([^0-9.])?$")
 each "a Tailscale address" < <(git grep -nIoE "(^|[^0-9.])$TAILSCALE([^0-9.]|$)" "${ALL[@]}")
 each "a home directory" < <(git grep -nIoE '(/home|/Users)/[a-z][A-Za-z0-9._-]*' "${ALL[@]}")
 MNT='/mnt/[A-Za-z0-9._/-]+' NAS=':/mnt/[n]as(/.*)?$'

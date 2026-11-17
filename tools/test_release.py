@@ -247,14 +247,14 @@ class CheckPublic(unittest.TestCase):
         "extension/local.js": "// placeholder\n" + PLACEHOLDER,
         "tools/mac/install-mac.sh": 'BASE="${FONE_DIST:-__FONE_DIST__}"\n',
         "tools/mac/fone-sync.sh": 'BASE="${FONE_DIST:-__FONE_DIST__}"\n',
-        # an example to fill in: a home-network address and a share under /mnt, in the docs and
-        # the example settings only
+        # an example to fill in: the example home-network address and a share under /mnt, in the
+        # docs and the example settings only
         "tools/publish.env.example": f"FONE_SERVERS=http://my-server:8788,http://{LAN}:8788\n"
                                      f"FONE_EXT_DEST={SHARE}/apps/fone-extension\n",
-        ".env.example": f"FONE_RECORDINGS={SHARE}/recordings\n# FONE_SERVER=http://{ip(10, 0, 0, 2)}:8788\n",
+        ".env.example": f"FONE_RECORDINGS={SHARE}/recordings\n# FONE_SERVER=http://{LAN}:8788\n",
         "README.md": f"mkdir -p {SHARE}/recordings/fone-import\nhttp://{LAN}:8788 or "
                      "http://<machine>.<tailnet>.ts.net:8788\n",
-        "docs/setup.md": f"`{ip(172, 16, 0, 2)}` is read as http://{ip(172, 16, 0, 2)}:8788\n",
+        "docs/setup.md": f"`{LAN}` is read as http://{LAN}:8788 ({ip(192, 0, 2, 10)}: never flagged)\n",
         "server/tests/test_x.py": 'KL = "/rec/fone/x.flv"\n',
         "docker-compose.yml": "volumes:\n  - ${FONE_REC_ROOT:?set it in .env}:/rec:ro\n",
         "server/fone/app.py": f"VERSION = '{ip(10, 0, 1)}'  # 1.{ip(192, 168, 1, 1)} is a version, not an address\n",
@@ -296,6 +296,11 @@ class CheckPublic(unittest.TestCase):
             "docs/nas.md": (f"mkdir -p {NAS}/library/recordings/fone-import\n", "a NAS path"),
             ".env.example": (f"FONE_RECORDINGS={NAS}/library/recordings\n", "a NAS path"),
             "server/tests/test_y.py": (f'KL = "{NAS}/library/recordings/x.flv"\n', "a NAS path"),
+            # a home-network address other than the example one: in the docs and examples too
+            "docs/lan.md": (f"http://{LAN}:8788, or ours: http://{ip(192, 168, 0, 7)}:8788\n", lan),
+            "docs/vpn.md": (f"`{ip(172, 16, 0, 2)}`\n", lan),
+            "tools/x.env.example": (f"# FONE_SERVER=http://{ip(10, 0, 0, 2)}:8788\n", lan),
+            "README.example": (f"http://{LAN}0:8788\n", lan),  # (a digit more: not the example)
             # a home-network address or another /mnt path: anywhere but the docs and the examples
             "e2e/x.py": (f"HOST = '{LAN}'\n", lan),
             "server/fone/x.py": (f"H = ('{ip(10, 0, 0, 5)}', 1)\n", lan),
@@ -318,7 +323,8 @@ class CheckPublic(unittest.TestCase):
             git_repo(Path(t), {**self.CLEAN, "e2e/x.py": f"\n\nHOST = '{LAN}'\n"})
             p = run("bash", str(TOOLS / "check_public.sh"), t, env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(p.stdout.splitlines()[0], "::error file=e2e/x.py,line=3::a home-network address (an "
-                         f"example to fill in goes in a *.md or *.example file; elsewhere use 192.0.2.10): '{LAN}'")
+                         f"example to fill in is {LAN}, in a *.md or *.example file; elsewhere use 192.0.2.10): "
+                         f"'{LAN}'")
 
 
 if __name__ == "__main__":

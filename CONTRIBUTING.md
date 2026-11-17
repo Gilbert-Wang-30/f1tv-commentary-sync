@@ -16,9 +16,10 @@ being rewritten.
 - Don't commit anything from your own setup: server names, IPs, Tailscale hosts, NAS paths,
   credentials (`.env`, `recorder/api.env` and `tools/publish.env` are gitignored for that
   reason). `tools/check_public.sh` fails CI on them. An address for readers to put their own
-  in place of (`http://192.168.1.20:8788`) belongs in the docs (`*.md`) or a `*.example` file
-  only; code, tests and pages use a name (`my-server`) or `192.0.2.x`. Tailscale names and
-  addresses, and paths on a NAS mounted under `/mnt` as `nas`, fail everywhere.
+  in place of is always `192.168.1.20` (`http://192.168.1.20:8788`), and only in the docs
+  (`*.md`) or a `*.example` file; code, tests and pages use a name (`my-server`) or
+  `192.0.2.x`. Any other home-network address, Tailscale names and addresses, and paths on a
+  NAS mounted under `/mnt` as `nas`, fail everywhere.
 - A change someone running fone would notice gets a line in the top section of
   [CHANGELOG.md](CHANGELOG.md); releases are cut from it ([docs/releasing.md](docs/releasing.md)).
 
