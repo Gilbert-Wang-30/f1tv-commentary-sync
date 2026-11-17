@@ -53,6 +53,9 @@ image to run with your own streamer, recorder and storage.
   interface, IPv4 and IPv6, as before, for the LAN; on a VPS a private one (a VPN's, or
   `127.0.0.1` and an SSH tunnel): Docker's published ports bypass ufw's rules. A VPN's address
   has to be up when Docker starts (README: the sysctl or the systemd order that sees to it).
+- `tools/diag.py --file <data>/diag/*.jsonl` reads the server's diagnostics files (all 7 days,
+  not only the last 20000 events), and `--report sound` sums up sync by sound run by run: how
+  soon it locked, how sure its looks were, how steady it held, what moved it.
 
 ### Changed
 - Your setup, not the author's: `docker-compose.yml` takes the recordings folder, rooms,
@@ -106,6 +109,8 @@ image to run with your own streamer, recorder and storage.
   `FONE_BACKFILL_RECORD` / `FONE_BACKFILL_SKIP`; empty: the gate's F1 words). An import asked
   for by hand takes any live; `/api/backfill/status` says why a live was left alone, and an
   automatic job an older server made for such a live expires.
+- `tools/diag.py` no longer stops at a snapshot the server kept only the time of (over its 4000
+  bytes).
 - Bilibili replays: the clock on the streamer's screen and sync by sound no longer pull the
   commentary back and forth when the streamer's delay steps (a pause no longer counts against
   sound's look again); no swapping between two replays in a restart's gap; a backward seek no

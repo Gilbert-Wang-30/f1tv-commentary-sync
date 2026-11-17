@@ -114,6 +114,8 @@ jobs:
           ruff check --output-format=github server recorder tools
       - name: release tools
         run: python3 tools/test_release.py
+      - name: diag tool
+        run: python3 tools/test_diag.py
       - name: actionlint (these workflows)
         run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color
       - name: shellcheck (release scripts)
