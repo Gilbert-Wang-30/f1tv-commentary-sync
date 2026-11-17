@@ -2,37 +2,98 @@ name: CI
 
 on:
   push:
+    branches: ['**']   # a v* tag goes through release.yml, which runs this first
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command before a pipe fails the step
+
+concurrency:
+  # its own prefix (called from release.yml, github.workflow is the caller's), and the event: a
+  # release dry run on a branch isn't cancelled by a push to it
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   extension:
     name: extension unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Most of the extension (offscreen.js, content.js, page.js, dashboard.js…) runs only in
+      # Chrome: parsing it is all CI can do, and a syntax error would ship otherwise.
+      - name: every script parses
+        run: |
+          for f in extension/*.js extension/vendor/*.min.js tools/*.js; do
+            node --check "$f" || { echo "::error file=$f::does not parse"; exit 1; }
+          done
+      # The release zip, built and thrown away: it fails when a file the manifest,
+      # background.js or a page loads is missing.
+      - name: package (every file the extension loads is there)
+        run: tools/build_ext.sh "$RUNNER_TEMP/ext"
       # livepos.test.js reads ../server/tests/fixtures, so the tests run from extension/
       # inside the full checkout.
       - name: run the unit tests
         working-directory: extension
         run: |
-          for t in core dashcore dmcore background livepos demux localcore recorder sound settings teamradio vod shotlayout; do
+          for t in *.test.js; do
             echo "== $t"
-            node "$t.test.js"
+            node "$t"
           done
 
   server:
     name: server tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Layers cached between runs (and shared with release.yml's image): apk's ffmpeg and
+      # tesseract and the pip install are most of a cold build.
       - name: build the server image
-        run: docker build -t fone:ci server
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          load: true
+          tags: fone:ci
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
       # -rs lists the skipped tests: the ones that need a real recording (not in the
       # repository) skip here.
       - name: pytest
         run: |
           docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 fone:ci \
-            sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
+            sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
+
+  checks:
+    name: release checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: version and changelog
+        run: python3 tools/check_version.py
+      - name: nothing personal committed
+        run: tools/check_public.sh
+      - name: ruff
+        run: |
+          pip install -q ruff==0.17.5
+          ruff check --output-format=github server tools/check_version.py tools/test_release.py
+      - name: release tools
+        run: python3 tools/test_release.py
+      - name: actionlint (these workflows)
+        run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color
+      - name: shellcheck (release scripts)
+        run: shellcheck -S warning tools/build_ext.sh tools/check_public.sh tools/publish_ext.sh

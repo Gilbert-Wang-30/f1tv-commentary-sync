@@ -1,0 +1,12 @@
+# ruff check server (CI): ruff's default rules, errors and pyflakes only. No line length and no
+# formatter: the code's lines run long where a table or a call reads better on one.
+target-version = "py312"
+extend-exclude = ["tests/fixtures"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# pytest fixtures imported from another test module and taken as arguments read to pyflakes
+# as a redefinition; small lambdas stand in for fakes.
+"tests/**" = ["F811", "E731"]
