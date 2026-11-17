@@ -79,6 +79,13 @@ def _danmaku():
     return svc, make_router(svc)
 
 
+def _vodclock():
+    from .vodclock import VodClockService, make_router
+
+    svc = VodClockService(cfg, timing)
+    return svc, make_router(svc)
+
+
 def _build(name, build):
     """An enabled service, or None. One that can't even be built (missing numpy, bad
     settings) is left out rather than taking the commentary sync down with it."""
@@ -100,9 +107,10 @@ screenclock = _build("screenclock", _screenclock)
 video = _build("video", _video)
 backfill = _build("backfill", _backfill)
 danmaku = _build("danmaku", _danmaku)
+vodclock = _build("vodclock", _vodclock) if timing is not None else None  # (reads the session's timing)
 SERVICES = {name: svc for name, svc in
             (("timing", timing), ("ads", ads), ("screenclock", screenclock), ("video", video),
-             ("backfill", backfill), ("danmaku", danmaku)) if svc is not None}
+             ("backfill", backfill), ("danmaku", danmaku), ("vodclock", vodclock)) if svc is not None}
 
 
 async def _scanner() -> None:

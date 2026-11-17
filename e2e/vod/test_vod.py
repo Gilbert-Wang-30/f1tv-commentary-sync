@@ -12,6 +12,11 @@ it was at once.
 FAINT (run.sh's VOD_FAINT): F1 TV's sound only faint in the stream, as with F1 TV's Track FX
 against a streamer talking over the feed they pass on: no one look sure. fone has to find this
 moment all the same (a likely place found again by the sound heard after it), in the right place.
+
+CLOCK (run.sh's VOD_CLOCK): the mock server reads the clock on the streamer's screen as a fone
+server does (/api/vod/clock: the event time their screen showed at two places in the replay,
+true to F1 TV's sound but for the screen's lead): fone places the replay by it at once, sync by
+sound then takes it the last bit.
 """
 
 import asyncio
@@ -36,6 +41,9 @@ SLOT = 1751806800  # 2025-07-06 21点场 (13:00 UTC)
 P0 = SLOT + 1800 - 50 + AT + 1020
 PORT = 8799
 CHANNEL = "马莎拉车"
+CLOCK = bool(os.environ.get("CLOCK"))
+SCREEN = 1.5  # (the extension's VOD.SCREEN: their screen's clock ahead of the sound)
+CLOCK_ASKS = []
 DIAG = []  # (the engine's diagnostics, posted to the mock server: printed as it goes)
 
 
@@ -71,6 +79,11 @@ class Mock(BaseHTTPRequestHandler):
             return self.send({"sessionKey": None})
         if p == "/api/timeline":
             return self.send({"files": [], "pieces": [], "playlist": None, "live": False, "complete": True, "mutes": [], "edge": None})
+        if p == "/api/vod/clock" and CLOCK:
+            CLOCK_ASKS.append(self.path)
+            # (the replay's AT + p is F1 TV's picture p: event time P0 + p; on screen SCREEN s ahead)
+            return self.send({"status": "ok", "readings": [{"page": 1, "at": a, "wall": P0 + (a - AT) + SCREEN, "text": "Race"}
+                                                           for a in (AT + 40, AT + 400)]})
         return self.send({"detail": "not here"}, 404)
 
     def do_PUT(self):
@@ -132,6 +145,25 @@ async def main():
 
         def placed(s):  # where the commentary plays against where F1 TV's sound is in the replay (AT + p)
             return s["m"] - (AT + s["p"])
+
+        if CLOCK:
+            t0 = time.time()
+            await open_replay()
+            st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("state") == "placed", 90, "placed by the clock")
+            took = time.time() - t0
+            E.check(st["vod"]["how"] == "clock" and took < 25,
+                    f"the clock on the streamer's screen: placed by it in {took:.0f}s ({st['vod']['tries']} looks by sound)")
+            E.check(any(f"bvid={BVID}" in q and "key=9947" in q and f"slot={SLOT}" in q for q in CLOCK_ASKS),
+                    f"…asked the server for it by replay, session and slot ({len(CLOCK_ASKS)} asks)")
+            st = await E.wait_status(page, lambda s: s.get("state") == "sync" and (s.get("sound") or {}).get("state") == "locked"
+                                     and abs(placed(s)) < 0.15, 120, "locked by sound")
+            E.check(abs(placed(st)) < 0.15, f"…then sync by sound took it the last bit: {placed(st) * 1000:+.0f} ms from F1 TV's sound")
+            n = len([d for d in DIAG if d.get("type") == "vod" and d.get("place")])
+            E.check(n == 1, f"…put there once ({n})")
+            await ctx.close()
+            srv.shutdown()
+            print(f"== {E.passed} passed")
+            return
 
         if os.environ.get("FAINT"):
             t0 = time.time()

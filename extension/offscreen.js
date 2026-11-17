@@ -1423,12 +1423,22 @@ function sndSteer(t, v) {
 // this video and replay, and the replay's ~5 s repeats (FoneVod.findCuts) for the replay. Sync by
 // sound not confirming it in VOD.CONFIRM looks: looked for again, playing on meanwhile (then every
 // VOD.AGAIN s while it still doesn't). Off the end of one replay (the streamer restarted): the
-// next, found the same way.
+// next, found the same way. With a fone server: first and foremost by the clock on the streamer's
+// screen (their MultiViewer header, the session and its clock: when the session's clock showed
+// that is the event time on their screen there; vodclock.py reads it), sound then taking it the
+// last second; sound alone, over the hour, only without one (or no clock on their screen).
 // (real matches, 2026-11-11, 4 kHz: a median 14, a tenth under 8.1; the runner-up 4-7 over ±25 s)
 // (WIN..WIN_MAX s of F1 TV's sound, a look every STEP s more of it; the replay fetched and decoded
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
-  WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60 };
+  WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
+  CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120 };
+// (the clock on the streamer's screen, read by a fone server: vodClock*. CLOCK_POLL s between asks
+// while it reads, CLOCK_AGAIN for a reading near a new moment; sound waits CLOCK_WAIT s for it
+// (unless sure at once). SCREEN: their screen's clock runs this far ahead of the sound they pass
+// on (2026 Italian GP race: 1.2 and 1.7 s). A reading within CLOCK_NEAR s of the moment rules:
+// where it plays is moved there when TRUST s off it (more than sync by sound's own drift); one
+// further away only bounds sound to BOUND s of where it says)
 // (AHEAD: repeats looked for this far ahead of what plays, SCAN s of the replay a look)
 // (a look that isn't sure keeps its likeliest places, FoneVod.keepLikely: each checked against
 // the F1 TV sound heard after it, VOD.FRESH s at least, VOD.VERIFY at where it says, as F1 TV
@@ -1466,6 +1476,10 @@ async function vodBegin(gen) {
     if (gen !== S.gen || S.vod !== V) return;
     V.reps = cands;
     vodCuts(V, gen);
+    for (const r of cands) { // (the clock's readings kept from before: placed by them at once, asked again)
+      const k = FoneVod.store.get(vodClockKey(r));
+      if (k?.readings?.length) r.clock = { status: 'ok', readings: k.readings, askedAt: 0, kept: true };
+    }
     const kept = vodKept(V);
     if (kept) return vodPlace(V, kept.rep, kept.T0, kept.delay, 'kept');
     vodSay(V, 'listening', vodListenText(S.snd));
@@ -1683,11 +1697,15 @@ async function vodSearch(V, gen, Q, scan = true) {
     if (gen !== S.gen || S.vod !== V) return false;
     checked = ck.checked;
     const h = ck.hit;
-    if (h) {
+    // (where the clock on the streamer's screen says, or it still being read: not elsewhere)
+    const kc = h ? vodClockAt(V, h.E) : null, hT0 = h ? h.E + VOD.D0 - FoneVod.contentAt(h.cand.rep, h.m) : null;
+    if (h && (vodClockPending(V) || (kc && (kc.r !== h.cand.rep || Math.abs(hT0 - kc.T0) > VOD.BOUND)))) {
+      diag('vod', { clockVeto: { bvid: h.cand.rep.bvid, m: r2(h.m), score: r1(h.score), off: kc?.r === h.cand.rep ? r1(hT0 - kc.T0) : null } });
+    } else if (h) {
       // F1 TV's sound heard since found again where the likely place said: this moment is there
       diag('vod', { again: { bvid: h.cand.rep.bvid, m: r2(h.m), score: r1(h.score), d: r2(h.d), from: h.cand.look, then: r1(h.cand.score) },
         look: V.tries, pa: r1(pa), checked });
-      vodPlace(V, h.cand.rep, h.E + VOD.D0 - FoneVod.contentAt(h.cand.rep, h.m), VOD.D0, 'sound');
+      vodPlace(V, h.cand.rep, hT0, VOD.D0, 'sound');
       return true;
     }
     if (!scan && checked.length) diag('vod', { check: V.checks, pa: r1(pa), checked, cands: V.cands.length });
@@ -1727,12 +1745,20 @@ async function vodSearch(V, gen, Q, scan = true) {
     best: best ? { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
     more: hits.slice(1, 3).map((h) => [r2(h.m), r1(h.score)]), checked, cands: V.cands.length });
   // (placed already, and sync by sound not confirming it: moved only by a match far above all else)
-  const sure = placed ? !!best && best.score >= VOD.SURE && best.score >= 2 * rival
+  // (the clock on the streamer's screen still being read: sound only when sure at once)
+  const hold = !placed && vodClockPending(V);
+  const sure = placed || hold ? !!best && best.score >= VOD.SURE && best.score >= 2 * rival
     : !!best && best.score >= VOD.SCORE && best.score >= VOD.RATIO * rival;
-  if (sure) {
+  // (and never far from where the clock says: the F1 feed shows the same pictures, so the same
+  // sound, again and again, laps replayed after a session)
+  const ck = best ? vodClockAt(V, E) : null;
+  const T0 = best ? E + VOD.D0 - FoneVod.contentAt(best.rep, best.m) : null;
+  if (sure && ck && (ck.r !== best.rep || Math.abs(T0 - ck.T0) > (ck.d <= VOD.CLOCK_NEAR ? VOD.TRUST : VOD.BOUND))) {
+    diag('vod', { clockVeto: { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), off: ck.r === best.rep ? r1(T0 - ck.T0) : null } });
+  } else if (sure) {
     // F1 TV's sound at picture pa is at best.m in the replay: put there with the delay at VOD.D0
     // (and the nudge on top of the sound, as sync by sound keeps it)
-    const T0 = E + VOD.D0 - FoneVod.contentAt(best.rep, best.m), delay = VOD.D0;
+    const delay = VOD.D0;
     if (!(placed && V.cur === best.rep && Math.abs(T0 - best.rep.T0) < 1)) vodPlace(V, best.rep, T0, delay, 'sound');
     return true;
   }
@@ -1758,6 +1784,11 @@ function vodTick(t, v) {
       vodScan(V, r, S.gen).finally(() => { V.scanning = false; });
     }
   }
+  if (V && V.reps.length && !V.clockBusy && !v.seeking) {
+    V.clockBusy = true;
+    const E = C.eventTime(S.clock, S.content, C.videoNow(v, t).p, null, t, { manualBase: S.manualBase });
+    vodClockStep(V, S.gen, E).catch(() => null).finally(() => { V.clockBusy = false; });
+  }
   if (!V || V.busy || !sn || v.paused || v.seeking || v.waiting) return;
   const since = V.lastTryAt == null ? Infinity : t - V.lastTryAt;
   // (listening: a look whenever there's STEP s more of F1 TV's sound; after a whole plan missed, RETRY s on)
@@ -1767,7 +1798,8 @@ function vodTick(t, v) {
     const vn = C.videoNow(v, t);
     vodPrefetch(V, S.gen, C.eventTime(S.clock, S.content, vn.p, null, t, { manualBase: S.manualBase }));
   }
-  const unsure = V.state === 'placed' && sn.target == null && (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM
+  // (placed by the clock: it says where; sync by sound finds the last second near there itself)
+  const unsure = V.state === 'placed' && V.how !== 'clock' && sn.target == null && (sn.looks || 0) - (V.looks0 || 0) >= VOD.CONFIRM
     && sn.state === 'listening' && since >= (V.rechecks ? VOD.AGAIN : 60);
   if (!due && !unsure && !check) return;
   const Q = vodQuery(V);
@@ -1824,7 +1856,87 @@ function vodBrief() {
   if (!V) return null;
   const r = V.cur;
   return { state: V.state, text: V.text || null, bvid: r?.bvid ?? null, title: r?.live ?? null, how: V.how ?? null, tries: V.tries,
-    likely: V.state === 'placed' ? 0 : V.cands.length, reps: V.reps.length, cuts: r ? (r.cutsDone ? r.cuts.length : null) : null };
+    likely: V.state === 'placed' ? 0 : V.cands.length, reps: V.reps.length, cuts: r ? (r.cutsDone ? r.cuts.length : null) : null,
+    clock: V.reps.some((x) => x.clock?.status === 'ok') ? 'ok' : V.reps.some((x) => x.clock?.status === 'working') ? 'working'
+      : V.reps.some((x) => x.clock) ? (V.reps.find((x) => x.clock)?.clock.status ?? null) : null };
+}
+
+// ---- the streamer's screen: where the replay is by the clock on it ---------------------------
+// A fone server reads it (vodclock.py): readings [{page, at, wall}], the event time the streamer's
+// screen showed `at` s into the replay's page `page`. Each puts the replay on the event clock
+// (T0, as a sound match does); the one nearest the moment playing is used, the streamer's own
+// delay moving now and then. Asked again (with E) for one near a new moment after a seek.
+const vodClockKey = (r) => `vodClock|${r.bvid}|${S.content?.sessionKey}`;
+function vodPageStart(r, page) {
+  let off = 0;
+  for (const pg of r.pages) { if (pg.page === page) return off; off += pg.dur; }
+  return null;
+}
+// The replay that holds event time E by its clock, and where (T0): {r, T0, d (s from the reading)}.
+function vodClockAt(V, E) {
+  let best = null;
+  for (const r of V.reps) {
+    if (r.clock?.status !== 'ok') continue;
+    for (const rd of r.clock.readings || []) {
+      const p0 = vodPageStart(r, rd.page);
+      if (p0 == null) continue;
+      const T0 = rd.wall + VOD.D0 - FoneVod.contentAt(r, p0 + rd.at) - VOD.SCREEN;
+      const c = E + VOD.D0 - T0; // (E's place in this replay's content, by this reading)
+      if (c < 0 || c > FoneVod.contentAt(r, r.total)) continue;
+      const d = Math.abs(rd.wall - E);
+      if (!best || d < best.d) best = { r, T0, d };
+    }
+  }
+  return best;
+}
+const vodClockPending = (V) => V.reps.some((r) => !r.clock || r.clock.status === 'working') && now() - V.at < VOD.CLOCK_WAIT;
+// What the clock says against where the replay plays (by T0 and the delay): seconds off, or null.
+function vodClockOff(V, E) {
+  const k = vodClockAt(V, E), r = V.cur;
+  if (!k || !r || V.state !== 'placed') return null;
+  return k.r !== r ? Infinity : Math.abs((r.T0 - (S.delay ?? VOD.D0)) - (k.T0 - VOD.D0));
+}
+// Placed by the clock: when not placed yet, or off it by more than VOD.TRUST (a reading near E),
+// VOD.BOUND (only further ones: the streamer's delay may have moved since; sync by sound has it).
+function vodClockPlace(V, E) {
+  const k = vodClockAt(V, E);
+  if (!k) return;
+  const off = vodClockOff(V, E);
+  if (V.state === 'placed' && !(off > (k.d <= VOD.CLOCK_NEAR ? VOD.TRUST : VOD.BOUND))) return;
+  if (V.state === 'placed') diag('vod', { clockMoves: Math.round(Math.min(off, 1e6) * 10) / 10, from: V.how });
+  vodPlace(V, k.r, k.T0, VOD.D0, 'clock');
+}
+// Each tick: ask the server while it reads (or for a reading near a moment it has none near), then place.
+async function vodClockStep(V, gen, E) {
+  const key = S.content?.sessionKey;
+  if (!S.base || !key) return;
+  const t = now(), asks = V.reps.filter((r) => {
+    const c = r.clock;
+    if (!c || c.status === 'working' || c.more) return t - (c?.askedAt || 0) >= VOD.CLOCK_POLL;
+    if (c.status === 'error') return t - c.askedAt >= 30;
+    if (c.status !== 'ok' || E == null) return false;
+    const near = (c.readings || []).some((rd) => Math.abs(rd.wall - E) < VOD.CLOCK_NEAR);
+    return !near && t - (c.askedAt || 0) >= VOD.CLOCK_AGAIN;
+  });
+  await Promise.all(asks.map(async (r) => {
+    const q = `bvid=${r.bvid}&key=${key}${r.slot ? `&slot=${r.slot}` : ''}${E != null ? `&E=${Math.round(E)}` : ''}`;
+    const was = r.clock;
+    try {
+      const j = await api(`/api/vod/clock?${q}`);
+      r.clock = { ...j, askedAt: now() };
+      if (j.status === 'ok' && j.readings?.length) FoneVod.store.set(vodClockKey(r), { readings: j.readings, at: Date.now() });
+      if (j.status !== was?.status || (j.readings?.length || 0) !== (was?.readings?.length || 0))
+        diag('vod', { clock: r.bvid, status: j.status, n: j.readings?.length || 0, why: j.why || null, more: !!j.more });
+    } catch (e) {
+      // (an older server without it: none; else asked again in a while, what it read kept)
+      const gone = /HTTP 404/.test(String(e.message));
+      r.clock = was?.status === 'ok' ? { ...was, askedAt: now() } : { status: gone ? 'none' : 'error', why: String(e.message || e), askedAt: now() };
+    }
+  }));
+  if (gen !== S.gen || S.vod !== V || E == null) return;
+  vodClockPlace(V, E);
+  if (V.state !== 'placed' && vodClockPending(V))
+    V.text = `Finding this moment by the clock on ${vodWho()}'s screen in their replay…`;
 }
 
 // ---- team radio, filled in ----------------------------------------------------------

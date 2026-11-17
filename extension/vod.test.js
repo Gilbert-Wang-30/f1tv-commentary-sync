@@ -160,8 +160,8 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     const E = slot + 3600; // an event an hour after the slot: the replay's 0..60 min, +delay
     const plan = V.searchPlan([rep], E, { chunk: 200, win: 25 });
     const lo = Math.min(...plan.map((c) => c.a)), hi = Math.max(...plan.map((c) => c.a + c.len));
-    assert.ok(lo <= 0 + 1 && hi >= 3600 + 600, `${lo}..${hi}`);
-    assert.ok(hi <= 3600 + 600 + 60 + 25 + 227); // (the last stretch runs on by at most one)
+    assert.ok(lo <= 0 + 1 && hi >= 3600 + 180, `${lo}..${hi}`);
+    assert.ok(hi <= 3600 + 180 + 60 + 25 + 227); // (the last stretch runs on by at most one)
     // nearest E + 50 - (slot + 30 min) = 1850 first
     assert.ok(Math.abs(plan[0].a + plan[0].len / 2 - 1850) <= 120, JSON.stringify(plan[0]));
     // every stretch's look overlaps the next by the look's length

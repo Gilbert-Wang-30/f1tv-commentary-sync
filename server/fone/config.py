@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
-FEATURES = ("timing", "ads", "screenclock", "video", "backfill", "danmaku")
+FEATURES = ("timing", "ads", "screenclock", "video", "backfill", "danmaku", "vodclock")
 OFF = ("0", "false", "no", "off")
 
 

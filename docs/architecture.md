@@ -57,7 +57,7 @@ comparable one (`server/fone/store.py`, `CLOCK_FAMILY`).
 `server/fone/app.py` builds everything at import (so the routers can be mounted) and starts the
 services in FastAPI's lifespan. The core (recordings scanner, audio extractor, F1 TV mapper,
 sync store, playback diagnostics) is always on; each optional service (timing, ads, screenclock,
-video, backfill, danmaku) is a class with `start()`/`stop()` plus a `make_router(svc)`, switched
+video, backfill, danmaku, vodclock) is a class with `start()`/`stop()` plus a `make_router(svc)`, switched
 off with `FONE_<NAME>=0`, and one that fails to build or start is left out rather than taking
 the commentary sync down (`/api/health` lists the running ones).
 
@@ -138,6 +138,7 @@ allowed, so a page on https://f1tv.formula1.com can read from a server on the LA
 | `POST /api/backfill/import` `{"bvid"}` or `{"from", "to", "channel"}` | import a replay by hand (409 unless `FONE_ROOMS` and `FONE_IMPORT_DIR` are set) |
 | `GET /api/danmaku?channel=&from=&to=[&limit=]` | `{items: [{t, x, m: 1\|4\|5, s, c, u, ul?, ml?, wl?, g?, e?, em?, k?, p?}], live, room}`, oldest first, at most 6000 (see `danmaku.py` for the fields) |
 | `GET /api/danmaku/status` | rooms listened to, capture and archive state |
+| `GET /api/vod/clock?bvid=&key=[&slot=][&E=]` | where the streamer's Bilibili replay `bvid` runs on the event clock of session `key`, read off their screen: `{status: "working"\|"ok"\|"none"\|"error", readings: [{page, at, wall, text}], more, why}` (`wall`: the event time their screen showed `at` s into page `page`); `E` asks for a reading near that event time (vodclock below) |
 
 ### The timeline and the delay
 
@@ -219,6 +220,29 @@ keyframes are OCRed with tesseract, the readings checked against a running clock
 sub-second part timed from the frame where the seconds digit ticks. Finished files once;
 growing files every few minutes, incrementally. The raw readings are kept with the result, so
 a restart resumes.
+
+**vodclock**: where a streamer's Bilibili replay (直播回放) runs on the event clock, read off
+their screen. A 直播回放 says nothing exact about when it was recorded: Bilibili gives the Beijing
+hour the live began (its title's `21点场`) and when it was published, the media no timestamp, and
+danmakus.com merges a restarted live into the one before (胡闹P房's 2026 Italian GP qualifying:
+"started 20:10", which was the F2 sprint's stream). Every replay of theirs shows MultiViewer's
+header, though: the session and its clock (`Italian GP: Qualifying 2` over `13:04`; a race's
+`1:58:31 Lap: 2/53`). The session's timing says when its clock showed that (the stored
+`ExtrapolatedClock`, real or OpenF1's rebuild; a race's, where neither has one, from its
+`SessionStatus`: 2 h from the start, stopped while red-flagged), so a frame gives the event time
+on the streamer's screen there. Frames come from the replay's 1080p video, one fragment each by
+its sidx; the header is found by OCR of the whole frame (the `GP:` line, the clock-like word under
+the event's name, a race's `N/M` after `Lap:`), its clock read again closely at three sizes (the
+most of them wins), the lap only when two agree (it only rules readings out). Frames go first
+where the clock runs whenever in the slot's hour the live began, three at a time, until two
+near each other (25 min of content) agree on where the replay's content starts (±2 s); only near:
+the streamer's own delay moves now and then (Q1 of that qualifying drifted up to 36 s against
+Q2: their F1 TV buffering, a pause), so frames an hour apart may both be right and still
+disagree. Then, asked with `E` (the moment the extension plays) and no reading within 4 min of
+it, three frames there (once per moment; none where the clock doesn't run: before the session, a
+break). Readings are kept per replay and session in `<data>/vodclock/`. The 2026 Italian GP
+race: a place 1.7 s from where its sound had put it, read in 11-80 s (Bilibili's mirrors);
+qualifying in 10 s, a moment's own reading in 4 s.
 
 **video**: the recording's own picture and sound as HLS, for keeping on watching the streamer
 after F1 TV ends, from FLV recordings only (`video_flv.py` indexes the FLV's keyframes;
@@ -573,10 +597,25 @@ section):
   found is added (`ahead: true`, kept with the joins': `vodCuts|<bvid>`, `joins: false` until the
   joins' search is done) and the replay put on its timeline again with the moment playing where it
   was, before the repeat is heard.
+- **Where this moment is, by the clock on the streamer's screen.** With a fone server (its
+  vodclock above) the replay is placed by its readings, as soon as the first come (`vodClockStep`
+  asks each tick, every 3 s while the server reads, with the event time playing; again with a new
+  one after a seek, every 20 s at most, for a reading near it): the reading nearest the moment
+  playing (`vodClockAt`) gives `T0 = wall + 50 − content(m) − 1.5` (`VOD.SCREEN`: their screen's
+  clock runs ~1.5 s ahead of the sound they pass on; 1.2 and 1.7 s on the 2026 Italian GP race),
+  the delay at 50 s, and sync by sound then finds the last second near there itself (no looks
+  over the hour). A reading within 4 min of the moment rules: a place off it by more than 15 s
+  (`VOD.TRUST`; sync by sound's own window is ±25 s) is moved there, whatever put it there (a
+  sound match, the place kept from last time); a further one only bounds: off by more than 2 min
+  (`VOD.BOUND`), moved. Sound's own placements must agree with it the same way, and while the
+  server still reads (up to 5 min) sound places only when sure at once: on 2026-11-17 a lap
+  replayed after qualifying matched F1 TV's sound at 13.9 (1.8× anything else) 28 min from
+  where the clock put that moment. Without a server, or a clock on the streamer's screen, by
+  sound alone as follows.
 - **Where this moment is.** Found by sound: the newest 25 s of F1 TV's sound heard (sync by
   sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
   stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
-  the delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
+  −2…+3 min of delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
   kept as 16-bit while it looks, the matching a stretch at a time so the rest of fone runs
   between; after five misses, all of each replay, then every eighth look: its stretches past the
   hour's aren't kept, so the hour's stay). Taken when sure (score ≥ 9.5 and 1.5× anything else

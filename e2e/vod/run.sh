@@ -8,6 +8,8 @@
 #                                    that gain under pink noise): found all the same, in the right place
 #   VOD_STEADY=1                     the mock F1 TV's sound at its own steady pace (as Tiledmedia
 #                                    plays it; the faint run's too), not trimmed to follow its picture
+#   VOD_CLOCK=1                      the server reads the clock on the streamer's screen (a mock of
+#                                    /api/vod/clock): placed by it at once, then by sound
 #   VOD_EXT=<dir>                    another build of the extension
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -17,7 +19,7 @@ WORK=$(mktemp -d)
 cleanup() { docker run --rm -v "$WORK":/w alpine rm -rf /w/media >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 mkdir -p "$WORK/media" && chmod -R 777 "$WORK"
-BVID=${VOD_BVID:-BV1JF31zgEbR} CID=${VOD_CID:-30901406039} AT=${VOD_AT:-2400} LEN=${VOD_LEN:-660} FAINT=${VOD_FAINT:-} STEADY=${VOD_STEADY:-}
+BVID=${VOD_BVID:-BV1JF31zgEbR} CID=${VOD_CID:-30901406039} AT=${VOD_AT:-2400} LEN=${VOD_LEN:-660} FAINT=${VOD_FAINT:-} STEADY=${VOD_STEADY:-} CLOCK=${VOD_CLOCK:-}
 EXT=${VOD_EXT:-$PWD/extension}
 
 echo "== the replay's sound from ${AT}s ($LEN s) as F1 TV's, and a mock F1 TV video"
@@ -45,6 +47,6 @@ echo "== running headless Chrome"
 # (VOD_SHOT=<dir>: a screenshot of the stats cut from the streamer's screen, at 2560×1270, there)
 mkdir -p "$WORK/out" && chmod 777 "$WORK/out"
 docker run --rm --cpus 4 --cpu-shares 256 --ipc=host \
-  -v "$EXT":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e BVID=$BVID -e AT=$AT -e FAINT=$FAINT -e STEADY=$STEADY -e VOD_SHOT \
+  -v "$EXT":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -v "$WORK/out":/out -e BVID=$BVID -e AT=$AT -e FAINT=$FAINT -e STEADY=$STEADY -e CLOCK=$CLOCK -e VOD_SHOT \
   "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1; python3 /e2e/vod/test_vod.py'
 if [ -n "${VOD_SHOT:-}" ]; then cp "$WORK/out/"* "$VOD_SHOT"/ 2>/dev/null || true; fi
