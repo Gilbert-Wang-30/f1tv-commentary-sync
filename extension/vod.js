@@ -217,6 +217,72 @@
     return { hit, checked };
   }
 
+  // ---- the clock on the streamer's screen ------------------------------------------------------
+  // A fone server reads it off their replay (vodclock.py): readings [{page, at, wall}], the event
+  // time the streamer's screen showed `at` s into page `page`. Each puts the replay on the event
+  // clock as a sound match does (T0, the wall time of its first sample, with the delay at D0;
+  // SCREEN: their screen's clock runs that far ahead of the sound they pass on). The rules here;
+  // asking the server and acting on them: offscreen.js's vodClock*.
+
+  // Where page `page` starts on the replay's m axis (null: no such page).
+  function pageStart(rep, page) {
+    let off = 0;
+    for (const pg of rep.pages || []) { if (pg.page === page) return off; off += pg.dur; }
+    return null;
+  }
+  // The replay that holds event time E by its clock, and where: {r, T0, d (s from the reading)},
+  // by the reading nearest E (the streamer's own delay moves now and then). o: {D0, SCREEN}.
+  function clockAt(reps, E, { D0, SCREEN }) {
+    let best = null;
+    for (const r of reps) {
+      if (r.clock?.status !== 'ok') continue;
+      for (const rd of r.clock.readings || []) {
+        const p0 = pageStart(r, rd.page);
+        if (p0 == null) continue;
+        const T0 = rd.wall + D0 - contentAt(r, p0 + rd.at) - SCREEN;
+        const c = E + D0 - T0; // (E's place in this replay's content, by this reading)
+        if (c < 0 || c > contentAt(r, r.total)) continue;
+        const d = Math.abs(rd.wall - E);
+        if (!best || d < best.d) best = { r, T0, d };
+      }
+    }
+    return best;
+  }
+  // The clock may still come, `waited` s on: a replay not asked about yet, or being read, for
+  // `wait` s at most. (`can` false: it can't be asked, a video with no session key, F1 Academy,
+  // F2, F3: nothing to wait for.)
+  const clockPending = (reps, waited, { can = true, wait }) => can && waited < wait && reps.some((r) => !r.clock || r.clock.status === 'working');
+  // The replays to ask the server about at t: while it reads (every `poll` s), after an error
+  // (`retry` s on), and with readings but none within `near` s of E (every `again` s).
+  function clockAsks(reps, E, t, { poll, again, near, retry = 30 }) {
+    return reps.filter((r) => {
+      const c = r.clock;
+      if (!c || c.status === 'working' || c.more) return t - (c?.askedAt || 0) >= poll;
+      if (c.status === 'error') return t - c.askedAt >= retry;
+      if (c.status !== 'ok' || E == null) return false;
+      return !(c.readings || []).some((rd) => Math.abs(rd.wall - E) < near) && t - (c.askedAt || 0) >= again;
+    });
+  }
+  // How far replay `rep` placed at T0, playing at `delay`, is from where the clock (k, clockAt's)
+  // says, in s: Infinity when it says another replay holds the moment; null, nothing to compare.
+  const clockOff = (k, rep, T0, delay, D0) => (!k || !rep ? null : k.r !== rep ? Infinity : Math.abs((T0 - delay) - (k.T0 - D0)));
+  // How far from the clock's place a reading lets it be: `trust` from one within `near` s of the
+  // moment, `bound` from one further away (the streamer's delay may have moved since).
+  const clockRoom = (k, { near, trust, bound }) => (k.d <= near ? trust : bound);
+  // Placed by the clock now? When not placed yet, or off it (off: clockOff's) by more than its
+  // room; once sync by sound has found the place itself (or a nudge by hand put it there), `held`:
+  // only by more than `bound`. (Sound heard now against a reading some minutes away: the streamer's
+  // delay stepped between. Re-placed by the reading each tick, sound found it again each look:
+  // the commentary jumped back and forth.)
+  function clockMoves(k, off, { placed, held = false, near, trust, bound }) {
+    if (!k) return false;
+    if (!placed) return true;
+    return off > (held ? bound : clockRoom(k, { near, trust, bound }));
+  }
+  // A place found by sound (rep at T0) the clock refuses: another replay, or more than `room` s
+  // from where it says.
+  const clockVeto = (k, rep, T0, room) => !!k && (k.r !== rep || Math.abs(T0 - k.T0) > room);
+
   // An HLS playlist of the replay's sound (fMP4 by byte range: hls.js plays it as it plays a
   // server's), each page from url(i): its init segment, then its segments; pages back to back.
   function playlist(rep, url) {
@@ -495,5 +561,6 @@
   }
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
-    playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat };
+    playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

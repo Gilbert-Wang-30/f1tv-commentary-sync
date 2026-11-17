@@ -264,6 +264,84 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.deepEqual(c3.map((c) => c.score).sort((a, b) => a - b), [10, 11, 11, 12]);
   });
 
+  // the clock on the streamer's screen: a replay of two pages, its repeats cut; the extension's numbers
+  const CK = { D0: 50, SCREEN: 1.5, near: 240, trust: 15, bound: 120 };
+  const clockRep = (bvid, readings, status = 'ok') => ({ bvid, pages: [{ page: 1, dur: 3600 }, { page: 2, dur: 3600 }], total: 7200,
+    cuts: [{ m: 1804.2, d: 4.18 }, { m: 3600, d: 4.18 }], clock: { status, readings } });
+
+  await test('the clock on the streamer\'s screen: where a reading puts the replay, the one nearest the moment', () => {
+    const W = 1.75e9;
+    const A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }, { page: 2, at: 500, wall: W + 4200 }]);
+    assert.equal(V.pageStart(A, 2), 3600);
+    assert.equal(V.pageStart(A, 3), null);
+    // T0: the reading's wall at its place on the content clock, the delay at D0, less the screen's lead
+    const T0a = W + 50 - 1000 - 1.5, T0b = W + 4200 + 50 - (4100 - 2 * 4.18) - 1.5;
+    let k = V.clockAt([A], W + 30, CK);
+    assert.ok(k.r === A && Math.abs(k.T0 - T0a) < 1e-6 && k.d === 30, JSON.stringify(k));
+    k = V.clockAt([A], W + 4000, CK); // (nearer the second: it rules)
+    assert.ok(Math.abs(k.T0 - T0b) < 1e-6 && k.d === 200);
+    assert.equal(V.clockAt([A], W - 3600, CK), null); // (before the replay, by both)
+    // the streamer restarted: the moment in the second replay by its own reading; one still being read, not used
+    const B = clockRep('BVb', [{ page: 1, at: 100, wall: W + 9000 }]), C = clockRep('BVc', [{ page: 1, at: 0, wall: W + 9000 }], 'working');
+    k = V.clockAt([A, B, C], W + 9100, CK);
+    assert.ok(k.r === B && k.d === 100);
+  });
+
+  await test('the clock against where the replay plays: moved when off a reading near the moment, bounded by a far one', () => {
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), B = clockRep('BVb', []);
+    const k = V.clockAt([A], W + 100, CK);
+    // off: T0 less the delay against the clock's T0 less D0 (a delay of 70 at T0 + 20 plays where D0 at T0 would)
+    assert.equal(V.clockOff(k, A, k.T0 + 20, 70, 50), 0);
+    assert.ok(Math.abs(V.clockOff(k, A, k.T0, 70, 50) - 20) < 1e-9);
+    assert.equal(V.clockOff(k, B, k.T0, 50, 50), Infinity); // (it says another replay holds the moment)
+    assert.equal(V.clockOff(null, A, k.T0, 50, 50), null);
+    const moves = (off, d, o = {}) => V.clockMoves({ ...k, d }, off, { placed: true, ...CK, ...o });
+    assert.equal(V.clockMoves(k, null, { placed: false, ...CK }), true); // (not placed: there at once)
+    assert.equal(V.clockMoves(null, null, { placed: false, ...CK }), false);
+    assert.equal(moves(10, 100), false); // (within sync by sound's own drift of a near reading)
+    assert.equal(moves(20, 100), true);
+    assert.equal(moves(20, 400), false); // (a reading minutes away only bounds it)
+    assert.equal(moves(130, 400), true);
+    assert.equal(moves(Infinity, 400), true);
+  });
+
+  await test("the clock refuses a sound match far from where it says (a lap shown again after the session)", () => {
+    // 2026 Italian GP qualifying (BV1ATbL6dEp9): a sure-looking match, 13.9 at 1.8× the rest, 28 min off the replay's place
+    const W = 1.75e9, A = clockRep('BV1ATbL6dEp9', [{ page: 1, at: 1000, wall: W }, { page: 1, at: 2500, wall: W + 1500 }]);
+    const k = V.clockAt([A], W + 60, CK), room = V.clockRoom(k, CK);
+    assert.equal(room, 15);
+    assert.equal(V.clockVeto(k, A, k.T0 + 28 * 60, room), true);
+    assert.equal(V.clockVeto(k, A, k.T0 + 1.2, room), false); // (sound takes it the last second)
+    assert.equal(V.clockVeto(k, clockRep('BVother', []), k.T0, room), true);
+    assert.equal(V.clockVeto(null, A, k.T0 + 28 * 60, room), false); // (no clock: sound alone)
+    // a reading 10 min from the moment: only the bound
+    const far = V.clockAt([A], W + 600 + 1500, CK);
+    assert.equal(V.clockRoom(far, CK), 120);
+    assert.equal(V.clockVeto(far, A, far.T0 + 60, V.clockRoom(far, CK)), false);
+  });
+
+  await test('the clock pending (sound held back for it) and when to ask the server', () => {
+    const W = 1.75e9, ok = clockRep('BVok', [{ page: 1, at: 1000, wall: W }]);
+    const fresh = { bvid: 'BVnew' }, reading = { bvid: 'BVr', clock: { status: 'working', askedAt: 100 } };
+    const none = { bvid: 'BVn', clock: { status: 'none', askedAt: 100 } };
+    assert.equal(V.clockPending([ok, fresh], 10, { wait: 300 }), true); // (not asked yet)
+    assert.equal(V.clockPending([ok, reading], 10, { wait: 300 }), true);
+    assert.equal(V.clockPending([ok, none], 10, { wait: 300 }), false);
+    assert.equal(V.clockPending([ok, reading], 301, { wait: 300 }), false); // (waited long enough)
+    const O = { poll: 3, again: 20, near: 240 };
+    ok.clock.askedAt = 100;
+    const asks = (reps, E, t) => V.clockAsks(reps, E, t, O).map((r) => r.bvid);
+    assert.deepEqual(asks([fresh, reading, none], W, 102), ['BVnew']);
+    assert.deepEqual(asks([fresh, reading, none], W, 103), ['BVnew', 'BVr']);
+    assert.deepEqual(asks([{ bvid: 'BVe', clock: { status: 'error', askedAt: 100 } }], W, 129), []);
+    assert.deepEqual(asks([{ bvid: 'BVe', clock: { status: 'error', askedAt: 100 } }], W, 130), ['BVe']);
+    assert.deepEqual(asks([ok], W + 100, 200), []); // (a reading near the moment)
+    assert.deepEqual(asks([ok], W + 600, 119), []);
+    assert.deepEqual(asks([ok], W + 600, 120), ['BVok']); // (none near a moment after a seek: asked for one there)
+    assert.deepEqual(asks([ok], null, 200), []);
+    assert.deepEqual(asks([{ ...ok, clock: { ...ok.clock, more: true } }], W, 103), ['BVok']); // (reading near E: polled)
+  });
+
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
     const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
       + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';
