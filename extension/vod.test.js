@@ -258,6 +258,21 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     V.keepLikely(c2, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }], 1, L1);
     ck = await V.checkLikely(c2, look(150, 20, 'run3'), read, S.locate, { sr });
     assert.ok(ck.hit && Math.abs(ck.hit.m - (at0 + 150)) < 0.01, JSON.stringify(ck.checked));
+    // a seek back over the sound that found them (F1 TV's −10 s): that sound again, in a new run,
+    // isn't fresh (it would find the same places again, the place or not): not checked at all
+    const c4 = [];
+    V.keepLikely(c4, [{ rep, m: at0 - 20 + hit.lag / sr, score: 7.6 }, { rep, m: 4210.4, score: 9.1 }], 1, L1);
+    ck = await V.checkLikely(c4, look(0, 30, 'run4'), read, S.locate, { sr });
+    assert.ok(ck.hit === null && ck.checked.length === 0, JSON.stringify(ck.checked));
+    ck = await V.checkLikely(c4, look(10, 30, 'run4'), read, S.locate, { sr }); // (10 s of it new: too little)
+    assert.ok(ck.hit === null && ck.checked.length === 0, JSON.stringify(ck.checked));
+    // ...but sound from before what found it is: found by a look at 40..70, then a seek back to 0
+    const c5 = [];
+    V.keepLikely(c5, [{ rep, m: at0 + 40, score: 7.6 }], 1, look(40, 30, 'run5'));
+    ck = await V.checkLikely(c5, look(0, 30, 'run6'), read, S.locate, { sr });
+    assert.ok(ck.hit && Math.abs(ck.hit.m - at0) < 0.01 && ck.hit.E === E0, JSON.stringify(ck.checked));
+    ck = await V.checkLikely(c5, look(20, 30, 'run6'), read, S.locate, { sr }); // (20..40: what's before it)
+    assert.ok(ck.hit && Math.abs(ck.hit.m - (at0 + 20)) < 0.01, JSON.stringify(ck.checked));
     // too many: the weakest let go
     const c3 = [];
     for (let k = 0; k < 5; k++) V.keepLikely(c3, [{ rep, m: 100 * k, score: 7 + k }, { rep, m: 100 * k + 50, score: 12 - k }], k, L1, { max: 4 });

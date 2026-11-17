@@ -175,8 +175,9 @@
   // A look that isn't sure (F1 TV's sound faint in the stream: the streamer talking over it, a
   // quiet stretch of the race, F1 TV's Track FX against the feed the streamer passes on) still
   // has likely places: its strongest few (`weak` and up, `top` of them; the strongest `max` kept).
-  // Each is checked against F1 TV's sound heard since: at least `fresh` s of it after the sound
-  // that found it (the same sound would find the same place again whether or not it's the place),
+  // Each is checked against F1 TV's sound heard since: at least `fresh` s of it from outside the
+  // stretch of picture whose sound found it (the same sound would find the same place again
+  // whether or not it's the place; heard again after a seek back, too), after it or before it,
   // looked for where that place says it is now (`near` s either side). Found there again (within
   // `agree` s, `need` high, and `ratio` over the best elsewhere around it: a stretch of the stream
   // that's like anything has peaks all over it): this moment is there. One checked `drop` times
@@ -198,9 +199,11 @@
     const checked = [];
     let hit = null;
     for (const c of [...cands].sort((a, b) => b.score - a.score)) {
-      const f0 = c.run === L.run ? Math.max(L.pa, c.pb) : L.pa;
-      if (L.pb - f0 < fresh) continue;
-      const q = L.q.subarray(Math.round((f0 - L.pa) * sr)), Ef = L.E + (f0 - L.pa);
+      // (the picture's own time, whatever the run: the longer of what's after and before that stretch)
+      const b0 = Math.max(L.pa, c.pb), a1 = Math.min(L.pb, c.pa);
+      const [f0, f1] = L.pb - b0 >= a1 - L.pa ? [b0, L.pb] : [L.pa, a1];
+      if (f1 - f0 < fresh) continue;
+      const q = L.q.subarray(Math.round((f0 - L.pa) * sr), Math.round((f1 - L.pa) * sr)), Ef = L.E + (f0 - L.pa);
       const at = atContent(c.rep, contentAt(c.rep, c.m) + (Ef - c.E)), a = at - near, len = q.length / sr + 2 * near;
       const w = at - near >= 0 ? await read(c.rep, a, len) : null;
       const i0 = w ? Math.round((a - w.m0) * sr) : -1, i1 = i0 + Math.round(len * sr);
