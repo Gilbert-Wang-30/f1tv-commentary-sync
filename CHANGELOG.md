@@ -17,6 +17,14 @@ machines); those versions are summarised here from the git history.
 The first release for other people: the extension as a zip to load in Chrome, the server as an
 image to run with your own streamer, recorder and storage.
 
+### Upgrading
+- **Update the extension before the server.** A 1.0.1 server answers most of its routes (the
+  commentary's timeline, F1 TV's lookups, the delays, the stats) only to an extension of 1.0.1
+  or newer; an older one gets 403 there and plays nothing from the server (Security, below).
+- Scripts and `curl` on those routes send `-H 'X-Fone: 1'` now (`tools/diag.py` does).
+- The README's "Updating the server": `git pull`, a pinned `FONE_IMAGE` bumped, `docker compose
+  pull`, `docker compose up -d`.
+
 ### Added
 - GitHub Releases: `fone-extension-<version>.zip` (one folder, `fone/`, to load unpacked; to
   update, extract the next zip into the folder that holds `fone` and click ↻) with `SHA256SUMS`,
@@ -31,6 +39,9 @@ image to run with your own streamer, recorder and storage.
 - First run: fone's settings open on install, and **⚙** in the panel opens them (lit while
   nothing is set up). *Test connection* shows the server's version, its channels and whether
   it has the channel's Bilibili room.
+- The settings page shows the extension's version and, once *Test connection* has it, the
+  server's, says which to update when they're different releases, and links the releases page
+  (a release install doesn't update itself).
 - Checks on every push: every extension script parsed, every file the extension loads in the
   zip, the extension, server and recorder tests, ruff (`ruff.toml`), the version, CHANGELOG.md
   and the compose image in step (`tools/check_version.py`), nothing of one install's own setup
@@ -38,17 +49,22 @@ image to run with your own streamer, recorder and storage.
   GitHub by hand (`.github/workflows/e2e.yml`).
 - `FONE_ADS_REFS` and `FONE_ADS_CHANNELS` (your own sponsor clips, and where to look for them),
   `GATE_ACTION`, and `FONE_TIMING_KEEP_DAYS` passed from `.env`.
+- `FONE_BIND`: the host address the server's port (and fone-ext's) is published on. Every
+  interface by default, for the LAN; on a VPS a private one (a VPN's, or `127.0.0.1` and an SSH
+  tunnel): Docker's published ports bypass ufw's rules.
 
 ### Changed
 - Your setup, not the author's: `docker-compose.yml` takes the recordings folder, rooms,
   aliases, time zone, uid, CPUs and port from a `.env` (start from `.env.example`) and runs the
   released image; the recorders and the extension update server (fone-ext) are profiles
   (`recorder`, `streamlink`, `ext-update`). A bind whose folder is missing stops with an error
-  instead of creating it empty.
+  instead of creating it empty. The compose project is `fone` whatever the folder is called, so
+  a release's source archive keeps the same containers and data volume (`fone_fone-data`).
 - No streamer by default: a Bilibili room is watched only when `FONE_ROOMS` names it, and it is
   the one setting for the server and the recorder (`recorder/seed.sh` writes the recorder's
-  config from it, a folder per room number, which is that room's channel). With no room named
-  the recorder doesn't start, and its log says what to set.
+  config from it, a folder per room number, which is that room's channel). A room number alone
+  (`FONE_ROOMS=12345678`) is a channel of that name. With no room named fone-recorder doesn't
+  start, and its log says what to set.
 - The recorder gate's default filter is any streamer's F1 titles, and it only logs what it would
   stop until `GATE_ACTION=stop`; `GATE_RECORD` replaces the default filter.
 - The bundled sponsor clips are matched only on the channel they were made from; other channels
@@ -56,9 +72,10 @@ image to run with your own streamer, recorder and storage.
 - `FONE_FILENAME_TZ` is the one recording-name time zone (server, recorders, gate,
   `tools/import_replay.py`); an unknown zone is an error, and a name and last write a whole
   number of hours apart are logged as a likely zone mismatch. An empty setting is its default.
-- fone-janitor also runs with the `streamlink` profile.
+- fone-janitor also starts with the `streamlink` profile, not only `recorder`.
 - The settings page reads a server as typed (`my-server` → `http://my-server:8788`), refuses
-  what it can't use with the reason, and saves everything else; a first run's server is saved
+  what it can't use with the reason, and *Save* keeps everything but a bad server list (and
+  which source to use, which may depend on it, kept as it was); a first run's server is saved
   as the source. The panel's name before a channel is known is "Commentary".
 - The README installs from a release; building and self-hosting the extension's updates
   (`tools/publish_ext.sh`, fone-ext, the Mac sync) is an advanced setup. `tools/publish_ext.sh`
