@@ -1325,8 +1325,8 @@ async function sndMeasure(t, vn) {
       val = w == null ? null : w - C.eventTime(S.clock, S.content, pa, null, t, { manualBase: S.manualBase });
     }
     // (sure, and agreeing with another of the last few: FoneSound.judge; a resync asked for: the
-    // first sure match will do)
-    const J = FoneSound.judge(sn, { val, score: res.score, next: res.next, edge: res.edge }, t, SND), sure = J.sure;
+    // first sure match will do, but for a ±SND.FAR look's: two agreeing, as ever)
+    const J = FoneSound.judge(sn, { val, score: res.score, next: res.next, edge: res.edge, long }, t, SND), sure = J.sure;
     sn.last = { at: t, off, val, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, sure, wide };
     const r2 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
     diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, wide, c: r2(ca) });

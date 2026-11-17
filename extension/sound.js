@@ -139,18 +139,20 @@
 
   // One look's verdict. st: {target (the place it's locked on, null: none), bias (a nudge of yours
   // on top), est (the sure looks of the last few minutes, [{at, val}]), quick (a resync asked
-  // for)}; m: the look {val (the place it found; null: not recorded there), score, next, edge};
-  // t: now. A look counts when it's sure (P.SCORE, P.NEXT × the runner-up, not at the window's
-  // edge) and agrees with another of the last few (P.AGREE s; a resync takes the first). {sure,
-  // far (found well away from where it was), est (the new list), o (where to: the median of
-  // those agreeing; null: wait for another), why}.
+  // for)}; m: the look {val (the place it found; null: not recorded there), score, next, edge,
+  // long (a ±P.FAR one: lookRange's)}; t: now. A look counts when it's sure (P.SCORE, P.NEXT × the
+  // runner-up, not at the window's edge) and agrees with another of the last few (P.AGREE s; a
+  // resync takes the first, but not a ±P.FAR one's: so long a look is sure on a repeat 0.44% of
+  // the time, at 14-106, which no P.SCORE or P.NEXT leaves out, and never twice agreeing: real
+  // replays, 2026-11). {sure, far (found well away from where it was), est (the new list), o
+  // (where to: the median of those agreeing; null: wait for another), why}.
   function judge(st, m, t, P) {
     const sure = m.val != null && m.score >= P.SCORE && m.score >= P.NEXT * m.next && !m.edge;
     if (!sure) return { sure, far: false, est: st.est, o: null, why: 'not sure' };
     const far = st.target != null && Math.abs(m.val + st.bias - st.target) > 1;
     const est = [...st.est.filter((e) => t - e.at < 180), { at: t, val: m.val }].slice(-4);
     const agree = est.filter((e) => Math.abs(e.val - m.val) <= P.AGREE);
-    const quick = st.quick != null;
+    const quick = st.quick != null && !m.long;
     if (agree.length < 2 && !quick) return { sure, far, est, o: null, why: 'waiting for a second match' };
     const o = quick ? m.val : agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
     return { sure, far, est, o, why: quick ? 'resynced' : 'matched' };
