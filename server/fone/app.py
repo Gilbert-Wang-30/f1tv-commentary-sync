@@ -155,19 +155,36 @@ class RefuseWebPageWrites:
     web page is refused: with CORS * and private-network access granted below, a page you
     merely visit could otherwise re-tune your delays, write fake car positions into a live
     session or start replay downloads (GBs, over the recorders' connection, into the NAS).
-    Reads stay open to everyone, as before."""
+
+    Some GETs are writes too: they start work (WORK: frames of a Bilibili replay downloaded
+    and read, an OpenF1 rebuild of any session key, old recordings extracted or indexed, F1
+    TV looked up and stored) or hand out every viewer's playback history (/api/diag). They're
+    held to the same rule. A page's <img>, <script>, link or form sends no Origin, but the
+    browser says where it comes from (Sec-Fetch-Site): from another site, refused as well.
+    The extension's own requests are all fetch()es (mode cors). Other reads stay open."""
 
     EXTENSION = re.compile(r"^(chrome|moz)-extension://")
-    SAFE = {"GET", "HEAD", "OPTIONS"}
+    SAFE = frozenset({"GET", "HEAD", "OPTIONS"})
+    WORK = re.compile(r"^/api/(vod/|timing/session/|timing/content/|timeline$|f1tv/|video/|sync/|diag$)")
 
     def __init__(self, app):
         self.app = app
 
+    @classmethod
+    def trusted(cls, headers: dict[bytes, bytes]) -> bool:
+        origin = headers.get(b"origin")
+        if origin is not None:
+            return bool(cls.EXTENSION.match(origin.decode("latin-1")))
+        # (no Origin: curl and scripts send no Sec-Fetch-* either; this server's own page is
+        # same-origin, an address typed in 'none'; Chrome's fetch() from the extension, which
+        # may send no Origin on a GET to a host it has permission for, is mode cors)
+        return headers.get(b"sec-fetch-site") in (None, b"none", b"same-origin") or headers.get(b"sec-fetch-mode") == b"cors"
+
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] not in self.SAFE:
-            origin = next((v for k, v in scope["headers"] if k == b"origin"), None)
-            if origin is not None and not self.EXTENSION.match(origin.decode("latin-1")):
-                resp = PlainTextResponse("changes are only accepted from the fone extension", status_code=403)
+        if scope["type"] == "http" and (scope["method"] not in self.SAFE
+                                        or scope["method"] != "OPTIONS" and self.WORK.match(scope["path"])):
+            if not self.trusted(dict(scope["headers"])):
+                resp = PlainTextResponse("only the fone extension may ask for this", status_code=403)
                 return await resp(scope, receive, send)
         await self.app(scope, receive, send)
 

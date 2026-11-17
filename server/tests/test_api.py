@@ -184,3 +184,51 @@ def test_sync_channel_default_only_from_comparable_clocks(server):
     put("1000011101", "epoch", 0.4)
     assert get("2", "multiviewer") == {"delay": 43.5, "source": "channel"}
     assert get("3", "epoch") == {"delay": 0.4, "source": "channel"}
+
+
+EVIL = {"Origin": "https://example.com"}  # a page the viewer happens to visit
+IMG = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"}  # its <img src=…>
+
+
+def test_web_pages_can_neither_write_nor_start_work(server):
+    client, _ = server
+    tl = {"channel": CHANNEL, "from": 0, "to": 1e12}  # (every recording extracted, were there any)
+    q = {"channel": CHANNEL, "clock": "multiviewer"}
+    # the extension's pages (an Origin of theirs, or none from Chrome's fetch() to a host it may
+    # reach) and curl: as before
+    assert client.get("/api/timeline", params=tl, headers={"Origin": "chrome-extension://abcdefgh"}).status_code == 200
+    assert client.get("/api/timeline", params=tl, headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}).status_code == 200
+    assert client.get("/api/timeline", params=tl).status_code == 200
+    assert client.put("/api/sync/123", json={**q, "delay": 41}).status_code == 200
+    # a page: neither by its fetch() (its Origin) nor by an <img>/<script>/link/form (no Origin)
+    r = client.get("/api/timeline", params=tl, headers=EVIL)
+    assert r.status_code == 403 and r.headers["access-control-allow-origin"] == "*"  # (readable as such)
+    assert client.get("/api/timeline", params=tl, headers=IMG).status_code == 403
+    assert client.head("/api/timeline", params=tl, headers=IMG).status_code == 403
+    assert client.get("/api/f1tv/1000011024", params={"refresh": True}, headers={"Origin": "null"}).status_code == 403
+    assert client.get("/api/sync/123", params=q, headers=EVIL).status_code == 403
+    assert client.put("/api/sync/123", json={**q, "delay": 1}, headers=EVIL).status_code == 403
+    assert client.get("/api/diag", headers=EVIL).status_code == 403  # (every viewer's playback)
+    assert client.get("/api/sync/123", params=q).json()["delay"] == 41
+    # an address typed in, the server's own page: fine
+    assert client.get("/api/diag", headers={"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}).status_code == 200
+    assert client.get("/api/diag", headers={"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}).status_code == 200
+    # other reads stay open to anyone (CORS *)
+    assert client.get("/api/health", headers=EVIL).status_code == 200
+    assert client.get("/api/channels", headers=IMG).status_code == 200
+    assert client.options("/api/timeline", headers={**EVIL, "Access-Control-Request-Method": "GET"}).status_code == 200
+
+
+def test_the_gets_that_start_work(server):
+    import fone.app
+
+    work = fone.app.RefuseWebPageWrites.WORK
+    for path in ("/api/vod/clock", "/api/timing/session/11730/state", "/api/timing/session/11730/positions",
+                 "/api/timing/session/11730/track", "/api/timing/content/1000011024", "/api/timeline",
+                 "/api/f1tv/1000011024", "/api/video/abc/info", "/api/video/abc/index.m3u8", "/api/sync/123",
+                 "/api/diag"):
+        assert work.match(path), path
+    for path in ("/", "/api/health", "/api/channels", "/api/playlist.m3u8", "/hls/abc/seg_00000.ts",
+                 "/api/danmaku", "/api/danmaku/status", "/api/timing/status", "/api/backfill/status",
+                 "/api/screenclock/abc", "/api/ads/abc", "/api/diagnostics", "/api/timelines"):
+        assert not work.match(path), path
