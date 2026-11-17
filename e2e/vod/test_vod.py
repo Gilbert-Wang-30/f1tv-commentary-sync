@@ -25,8 +25,13 @@ once, sync by sound finds the sound's place and locks there, the clock asks it t
 (clockCheck) and it confirms its lock: not moved back, ever. With CLOCK_PAUSE, F1 TV paused that
 long (past VOD.CHECK_WAIT 120 s) the moment sound locks, the look again open: its time stands still
 in a pause (FoneVod.checkClock), so it isn't given up and the clock doesn't move it. 1200 s: more
-than sound's look reaches, so the clock rules: played where it says, never placed by sound (no
-look in the replays runs for a place the clock made, FoneVod.recheckDue), never locked, never moved.
+than sound's look reaches. The mock F1 TV's anchor is the pre-roll's guess, so the clock's place
+may be off as far as that guess is: played where the clock says first, then (sync by sound not
+finding it near there) looked for over the hour as a place by sound is (FoneVod.recheckDue), sure
+there and refused by the clock (kept), found there again by the sound heard after it, and so placed
+by sound, the clock put right by -1200 s (clockShift); locked by sync by sound there, never moved
+back. ANCHOR=multiviewer (run.sh's VOD_ANCHOR): an exact anchor, the clock rules as ever: played
+where it says, never placed by sound, never locked, never moved.
 """
 
 import asyncio
@@ -54,6 +59,7 @@ CHANNEL = "马莎拉车"
 CLOCK_OFF = float(os.environ.get("CLOCK_OFF") or 0)
 CLOCK_PAUSE = float(os.environ.get("CLOCK_PAUSE") or 0)
 CLOCK = bool(os.environ.get("CLOCK")) or bool(CLOCK_OFF)
+ANCHOR = os.environ.get("ANCHOR") or "preroll"  # (the mock F1 TV's: the pre-roll's guess, or an exact one)
 SCREEN = 1.5  # (the extension's VOD.SCREEN: their screen's clock ahead of the sound)
 CLOCK_ASKS = []
 DIAG = []  # (the engine's diagnostics, posted to the mock server: printed as it goes)
@@ -82,7 +88,7 @@ class Mock(BaseHTTPRequestHandler):
             return self.send({"rooms": {"23954427": {"channel": CHANNEL}}})
         if p == f"/api/f1tv/{CID}":
             return self.send({"contentId": CID, "title": "British Grand Prix - Race", "sessionName": "Race", "subtype": "REPLAY",
-                              "p0": P0, "anchor": "preroll", "duration": 7200, "sessionKey": 9947})
+                              "p0": P0, "anchor": ANCHOR, "duration": 7200, "sessionKey": 9947})
         if p.startswith("/api/timing/session/9947/"):  # (as a fone server answers for so old a session)
             return self.send({"available": False, "reason": "no timing data for this session"})
         if p.startswith("/api/sync/"):
@@ -174,7 +180,35 @@ async def main():
             pl = vods("place")
             E.check(pl and pl[0]["place"] == "clock" and abs(pl[0]["T0"] - t_clock) < 0.5,
                     f"…where its readings put it, {CLOCK_OFF:.0f} s off F1 TV's sound (T0 {pl[0]['T0'] if pl else None} vs {t_clock:.1f})")
-            if CLOCK_OFF > 23:  # (VOD_CLOCK's reach: beyond sound's wide look, the clock rules)
+            if CLOCK_OFF > 23 and ANCHOR == "preroll":  # (beyond sound's wide look, F1 TV's anchor only a guess: sound wins)
+                st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s) + CLOCK_OFF) < 1, 60, "playing where the clock says")
+                E.check(True, f"…plays there first: {placed(st):+.2f}s from F1 TV's sound")
+                # (sync by sound not finding it near there in 8 looks: ~2 min; the hour looked over; the sound since, 15 s on)
+                # (T0s on the content clock: the repeats found meanwhile move both; where it plays is checked below)
+                t1 = time.time()
+                await diag_until(lambda: [d for d in vods("place") if d["place"] == "sound"], 360)
+                ps, veto, shift = [d for d in vods("place") if d["place"] == "sound"], vods("clockVeto"), vods("clockShift")
+                E.check(ps and any(d.get("kept") for d in veto) and shift and abs(shift[0]["clockShift"] + CLOCK_OFF) < 1,
+                        f"…F1 TV's anchor only the pre-roll's guess: looked for over the hour ({len(vods('recheck'))} rechecks), sure there "
+                        f"and refused by the clock ({len(veto)} clockVeto, kept {[d.get('kept') for d in veto]}), found there again "
+                        f"({shift[0]['by'] if shift else None}): placed by sound {time.time() - t1:.0f}s on (T0 {ps[0]['T0'] if ps else None}, "
+                        f"the clock's {pl[0]['T0']}), the clock put right by {shift[0]['clockShift'] if shift else None} s")
+                st = await E.wait_status(page, lambda s: s.get("state") == "sync" and (s.get("sound") or {}).get("state") == "locked"
+                                         and abs(placed(s)) < 0.15, 90, "locked by sound where the sound is")
+                E.check(True, f"…then locked by sync by sound there: {placed(st) * 1000:+.0f} ms from F1 TV's sound")
+                t2, worst = time.time(), 0.0
+                while time.time() - t2 < 60:  # (four of sound's looks: the clock, put right, leaves it there)
+                    st = await E.status(page)
+                    if st.get("state") == "sync":
+                        worst = max(worst, abs(placed(st)))
+                    await asyncio.sleep(1)
+                await asyncio.sleep(6)
+                pl, moves = vods("place"), vods("clockMoves")
+                E.check([d["place"] for d in pl] == ["clock", "sound"] and not moves and (st.get("vod") or {}).get("how") == "sound" and worst < 0.5,
+                        f"…{time.time() - t2:.0f}s on: still where the sound is (at most {worst * 1000:.0f} ms off), placed twice "
+                        f"({[d['place'] for d in pl]}), not moved back ({len(moves)} clockMoves)")
+                return
+            if CLOCK_OFF > 23:  # (VOD_CLOCK's reach: beyond sound's wide look, an exact anchor: the clock rules)
                 st = await E.wait_status(page, lambda s: s.get("state") == "sync" and abs(placed(s) + CLOCK_OFF) < 1, 60, "playing where the clock says")
                 E.check(True, f"…plays there: {placed(st):+.2f}s from F1 TV's sound")
                 t1, locked, worst = time.time(), [], 0.0
