@@ -453,5 +453,21 @@
     return ta.cols.length === tb.cols.length && ta.cols.every((c, i) => near(c.x, tb.cols[i].x, 3) && near(c.w, tb.cols[i].w, 0.5 * ta.p));
   }
 
-  root.FoneShot = { brightMask, table, towerParts, rcBox, mapBox, detect, bar, pack, same };
+  // The layout kept, look by look: {lay (the layout used), cand (a new one seen once; or the same
+  // part of lay, seen `parts` times in a row)} after look d. A new layout is taken once two looks in
+  // a row agree (a fade, a frame of another scene, aren't one). A look that finds only some of the
+  // layout's columns keeps it (a position just gained or lost: its box green or red, cut into
+  // strips too narrow for a tag), unless the same columns come back `need` looks in a row: the
+  // streamer closed one, and the others are now what's on their screen.
+  function follow(st, d, { need = 8 } = {}) {
+    const { lay, cand } = st;
+    if (lay && !same(d, lay) && same(d, lay, true)) {
+      const parts = cand && same(d, cand) ? (st.parts || 0) + 1 : 1;
+      return parts >= need ? { lay: d, cand: null, parts: 0 } : { lay, cand: d, parts };
+    }
+    if (!lay || same(d, lay) || same(d, cand)) return { lay: d, cand: null, parts: 0 };
+    return { lay, cand: d, parts: 0 };
+  }
+
+  root.FoneShot = { brightMask, table, towerParts, rcBox, mapBox, detect, bar, pack, same, follow };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
