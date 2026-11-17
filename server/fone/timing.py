@@ -12,7 +12,7 @@ see timing_state.py), told apart by `meta.json`:
               it failed) are a "relay": no timing of its own, replaced by either below.
   * archive - livetiming.formula1.com/static/<path>, published ~20 min after a session
               (403 until then), no auth until 2026-10-18 (401 for everyone since). Replaces
-              the live capture once it appears; while it refuses, nothing stored is pruned.
+              the live capture once it appears; while it refuses, only rebuilds are pruned.
   * openf1  - for a session with nothing stored that the archive won't give: rebuilt from
               OpenF1's historical API (timing_openf1.py), once it's been over for 30 min.
               Asked for by the dashboard (any past session, any year) or by the plan for
@@ -377,10 +377,10 @@ class TimingService:
             self._pruned_at = now
             await self.maybe_prune(now)
 
-    async def maybe_prune(self, now: float) -> list[int] | None:
-        """Prune, but only while F1's archive answers: a session deleted while it doesn't is gone
-        for good. (Since 2026-10-18 it answers 401 to everyone, and what was captured live here
-        is the only copy left.) None: not pruned."""
+    async def maybe_prune(self, now: float) -> list[int]:
+        """Prune OpenF1's rebuilds (made again when asked for), and the rest only while F1's
+        archive answers: a capture deleted while it doesn't is gone for good. (Since 2026-10-18
+        it answers 401 to everyone, and what was captured live here is the only copy left.)"""
         year = time.gmtime(now).tm_year
         try:
             r = await self._client().get(f"{self.settings.static_base}/{year}/Index.json")
@@ -388,16 +388,17 @@ class TimingService:
         except httpx.HTTPError:
             up = False
         if not up:
-            log.info("timing: F1's archive isn't answering: keeping every stored session")
-            return None
-        return await asyncio.to_thread(self.prune, now)
+            log.info("timing: F1's archive isn't answering: keeping every capture and archive stored")
+        return await asyncio.to_thread(self.prune, now, None if up else ("openf1",))
 
-    def prune(self, now: float) -> list[int]:
-        """Delete sessions stored more than keep_days ago (the archive can be fetched again:
-        maybe_prune checks it can)."""
+    def prune(self, now: float, only: tuple[str, ...] | None = None) -> list[int]:
+        """Delete sessions (of these sources) stored more than keep_days ago: what can be
+        fetched again (maybe_prune checks the archive can)."""
         gone = []
         for key in self.store.keys():
             meta = self.store.meta(key) or {}
+            if only is not None and meta.get("source") not in only:
+                continue
             stored = meta.get("fetched") or meta.get("created") or 0
             if now - stored > self.settings.keep_days * 86400 and key not in self._captures:
                 with self._key_lock(key):

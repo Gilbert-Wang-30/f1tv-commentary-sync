@@ -353,8 +353,13 @@ def test_nothing_is_pruned_while_the_archive_refuses(archived_root, tmp_path):
 
     root = clone(archived_root, tmp_path)
     old = make_service(root, handler=refusing).store.meta(KEY)["fetched"] + 31 * 86400
-    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) is None
+    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) == []
     assert make_service(root).store.dir(KEY).exists()
+    # an OpenF1 rebuild is made again when asked for: pruned all the same (~12 MB each)
+    rebuilt = make_service(root)
+    rebuilt.store.write_meta(11731, {"key": 11731, "source": "openf1", "t0": T0, "fetched": old - 31 * 86400})
+    assert asyncio.run(make_service(root, handler=refusing).maybe_prune(old)) == [11731]
+    assert not rebuilt.store.dir(11731).exists() and rebuilt.store.dir(KEY).exists()
     assert asyncio.run(make_service(root, handler=refusing).fetch_archive(KEY)) == "refused"
     # the archive answering again: pruned as before
     assert asyncio.run(make_service(root).maybe_prune(old)) == [KEY]
