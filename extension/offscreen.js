@@ -2011,9 +2011,10 @@ const vodClockKey = (r) => `vodClock|${r.bvid}|${S.content?.sessionKey}`;
 // (the rules: FoneVod.clock*, with VOD's numbers)
 // (reach: sound's wide look either side of where it's locked, the window's last bit left out)
 const VOD_CLOCK = { D0: VOD.D0, SCREEN: VOD.SCREEN, near: VOD.CLOCK_NEAR, trust: VOD.TRUST, bound: VOD.BOUND, reach: SND.WIDE - 2 };
-// F1 TV's anchor only a guess (the pre-roll's, FoneVod.anchorGuessed): their screen's clock tells
-// the event time rightly, F1 TV's may be minutes off it, and the clock's place as far. Sound puts
-// that right (vodOverrule): V.shift {dE, p0}, kept for the video.
+// F1 TV's anchor only a guess (the pre-roll's, FoneVod.anchorGuessed: any not C.exactAnchor's, as
+// the clock has it): their screen's clock tells the event time rightly, F1 TV's may be minutes off
+// it, and the clock's place as far. Sound puts that right (vodOverrule): V.shift {dE, p0}, kept
+// for the video.
 const vodGuessed = () => FoneVod.anchorGuessed(S.content?.anchor);
 const vodShiftKey = () => `vodShift|${S.cid}`;
 // The clock's numbers, F1 TV's event time put right as sound found it (on a guessed anchor only)

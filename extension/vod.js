@@ -230,13 +230,17 @@
   // SCREEN: their screen's clock runs that far ahead of the sound they pass on). The rules here;
   // asking the server and acting on them: offscreen.js's vodClock*.
   // dE: F1 TV's own event time that far after the screen's (0: as given). Their screen tells the
-  // event time rightly; F1 TV's is exact on an exact anchor (MultiViewer's), but only a guess on
-  // the pre-roll's (the schedule's), minutes off now and then (the 2026 Japanese GP: 599 s), the
-  // clock's place as far off. Sound puts that right (clockShift).
+  // event time rightly; F1 TV's is exact on an exact anchor (MultiViewer's, the server's timing's,
+  // MultiViewer's start time's), but only a guess on the pre-roll's (the schedule's), minutes off
+  // now and then (the 2026 Japanese GP: 599 s), the clock's place as far off. Sound puts that
+  // right (clockShift).
 
-  // Whether F1 TV's anchor (its event time: the content's `anchor`) is only a guess: the
-  // pre-roll's, or none. Any other is taken as exact (MultiViewer's, and the like).
-  const anchorGuessed = (anchor) => anchor == null || anchor === 'preroll';
+  // Whether F1 TV's anchor (its event time: the content's `anchor`) is only a guess: any but the
+  // server's exact ones (f1.py: MultiViewer's start dated by F1's archive, by the server's timing
+  // or by MultiViewer's own start time), so the pre-roll's, or none. The same set as the clock's,
+  // FoneCore.exactAnchor: a replay on the exact clock never has its anchor taken for a guess here.
+  const EXACT_ANCHORS = new Set(['multiviewer', 'timing', 'pdt']);
+  const anchorGuessed = (anchor) => !EXACT_ANCHORS.has(anchor);
 
   // Where page `page` starts on the replay's m axis (null: no such page).
   function pageStart(rep, page) {

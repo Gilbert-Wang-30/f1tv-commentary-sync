@@ -548,6 +548,12 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.anchorGuessed(null), true);
     assert.equal(V.anchorGuessed(undefined), true);
     for (const a of ['multiviewer', 'timing', 'pdt']) assert.equal(V.anchorGuessed(a), false, a); // (exact)
+    assert.equal(V.anchorGuessed('other'), true); // (one this extension doesn't know: as the clock takes it)
+    // the clock's own rule (FoneCore.exactAnchor: the exact clock, or the pre-roll's) is the same
+    require('./core.js');
+    for (const a of ['multiviewer', 'timing', 'pdt', 'preroll', null, undefined, 'other']) {
+      assert.equal(V.anchorGuessed(a), !globalThis.FoneCore.exactAnchor({ anchor: a }), String(a));
+    }
     const W0 = 1.75e9, rd = [{ page: 1, at: 1000, wall: W0 }, { page: 1, at: 2500, wall: W0 + 1500 }];
     const A = clockRep('BVjp', rd), B = clockRep('BVb', []);
     const E = W0 + 60, Ts = E + 50 - 1660.5; // (sound's place: the screen's W + 659, 1.5 s on, in the content: 1660.5)
@@ -586,6 +592,13 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     const dE = V.clockShift(A, Ts, E, CK);
     assert.ok(Math.abs(dE + 599) < 1e-6, `${dE}`);
     assert.equal(V.clockShift(B, Ts, E, CK), null); // (no reading on that replay: refused, as ever)
+    // by the reading nearest the moment once put right, not the one nearest F1 TV's guess: the
+    // streamer's delay stepped 30 s between these two, so the first would put it right by -629
+    const st = [{ page: 1, at: 1000, wall: W0 }, { page: 1, at: 1700, wall: W0 + 670 }], S2 = clockRep('BVstep', st);
+    const t0 = (r) => r.wall + CK.D0 - V.contentAt(S2, r.at) - CK.SCREEN;
+    assert.ok(Math.abs(t0(st[0]) - t0(st[1]) - 30) < 1e-6);
+    const dE2 = V.clockShift(S2, t0(st[1]) - 599, E, CK);
+    assert.ok(Math.abs(dE2 + 599) < 1e-6, `${dE2}`);
     const o = { ...CK, dE };
     const k2 = V.clockAt([A], E, o);
     assert.ok(k2.r === A && Math.abs(k2.T0 - Ts) < 1e-6 && Math.abs(k2.d - 659) < 1e-6, JSON.stringify(k2)); // (its readings now 659 s from the moment)

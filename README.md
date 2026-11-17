@@ -905,7 +905,7 @@ CHANGELOG.md           what changed in each version (a release's notes)
   needs F1 TV's sound to be in the stream at the moment you're at: until fone hears it there (the
   streamer talking over a muted F1 TV, or before their stream began), it says it's still looking
   and plays nothing. F1 TV's sound should be what the streamer had on (Track FX or English Int.).
-  On F1 TV's pre-roll estimate (until MultiViewer publishes, or while F1's archive refuses) the
+  On F1 TV's pre-roll estimate (until MultiViewer publishes: live, or just after a session) the
   clock's place is as far off as that estimate (10 min on the 2026 Japanese GP race) until sync
   by sound finds the moment where it really is twice: it looks there once it hasn't found it near
   the clock's place for about 2 minutes, so it needs F1 TV's sound in the stream then too.
