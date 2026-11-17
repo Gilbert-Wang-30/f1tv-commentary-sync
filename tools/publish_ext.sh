@@ -13,6 +13,8 @@
 # Installed copies see the new build.json on the update server and reload themselves once it
 # has been up for ~75 s and nothing is playing (background.js). The build id is also stamped
 # into build.js, which the running code reads once at load.
+# The files are tools/build_ext.sh's (the release zip's) from the working tree as it is,
+# uncommitted changes too; the servers and the stamp above are this script's alone.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ -f tools/publish.env ]; then
@@ -31,9 +33,7 @@ DIST=$FONE_EXT_DIST
 [ -n "${FONE_DIST_URL:-}" ] || echo "publish_ext.sh: FONE_DIST_URL is empty: the Mac scripts will only run with FONE_DIST set" >&2
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-mkdir "$STAGE/ext"
-cp -r extension/. "$STAGE/ext/"
-rm -rf "$STAGE/ext"/*.test.js "$STAGE/ext/testdata"
+tools/build_ext.sh --worktree --stage "$STAGE/ext"
 # The build's default servers go into local.js (a placeholder in the repo), as JSON so any URL survives.
 python3 - "$STAGE/ext/local.js" "${FONE_SERVERS:-}" <<'PY'
 import json, sys

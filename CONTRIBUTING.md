@@ -10,40 +10,71 @@ being rewritten.
 
 - Keep the change small and the comments in the style around it (the code explains *why*,
   not what the next line does).
-- Run the tests that touch what you changed (below). CI runs the first two layers on every
-  push and pull request; the third only runs on a machine with Docker and internet access.
-- Don't commit anything from your own setup: server names, IPs, Tailscale hosts, credentials
-  (`recorder/api.env` and `tools/publish.env` are gitignored for that reason).
+- Run the tests that touch what you changed (below). CI runs the first two layers and the
+  checks on every push and pull request; the third runs on a machine with Docker (the offline
+  suites also by hand in Actions, `.github/workflows/e2e.yml`).
+- Don't commit anything from your own setup: server names, IPs, Tailscale hosts, NAS paths,
+  credentials (`.env`, `recorder/api.env` and `tools/publish.env` are gitignored for that
+  reason). `tools/check_public.sh` fails CI on them. An address for readers to put their own
+  in place of (`http://192.168.1.20:8788`) belongs in the docs (`*.md`) or a `*.example` file
+  only; code, tests and pages use a name (`my-server`) or `192.0.2.x`. Tailscale names and
+  addresses, and paths on a NAS mounted under `/mnt` as `nas`, fail everywhere.
+- A change someone running fone would notice gets a line in the top section of
+  [CHANGELOG.md](CHANGELOG.md); releases are cut from it ([docs/releasing.md](docs/releasing.md)).
 
 ## The three test layers
 
 **1. Extension unit tests** (Node, no browser): the sync maths, the dashboard's layout and
 clock, the danmaku filters and lanes, the self-update logic, the live car-position relay, the
 in-browser recorder (the demuxers against `extension/testdata/`, the buffer, the playlist
-reading), sync by sound's matching, and F1 TV's settings with their migration from older
-builds. One file per module, `extension/<module>.test.js`, run from the repository root so
-`livepos.test.js` can read `server/tests/fixtures`:
+reading), sync by sound's matching, team radio's sting, Bilibili replays, the streamer's
+screen layout, and F1 TV's settings with their migration from older builds. One file per
+module, `extension/<module>.test.js`, run inside the whole checkout so `livepos.test.js` can
+read `server/tests/fixtures`:
 
 ```bash
-for t in core dashcore dmcore background livepos demux localcore recorder sound settings; do
-  docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine node $t.test.js
-done
+docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine \
+  sh -c 'for t in *.test.js; do echo "== $t"; node "$t" || exit 1; done'
 ```
 
-**2. Server tests** (pytest, in the server's Docker image, which has ffmpeg and tesseract):
+**2. Server and recorder tests** (pytest: the server's in its Docker image, which has ffmpeg
+and tesseract; the recorder gate's, `recorder/test_*.py`, need only Python):
 
 ```bash
 docker build -t fone:dev server
 docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
-  fone:dev sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
+  fone:dev sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
+docker run --rm -v "$PWD/recorder":/r -w /r -e PYTHONDONTWRITEBYTECODE=1 python:3.12-alpine \
+  sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -p no:cacheprovider'
 ```
 
-190+ tests; the ones that need a real recording (`-rs` lists them as skipped) run only
-when one is mounted, see the README's Development section for the `FONE_*` switches.
+240+ server tests; the ones that need a real recording (`-rs` lists them as skipped) run only
+when it's mounted into the container: the recordings folder at `/rec`, or the `FONE_*`
+switches in the README's Development section.
+
+**Checks** (CI's "release checks" and the extension job; seconds each):
+
+```bash
+docker run --rm -v "$PWD":/r -w /r node:22-alpine \
+  sh -c 'for f in extension/*.js extension/vendor/*.min.js tools/*.js; do node --check "$f" || exit 1; done'
+tools/build_ext.sh "$(mktemp -d)"   # the release zip: fails on a file the extension loads that's missing
+python3 tools/check_version.py      # the manifest's version has its CHANGELOG.md section
+tools/check_public.sh               # nothing from one install's own setup
+python3 tools/test_release.py       # the release tools themselves (needs git, bash, rsync)
+docker run --rm -v "$PWD":/w:ro -w /w python:3.12-alpine \
+  sh -c 'pip install -q ruff==0.17.5 && ruff check --no-cache server recorder tools'   # ruff.toml: errors and pyflakes; no formatter
+docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color   # the workflows
+shellcheck -S warning tools/build_ext.sh tools/check_public.sh tools/publish_ext.sh
+```
+
+Most of the extension (`offscreen.js`, `content.js`, `page.js`, `dashboard.js`) runs only in
+Chrome, so CI can only parse it; the end-to-end suites below are what exercise it.
 
 **3. End to end** (`e2e/`): the real server and the real extension in headless Chromium,
-all in Docker. These need Docker, a few GB for the Playwright image, and internet access.
-They are slow (minutes) and run nowhere automatically.
+all in Docker. These need Docker and a few GB for the Playwright image. They are slow
+(minutes) and run nowhere automatically. `e2e/local`, `e2e/livepos` and `e2e/layout_run.sh`
+work offline against mocks; `e2e/run.sh`, `e2e/vod`, `tools/platform_check.sh` and
+`e2e/dash_shots.sh` need the internet, live streams or a running server.
 
 `e2e/run.sh` looks up real F1 TV content and MultiViewer sessions for its fixtures (the
 commentary audio is synthetic). The exact replay anchor came from F1's live-timing archive,
