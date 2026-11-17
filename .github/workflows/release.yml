@@ -2,9 +2,10 @@ name: Release
 
 # A v* tag on main (v1.0.1, or v1.0.1-rc.1 for a pre-release) becomes a GitHub Release: the
 # extension's zip and SHA256SUMS, the server image on ghcr.io (amd64 and arm64), notes from
-# CHANGELOG.md. Run by hand (Actions → Release → Run workflow, any branch) it's a dry run:
-# everything checked and built, the zip kept as the run's artifact, nothing pushed or released.
-# docs/releasing.md has the steps around it.
+# CHANGELOG.md. Run by hand (Actions → Release → Run workflow, any branch, once this file is on
+# the default branch: GitHub offers it only then) it's a dry run: everything checked and built,
+# the zip kept as the run's artifact, nothing pushed or released. docs/releasing.md has the
+# steps around it.
 on:
   push:
     tags: ['v*.*.*']

@@ -38,7 +38,8 @@ them up front. The manifest's `version` is therefore exactly `X.Y.Z` when a rele
 1. **On a branch**, bump `version` in `extension/manifest.json`, and the image's version in
    `docker-compose.yml`, `.env.example` and the README's `FONE_IMAGE` row. In CHANGELOG.md, the top
    section becomes `## [X.Y.Z] - YYYY-MM-DD`: what changed for someone running fone, grouped
-   under Added / Changed / Fixed / Security. Check it locally:
+   under Added / Changed / Fixed / Security (and Known issues), with every `TODO(release owner)`
+   marker filled in or taken out. Check it locally:
 
    ```bash
    python3 tools/check_version.py --tag vX.Y.Z
@@ -46,10 +47,14 @@ them up front. The manifest's `version` is therefore exactly `X.Y.Z` when a rele
    tools/build_ext.sh dist          # dist/fone-extension-X.Y.Z.zip, from the committed files
    ```
 
-2. **Dry run.** Push the branch, then Actions → Release → Run workflow on it. It runs every
+2. **Dry run.** Push the branch, then Actions → Release → Run workflow, with the branch chosen
+   under "Use workflow from" (or `gh workflow run release.yml --ref <branch>`). It runs every
    check, the tests and the packaging, and builds the image for both architectures (the only
    way to know arm64 still builds). It pushes and releases nothing. The run's `extension`
-   artifact is the zip: unzip it and load it in Chrome to try the real thing.
+   artifact is the zip: unzip it and load it in Chrome to try the real thing. GitHub offers
+   Run workflow only for a workflow that is on main, the default branch, whichever branch it
+   then runs on: before the first release there is none there, and that release goes in
+   another order ([The first release](#the-first-release)).
 
 3. **Merge** the branch into main (a pull request; CI must pass). Optionally run the dry run
    once more, on main: that is the one run that leaves both architectures' layers in the build
@@ -74,11 +79,32 @@ The first release only: the image package starts private. Open it (the repositor
 without a login. The image's `org.opencontainers.image.source` label links the package to the
 repository.
 
+## The first release
+
+`workflow_dispatch` (Run workflow) runs only a workflow that is on the default branch, and
+before 1.0.1 main has no `release.yml`, so the dry run can't come before the merge. The order:
+
+1. **The branch**, as step 1 above: the version, the dated CHANGELOG section, the local checks.
+2. **Push the branch** (that branch alone: `git push origin <branch>`) and open a pull request
+   into main. CI (`ci.yml`) runs on it and must pass.
+3. **Merge** it into main.
+4. **Dry run on main**: Actions → Release → Run workflow, from main. Everything but the push
+   and the release (step 2 above), and it leaves both architectures' layers in the build cache
+   for the tag's run.
+5. **Try the zip**: the run's `extension` artifact, unzipped, loaded in Chrome
+   (`chrome://extensions` → Developer mode → Load unpacked → the `fone` folder), against a
+   server: *Test connection*, then a session played.
+6. **Tag main** and push only the tag (step 4 above), watch the run (step 5), and make the
+   image package public.
+
+A fault the dry run or the zip shows is fixed on a branch and merged (a pull request, CI) before
+the tag; nothing has been published until then.
+
 ## What the workflow does
 
 | job | what | fails when |
 |---|---|---|
-| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty or undated; `docker-compose.yml` (or `.env.example`, the README) names an older server image; personal config is committed; the tag isn't on main |
+| verify | `check_version.py --tag`, `check_public.sh`, the tag is on main | the tag isn't `vX.Y.Z` or `vX.Y.Z-rc.N` with the manifest's version; its CHANGELOG section is empty, undated or still has a `TODO(release owner)` marker (a dry run lets the marker by); `docker-compose.yml` (or `.env.example`, the README) names an older server image; personal config is committed; the tag isn't on main |
 | tests | all of `ci.yml`: syntax of every extension script, the packaging check, the extension, server and recorder tests, ruff, the release-tool tests | any of them |
 | extension zip | `tools/build_ext.sh dist <version>`, `SHA256SUMS`, kept as the run's artifact | a file the manifest or a page loads is missing; `local.js` isn't the placeholder |
 | server image (after the zip) | an amd64 build started as a stranger would (no recordings; F1 timing, backfill and danmaku off), which must answer `/api/health` with its version and turn healthy; then amd64 + arm64 built, and only then pushed | the smoke run fails; arm64 doesn't build; the push fails |
@@ -129,6 +155,27 @@ To move them on (a Python patch release, a fix in a dependency), on a branch:
    that has one.
 4. **Test** the image the new pins build (the server tests in CONTRIBUTING.md), and the dry run
    (step 2 of Cutting a release) builds both architectures.
+
+## The other images
+
+`docker-compose.yml` also runs images fone doesn't build, pinned to exact versions so a
+release runs what it was tested with and a `docker compose pull` changes nothing behind your
+back: `python:3.12.16-alpine3.24` (fone-ext, fone-recorder-gate; the same base as
+`server/Dockerfile`, and `recorder/streamlink/Dockerfile`'s), `alpine:3.24.4` (fone-janitor)
+and `bililive/recorder:2.18.0` (fone-recorder, 录播姬). To move one on, on a branch:
+
+1. **The tag.** The new exact tag on Docker Hub, built for both architectures:
+   `docker manifest inspect <image>:<tag>` lists `amd64` and `arm64`. For `bililive/recorder`,
+   read its release notes (BililiveRecorder's releases on GitHub) first: it is what records the
+   streamer. The Python base moves with `server/Dockerfile`'s (the server image's pinned
+   versions, above).
+2. **Try it** on a test setup: `docker compose --profile recorder --profile streamlink up -d`,
+   then each one's `docker logs` (the recorder records a room, the gate sees its streams, the
+   janitor sweeps).
+3. **Say it** in CHANGELOG.md's next section, a new 录播姬 above all.
+
+`docker image inspect <image> --format '{{json .Config.Labels}}'` shows what an image already
+on a host is (`org.opencontainers.image.version` for 录播姬), without pulling anything.
 
 ## When it goes wrong
 

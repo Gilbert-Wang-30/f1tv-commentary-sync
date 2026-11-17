@@ -80,7 +80,8 @@ backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into
 template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone, and again only when
 the file has no room (no `RoomId`) and `FONE_ROOMS` names one (the old file kept as
 `config.json.bak`); with no room in the file (or no file) and none in `FONE_ROOMS` it exits 1
-with what to set, so the recorder restarts saying so instead of recording nothing. The gate
+with what to set, so the recorder keeps restarting (Docker backs off, up to a minute apart),
+saying so each time, instead of recording nothing. The gate
 (`recorder/gate.py`) only logs the streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
 profile (`recorder`, `streamlink`) and deletes files under `<FONE_RECORDINGS>/fone/` and
 `fone-import/` `FONE_KEEP_DAYS` (21) after their last write. The server image is
@@ -117,7 +118,7 @@ timing/schedule.json         the OpenF1 calendar; timing/tracks/<meeting>.json (
 video/<fid>.json             FLV keyframe index (video handoff)
 vodclock/<bvid>.<key>.json   what a Bilibili replay's frames showed (vodclock)
 danmaku/                     capture/<room>-<yyyymmdd>.jsonl and danmaku.sqlite3
-diag/<day>.jsonl             playback diagnostics, 7 days, at most 64 MB a day
+diag/<day>.jsonl             playback diagnostics, 7 days after the (UTC) day, at most 64 MB a day
 backfill/                    downloads in progress
 ```
 
@@ -151,7 +152,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | `GET /api/timeline?channel=&from=&to=` | the commentary between two wall times, below |
 | `GET /api/playlist.m3u8?files=a,b,…` | the files stitched into one HLS EVENT playlist (`#EXT-X-DISCONTINUITY` between files, `#EXT-X-ENDLIST` once all are finished) |
 | `GET /hls/{fid}/seg_NNNNN.ts` | an audio segment |
-| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event with a non-finite number is cut down like an oversized one; a day's file stops at 64 MB (later events stay in memory) |
+| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event over 8000 bytes, or with a non-finite number, is kept as `{t, type, truncated}`; a day's file stops at 64 MB (later events stay in memory); a line a restart can't read is skipped, not the rest of its day |
 
 **Timing** (`timing.py`, `timing_state.py`, `livefeed.py`), prefix `/api/timing`
 
@@ -222,8 +223,10 @@ cached calendar) or by the plan for one that just ended uncaptured, once it has 
 30 min; never over a capture or the archive (a complete archive, should F1 serve it again,
 still replaces a rebuild). OpenF1's tables (drivers, laps, intervals, position, stints, pit,
 race_control, weather, session_result, and each car's location within the session's window:
-~35 requests, one at a time 0.5 s apart, backing off on 429/5xx; a race ~100 MB down, ~12 MB
-stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
+~35 requests, one at a time 1 s apart, also from one session to the next, backing off on
+429/5xx, after a 429's `Retry-After` when it says longer; over 2 min, the rebuild is given up
+and no session's rebuild or car positions ask OpenF1 until it's over; a race ~100 MB down,
+~12 MB stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
 feed would have shown it (a lap's time when the lap ends, a stint's tyre at the pit exit, the
 deleted laps after race control's message, Retired once the car has stopped), so the state at
 `t` never shows the future. Checked against the server's real archives of the 2026 Singapore

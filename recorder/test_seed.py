@@ -1,4 +1,5 @@
-"""seed.sh: fone-recorder's config.json from FONE_ROOMS, and when the recorder doesn't start.
+"""seed.sh: fone-recorder's config.json from FONE_ROOMS, and when the recorder stops (and keeps
+restarting) instead.
 Run with the system's sh: dash in the recorder's image (Debian) and on CI's Ubuntu, busybox ash
 in the python:*-alpine test containers."""
 import json
@@ -57,16 +58,17 @@ class Seed(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertFalse(self.config.exists())
 
-    def test_no_room_anywhere_doesnt_start(self):
+    def test_no_room_anywhere_stops_it(self):
         r = self.seed("")
         self.assertEqual(r.returncode, 1)
         self.assertIn("FONE_ROOMS", r.stderr)
+        self.assertIn("keeps restarting", r.stderr)
         self.assertFalse(self.config.exists())
         # a config.json with no room, FONE_ROOMS still empty: nothing to record either
         shutil.copyfile(TEMPLATE, self.config)
         r = self.seed(" , ")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("doesn't start", r.stderr)
+        self.assertIn("keeps restarting", r.stderr)
         self.assertEqual(self.config.read_bytes(), TEMPLATE.read_bytes())
 
     def test_a_roomless_config_is_written_again_once_rooms_are_named(self):

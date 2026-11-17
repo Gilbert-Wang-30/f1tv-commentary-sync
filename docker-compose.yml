@@ -10,6 +10,9 @@
 # The project is "fone" whatever this folder is called (a clone, or a release's source archive,
 # which unpacks under another name): moving to another copy keeps the same containers and data
 # volume (fone_fone-data), and `docker compose` in any copy manages them.
+#
+# Other images are pinned to exact versions (python, alpine, bililive/recorder), so a release
+# runs what it was tested with; docs/releasing.md says how to move them on.
 name: fone
 services:
   fone:
@@ -75,7 +78,7 @@ services:
   # as fone-extension.tar.gz and the Mac scripts (install-mac.sh, fone-sync.sh), on port 8789.
   # Release installs don't use it. `--profile ext-update` (README → Advanced).
   fone-ext:
-    image: python:3.12-alpine
+    image: python:3.12.16-alpine3.24
     container_name: fone-ext
     profiles: ["ext-update"]
     restart: unless-stopped
@@ -94,13 +97,14 @@ services:
   # should not see these rooms). This one has no webhook, records original quality and stamps
   # filenames to the millisecond, in a folder per room (<FONE_RECORDINGS>/fone/<room>/).
   fone-recorder:
-    image: bililive/recorder:latest
+    image: bililive/recorder:2.18.0
     container_name: fone-recorder
     profiles: ["recorder"]
     restart: unless-stopped
     # The HTTP API is only reachable on this compose network (no published port), for the gate.
     # Its config.json is written on the first start (recorder/seed.sh), then left to 录播姬. With
-    # no room in it nor in FONE_ROOMS it doesn't start: `docker logs fone-recorder` says what to set.
+    # no room in it nor in FONE_ROOMS it stops at once and keeps restarting (Docker backs off, up
+    # to a minute apart): `docker logs fone-recorder` says what to set.
     entrypoint: ["/bin/sh", "-c", "/bin/sh /seed/seed.sh && exec /usr/local/bin/docker-entrypoint.sh run --bind http://*:2356 /rec"]
     volumes:
       - type: bind
@@ -150,7 +154,7 @@ services:
   # streams, and restarts it if the title turns F1; by default it only logs what it would do.
   # If the gate is down the recorder simply records everything.
   fone-recorder-gate:
-    image: python:3.12-alpine
+    image: python:3.12.16-alpine3.24
     container_name: fone-recorder-gate
     profiles: ["recorder"]
     restart: unless-stopped
@@ -174,7 +178,7 @@ services:
   # they end (hourly sweep; an import's mtime is the end of the stream it replays). Scoped to
   # <FONE_RECORDINGS>/fone and fone-import; never touches your other recorder's files.
   fone-janitor:
-    image: alpine:latest
+    image: alpine:3.24.4
     container_name: fone-janitor
     profiles: ["recorder", "streamlink"]
     restart: unless-stopped
