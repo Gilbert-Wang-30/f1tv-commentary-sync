@@ -44,6 +44,7 @@ services:
       FONE_DEFAULT_DELAY:
       FONE_REACTION_SECONDS:
       FONE_ADS_CHANNELS:
+      FONE_ADS_REFS:
       FONE_SCREENCLOCK_TZ:
       # Optional services, all on by default: =0 switches one off.
       FONE_TIMING:
