@@ -27,7 +27,7 @@ There are two ways to run it:
 | Platforms | Bilibili, Twitch, YouTube, Douyin, Huya, any HLS / FLV / AAC URL | Bilibili (录播姬), anything [streamlink](https://streamlink.github.io/) plays |
 | Delay | by ear once, remembered per stream | measured off the streamer's screen in an FLV recording (录播姬's), else by ear |
 | Stats, track map, onboards | with a server listed in the settings | ✅ |
-| Sponsor clips muted | — | any recording, once that streamer's reference clips are built |
+| Sponsor clips muted | — | on the channel the reference clips were made for (the bundled ones: 胡闹P房's; your streamer's: build a set, `FONE_ADS_REFS`) |
 | 弹幕, missed streams backfilled | — | Bilibili |
 
 It was built for one streamer, **胡闹P房**, a Bilibili F1 watch-along, and works with yours:
@@ -134,10 +134,14 @@ Docker containers and volume, the extension and the install paths all go by that
   load until you unmute it there, and still hears F1 TV's sound for sync by sound. Live, it also
   switches F1 TV to INTERNATIONAL, the world feed the streamer watches (the settings page turns
   that off, or leaves F1 TV's sound to you).
-- **Sponsor reels muted.** The streamer's pre-recorded sponsor clips are found in every recording
-  (live within ~4 s) and muted. Live, a break's clips are recognised one by one, a couple of
-  seconds into each: the mute holds past each clip's end until the server knows whether another
-  follows, so nothing slips out between them, and the commentary fades back in after the break.
+- **Sponsor reels muted.** The streamer's pre-recorded sponsor clips are found in the recordings
+  of the channel they were made for (live within ~4 s) and muted: the clips the server image
+  carries are 胡闹P房's and matched on that channel only; your streamer's take a reference set of
+  your own (`FONE_ADS_REFS`, [Configure your streamer](#configure-your-streamer)), and
+  `FONE_ADS_CHANNELS` names the channels a set is matched on. Live, a break's clips are
+  recognised one by one, a couple of seconds into each: the mute holds past each clip's end
+  until the server knows whether another follows, so nothing slips out between them, and the
+  commentary fades back in after the break.
 
 **The streamer's picture** (📺 Streamer or the V key)
 - A window over F1 TV with the streamer's own picture (their facecam, their screen), in step with
@@ -241,7 +245,9 @@ shows data for `E`, and the danmaku appear at their send time on the `W` clock.
 
 1. Download `fone-extension-<version>.zip` from the repository's
    [latest release](https://github.com/Gilbert-Wang-30/f1tv-commentary-sync/releases/latest) and
-   unzip it into a folder you keep (it holds one folder, `fone`).
+   unzip it into a folder you keep (it holds one folder, `fone`). Releases are packaged from
+   1.0.1 on (`SHA256SUMS` beside the zip); before that, load the `extension` folder of a clone
+   (below).
 2. In Chrome (or Edge, Brave), open `chrome://extensions`, turn on *Developer mode*, choose *Load
    unpacked* and pick that `fone` folder.
 3. fone's settings open by themselves. Chrome tucks a new extension's icon under the puzzle piece
@@ -291,7 +297,9 @@ Bilibili's anonymous 超清, the lowest it offers logged out, can be 0.5–1.3 M
 The server records the streamer around the clock, so it runs on a machine that's on when they
 are live: a home server, a NAS, a small VPS. It needs Docker with Compose v2 and a folder for the
 recordings with room for a few weeks of them (fone's recorders' files are deleted 21 days after
-they end). The image is `ghcr.io/gilbert-wang-30/fone`.
+they end). The image is `ghcr.io/gilbert-wang-30/fone` for amd64 and arm64, from 1.0.1 on:
+`:<version>` for one release (`docker-compose.yml` names the one it came with), `:<major>.<minor>`
+and `:latest` for the newest. How a release is made: [docs/releasing.md](docs/releasing.md).
 
 ### 1. The server
 
@@ -325,11 +333,13 @@ you already run.
 ### 3. The extension
 
 In fone's settings choose **A fone server** and enter its address, `http://<host>:8788`
-(`192.168.1.20` or `myserver:8788` is read as that), one per line, tried in order: an address
+(`192.168.1.20` or `my-server:8788` is read as that), one per line, tried in order: an address
 that works away from home first (a VPN name, say), the LAN one second. *Test connection* shows
 which one answers, the server's version, its channels and whether it has the channel's Bilibili
 room. The page also sets the commentary channel, live auto-hold and whether live comes straight
-from the streamer's Bilibili room (on by default).
+from the streamer's Bilibili room (on by default). With a server line it can't use (`ftp://…`,
+a `user:password@`), *Save* says which and why and keeps the server list as it was; the rest of
+the page is saved.
 
 ## Configure your streamer
 
@@ -356,8 +366,11 @@ docker compose up -d
 - **fone-recorder:** a dedicated 录播姬 for the rooms in `FONE_ROOMS`, in original quality, with
   millisecond file names, a folder per room number (which `FONE_ROOMS` names) and no webhook.
   Its `config.json` (in `<FONE_RECORDINGS>/fone/`) is written from `recorder/config.json` on its
-  first start (`recorder/seed.sh`) and is 录播姬's own after that: to seed it again from
-  `FONE_ROOMS`, stop fone-recorder, delete that file and start it.
+  first start (`recorder/seed.sh`) and is 录播姬's own after that (rooms you add in it stay): to
+  seed it again from `FONE_ROOMS`, stop fone-recorder, delete that file and start it. With no
+  room in `FONE_ROOMS` it doesn't start (`docker logs fone-recorder` says so) rather than record
+  nothing; a `config.json` with no room is written again once `FONE_ROOMS` names one. A room
+  number alone (`FONE_ROOMS=12345678`) is a channel of that name.
 - **fone-recorder-gate:** judges each stream by its title: F1 (`GATE_RECORD`; by default F1/F2/F3,
   Formula, Grand Prix, GP, FP1-3, Qualifying, Sprint, Race and the Chinese session names) or not
   (`GATE_SKIP` for titles never to record). Until `GATE_ACTION=stop` it only logs what it would
@@ -366,8 +379,9 @@ docker compose up -d
   streamer who tags their F1 streams is best caught by the tag: `GATE_RECORD` replaces the
   default, so keep the words in it, e.g. `GATE_RECORD='【MyStreamer】|F1|Formula|大奖赛|排位赛|正赛'`.
   `python3 recorder/gate.py --check < titles.txt` tries a filter on titles.
-- **fone-janitor:** deletes fone's recordings and backfill's imports 21 days after they end
-  (`FONE_KEEP_DAYS`).
+- **fone-janitor** (with the `recorder` or the `streamlink` profile): deletes what fone's
+  recorders write (`<FONE_RECORDINGS>/fone/`) and backfill's imports 21 days after they end
+  (`FONE_KEEP_DAYS`), hourly. It never touches another recorder's folders.
 
 `FONE_ROOMS` also gives the server the room's live-status log and backfill, the 弹幕, and the
 extension live straight from the room, the ↗ Live page and the streamer's Bilibili replays.
@@ -396,7 +410,8 @@ COMPOSE_PROFILES=streamlink
 docker compose --profile streamlink up -d --build fone-streamlink
 ```
 
-Name the service: without it, `--build` also builds the fone server from the working tree. Its
+Name the service: without it, `--build` also builds the fone server from the working tree. The
+profile starts fone-janitor too, which deletes its recordings after `FONE_KEEP_DAYS` (21). Its
 recordings are MPEG-TS, audio only by default, in the same layout; see
 [Other streamers and platforms](#other-streamers-and-platforms) for what that leaves out.
 
@@ -507,7 +522,7 @@ one: add it under the fone service's `environment:`):
 | `FONE_REC_DIR` | `/rec` | recordings root, scanned recursively (a folder per channel) |
 | `FONE_DATA_DIR` | `/data` | everything the server writes |
 | `FONE_FILENAME_TZ` | `Asia/Shanghai` | the time zone of the recordings' file names (录播姬's default template writes Beijing time); fone's recorders write theirs in it |
-| `FONE_ROOMS` | | `room=channel,…` Bilibili rooms: fone-recorder's rooms (on its first start), the live-status log and backfill, 弹幕, and in the extension live straight from the room, ↗ Live page and Bilibili replays. A folder named after a room's number is that channel |
+| `FONE_ROOMS` | | `room=channel,…` Bilibili rooms: fone-recorder's rooms (on its first start), the live-status log and backfill, 弹幕, and in the extension live straight from the room, ↗ Live page and Bilibili replays. A folder named after a room's number is that channel; a room number alone is a channel of that name; anything else is skipped, and the log says so |
 | `FONE_CHANNEL_ALIASES` | | `folder=channel,…`, for a recorder folder that isn't the name you want (录播姬's default names folders after the account and room) |
 | `FONE_IMPORT_DIR` | | where backfill writes the replays it imports (compose: `/rec/fone-import`) |
 | `FONE_DEFAULT_DELAY` | `40` | streamer delay (s) before anything is known: your streamer's typical lag |
@@ -516,9 +531,11 @@ one: add it under the fone service's `environment:`):
 | `FONE_ADS_CHANNELS` | the set's own | channels the clips are matched on, `a,b` or `*`: the bundled set (胡闹P房's) on its own channel, a set of yours on every channel |
 | `FONE_SCREENCLOCK_TZ` | | UTC offsets (`+08:00,…`) the streamer's MultiViewer clock may show besides the circuit's and `FONE_FILENAME_TZ`'s |
 | `FONE_SEGMENT_SECONDS` | `2` | HLS segment length |
+| `FONE_VERSION` | the image's | what `/api/health` says the server is (a release's image carries its version, a local build `dev`) |
 | `FONE_TIMING`, `FONE_ADS`, `FONE_SCREENCLOCK`, `FONE_VIDEO`, `FONE_BACKFILL`, `FONE_DANMAKU`, `FONE_VODCLOCK` | `1` | each optional service; `0` turns it off (`/api/health` lists the running ones) |
 | `FONE_TIMING_RECORD` | `1` | capture live sessions' timing from 15 min before the start (while F1's archive refuses, since 2026-10-18, the stats' best source: the rest is rebuilt from OpenF1) |
 | `FONE_TIMING_OPENF1` | `1` | rebuild the timing of a session the server didn't capture from OpenF1's history (any past session, any year; half an hour after it ends) |
+| `FONE_TIMING_KEEP_DAYS` | `30` | stored timing older than this is deleted: OpenF1's rebuilds always (made again when asked for), live captures and archives only while F1's archive answers (it could give them back) |
 | `FONE_DANMAKU_CAPTURE`, `FONE_DANMAKU_ARCHIVE` | `1` | the two danmaku sources: our own listening, and danmakus.com for the rest |
 | `FONE_DANMAKU_KEEP_DAYS` | `30` | how long danmaku are kept |
 | `FONE_BACKFILL_DANMAKUS` | `1` | backfill may ask danmakus.com when a stream started |
@@ -572,15 +589,21 @@ FLV recordings only, and `fone-streamlink` writes MPEG-TS, by default audio only
 
 ## Server API
 
-All read endpoints are open on the LAN. Writes are refused from web pages (see below).
+The status page, health, channels, the commentary audio, 弹幕, sponsor clips and screen clock
+are open to anything on the LAN. Writes, and the reads that start work or hand out what viewers
+played (`/api/timeline`, `/api/f1tv`, `/api/sync`, `/api/timing/session/…`,
+`/api/timing/content/…`, `/api/video/…`, `/api/vod/…` and `GET /api/diag`), answer only the
+extension or a client that sends the `X-Fone` header (curl, fone's `tools/`); a web page is
+refused ([Privacy and security](#privacy-and-security)).
 
 | | |
 |---|---|
-| `GET /api/health` | services running, recordings seen |
+| `GET /api/health` | the server's version, services running, recordings seen |
 | `GET /api/channels` | channels and whether they're live |
 | `GET /api/timeline?channel=&from=&to=` | the commentary's pieces (wall clock ↔ playlist), files, sponsor mutes |
 | `GET /api/playlist.m3u8`, `/hls/{file}/{segment}` | the commentary audio |
 | `GET /api/f1tv/{contentId}` | an F1 TV video: session, anchor `p0`, onboard streams |
+| `GET /api/vod/clock?bvid=&key=` | where the streamer's Bilibili replay runs on the session's clock, read off their screen |
 | `GET` / `PUT /api/sync/{contentId}?channel=&clock=` | the delay for a video, its source; save a tweak |
 | `GET /api/timing/session/{key}/state?t=` · `/track` · `/positions` | the dashboard's data at moment `t` |
 | `POST /api/timing/session/{key}/positions` | live car positions, relayed by the extension from the viewer's own F1 live-timing connection |
@@ -609,6 +632,10 @@ docker run --rm -v $PWD:/r -w /r/extension node:22-alpine \
 
 # the recorder gate's title filter and actions (stdlib only)
 docker run --rm -v $PWD/recorder:/r -w /r python:3.12-alpine python -m unittest -v
+
+# lint (its rules in ruff.toml), and the release checks CI runs
+docker run --rm -v $PWD:/w -w /w python:3.12-alpine sh -c 'pip install -q ruff==0.17.5 && ruff check server recorder tools'
+python3 tools/check_version.py && tools/check_public.sh
 
 # a live stream recorded for 30 s by the extension's own code, in Node (checks a platform works)
 docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https://live.bilibili.com/<room>
@@ -641,10 +668,14 @@ no real platform: its platforms are mocks under the real host names. `tools/plat
 does talk to them (logged out, public streams): what only the real ones show (their APIs as
 they are today, their CDNs' rules, Twitch's stitched ads, Douyin's cookie); `e2e/local/run.sh
 real <live URLs>` runs the same on streams you name. CI
-(`.github/workflows/ci.yml`) runs the unit and server tests on every push.
+(`.github/workflows/ci.yml`) runs the unit and server tests, ruff and the release checks
+(`tools/check_version.py`: one version everywhere; `tools/check_public.sh`: nothing of one
+install's own setup in the tracked files) on every push; the offline e2e suites run on GitHub
+by hand (`.github/workflows/e2e.yml`). `CONTRIBUTING.md` has the same commands.
 
-- **Release:** a version tag builds the extension's zip and the server image and publishes them
-  with the changelog (`docs/releasing.md`). A self-hosted build: `tools/publish_ext.sh`
+- **Release:** a `v*` tag on main builds the extension's zip (`tools/build_ext.sh`) and the
+  server image and publishes them as a GitHub Release with that version's `CHANGELOG.md`
+  section ([docs/releasing.md](docs/releasing.md)). A self-hosted build: `tools/publish_ext.sh`
   ([Advanced](#advanced-a-self-hosted-update-channel)).
 - **Read a browser's playback diagnostics:** `tools/diag.py --minutes 30 [--client …]`.
 - **How the parts fit together:** `docs/architecture.md` (routes, data shapes, the messages
@@ -716,18 +747,24 @@ recorder/              the 录播姬 config template (seed.sh fills in FONE_ROOM
                        (test_gate.py); streamlink/: the any-site recorder
 docker-compose.yml     the server and the recorders, settings from .env (.env.example)
 e2e/                   end-to-end suites (Playwright in Docker)
-tools/                 publish, diagnostics, Mac install, replay import, stream_probe.js
-docs/                  architecture, F1 data sources, README images
-.github/workflows/     CI: the unit and server tests
+tools/                 the release's packager and checks (build_ext.sh, check_version.py,
+                       check_public.sh), publish, diagnostics, Mac install, replay import, stream_probe.js
+docs/                  architecture, F1 data sources, releasing, README images
+.github/workflows/     CI (tests, lint, release checks), the release, the offline e2e suites
+CHANGELOG.md           what changed in each version (a release's notes)
 ```
 
 ## Privacy and security
 
-- **The server has no login.** Anything that can reach port 8788 can read from it, so keep it on
-  your LAN or a private network (a VPN such as Tailscale), never open to the internet. Changes
-  (`PUT /api/sync`, the `POST` routes) are refused when they come from a web page, so a site you
-  visit can't re-tune delays or start downloads. Only the extension's pages and scripts without
-  an `Origin` (curl) can make them.
+- **The server has no login.** Anything that can reach port 8788 can read its open routes, so
+  keep it on your LAN or a private network (a VPN such as Tailscale), never open to the
+  internet. A web page you visit is refused everything that changes or starts something: the
+  writes (`PUT /api/sync`, the `POST` routes) and the reads that start work (a Bilibili replay's
+  frames downloaded and read, an OpenF1 rebuild, old recordings extracted, F1 TV looked up) or
+  hand out every viewer's playback history (`GET /api/diag`), whether it asks by `fetch` or
+  with an `<img>`, a `<script>`, a link or a form. Those answer only the extension (its
+  `chrome-extension://` origin) or a client that sends the `X-Fone` header (curl, fone's
+  `tools/`): a page can't re-tune delays, start downloads or read what you watched.
 - **Your F1 TV login stays in the browser.** The extension reads it there to connect to F1's live
   timing for car positions; only the positions go to the fone server.
 - **Bilibili is listened to logged out.** Bilibili masks nicknames for that; the overlay never
@@ -736,8 +773,9 @@ docs/                  architecture, F1 data sources, README images
   files carry), not the uid.
 - **Diagnostics are playback state** (positions, speeds, drift, seeks, the player's SDK calls and
   errors) and the engine's status text, plus a random client id, the build and the OS name, so
-  two browsers can be told apart. No tokens, no cookies, no URLs. Anyone who can reach the server
-  can read them (`GET /api/diag`).
+  two browsers can be told apart. No tokens, no cookies, no URLs. The extension and clients
+  on the network that send the `X-Fone` header can read them (`GET /api/diag`, `tools/diag.py`);
+  web pages can't. Each day's file stops at 64 MB.
 - **The stream recorded in the browser** stays in the offscreen document's memory and is gone
   when Chrome closes. The audio goes nowhere. With a server listed in the settings, that server
   is asked about the F1 TV video (`/api/f1tv`), gets the live car positions (above) and the
@@ -774,7 +812,8 @@ docs/                  architecture, F1 data sources, README images
   session the server didn't capture live (`FONE_TIMING_RECORD`) gets its stats from OpenF1's
   history instead (half an hour after it ends; a minute or so to build on first ask: a few
   seconds' lag on tyres after a pit stop, and in practice and qualifying "in the pits" from the
-  in-lap's end), and nothing stored is pruned.
+  in-lap's end). What was captured live is then the only copy and is kept; OpenF1's rebuilds are
+  deleted after `FONE_TIMING_KEEP_DAYS` (30) and rebuilt when asked for again.
 - An old replay from the streamer's Bilibili replays is placed by the clock on their screen only
   where the session's clock runs (before the session or in a break, by the nearest reading:
   their delay may have moved since, which sync by sound then corrects) and only if the session's

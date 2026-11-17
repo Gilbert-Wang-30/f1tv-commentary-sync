@@ -1,4 +1,4 @@
-# secrets: the recorder API's basic-auth credentials (see README → Recording)
+# secrets: the recorder API's basic-auth credentials (see README → Configure your streamer)
 recorder/api.env
 
 # your settings for docker-compose.yml (.env.example is the template)
