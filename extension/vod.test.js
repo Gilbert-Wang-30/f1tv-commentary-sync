@@ -435,6 +435,33 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.equal(V.holder(reps, 6000, kept, CK).how, 'kept');
   });
 
+  await test('the streamer restarted twice: past each replay known not to hold the moment, to the one that may', () => {
+    // A on the events 950..4550, B on 4950..8550 (both put before, for this video), C after: nothing known of it
+    const rep = (bvid) => ({ bvid, pages: [{ page: 1, dur: 3600 }], total: 3600, cuts: [] });
+    const A = rep('BVa'), B = rep('BVb'), C = rep('BVc'), reps = [A, B, C];
+    const K = new Map([[A, { T0: 1000, delay: 50, hand: 0 }], [B, { T0: 5000, delay: 50, hand: 0 }]]);
+    const kept = (r) => K.get(r) || null;
+    // in C, from A: past B (known to end before it), to C (was: nothing, 'Commentary recording ended')
+    assert.deepEqual(V.outside(reps, A, 10000, 'after', kept, CK), { listen: C });
+    assert.deepEqual(V.outside(reps, B, 10000, 'after', kept, CK), { listen: C });
+    // C's clock read (it holds 8998.5..12598.5): there, from either
+    C.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 9100 }] };
+    assert.equal(V.outside(reps, A, 10000, 'after', kept, CK).to.rep, C);
+    // between B and C, from A: the gap, 448.5 s till C
+    assert.deepEqual(V.outside(reps, A, 8550, 'after', kept, CK), { gap: 448.5 });
+    // past the last: nothing further
+    assert.equal(V.outside(reps, A, 20000, 'after', kept, CK), null);
+    // back from C: past B to A; between A and B, the gap till B (not till C)
+    K.delete(B);
+    B.clock = { status: 'ok', readings: [{ page: 1, at: 100, wall: 5100 }] }; // (B: 4998.5..8598.5)
+    assert.deepEqual(V.outside(reps, C, 4700, 'before', kept, CK), { gap: 298.5 });
+    assert.deepEqual(V.outside(reps, B, 4700, 'before', kept, CK), { gap: null }); // (till B itself: map.wait)
+    delete B.clock;
+    assert.deepEqual(V.outside(reps, C, 4700, 'before', kept, CK), { listen: B }); // (nothing known of B: looked for there)
+    K.delete(A);
+    assert.equal(V.outside(reps, A, 10, 'before', kept, CK), null); // (nothing before A)
+  });
+
   await test("a replay's danmaku: where in the page, how, and the text unescaped", () => {
     const xml = '<?xml version="1.0"?><i><chatid>1</chatid><d p="6520.73200,1,25,16777215,1751886915,0,5ea38299,188572,10">乐扣冲出去了！！</d>'
       + '<d p="12.5,5,25,16646914,1751886909,0,ff2b1ef,188573,10">a &amp; b &lt;3 &#x1F600;</d><d p="x,1">bad</d></i>';

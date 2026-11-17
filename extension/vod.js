@@ -332,20 +332,27 @@
     return null;
   }
   // The moment off the end of the replay playing (cur), or before its start (`state`, mapWall's):
-  // {to}: the replay that holds it (holder's); {listen: rep}: the next (previous) one, nothing
-  // known of it yet: found by sound or its clock; {gap: s, or null: till cur}: between that one and
-  // this (the streamer off air, or restarting); null: nothing else. Never to one known not to hold
+  // {to}: the replay that holds it (holder's); else the next ones (previous ones) in turn, past
+  // each known to end before it (start after it): {listen: rep}, the first nothing's known of
+  // yet: found by sound or its clock; {gap: s, or null: till cur}: between two (the streamer off
+  // air, or restarting), s till the later one; null: none further. Never to one known not to hold
   // it: each of two replays placed before put the moment in the other, swapped every tick.
   function outside(reps, cur, E, state, kept, o) {
     const h = holder(reps, E, kept, o);
     if (h) return h.rep !== cur ? { to: h } : null;
-    const i = reps.indexOf(cur), nb = i < 0 ? null : state === 'after' ? reps[i + 1] : state === 'before' ? reps[i - 1] : null;
-    if (!nb) return null;
-    const p = placeOf(nb, E, kept(nb), o);
-    if (!p) return { listen: nb };
-    const c = E + p.delay - p.T0; // (the moment on the neighbour's content)
-    if (state === 'after' && c < 0) return { gap: -c };
-    if (state === 'before' && c >= contentAt(nb, nb.total)) return { gap: null };
+    const i = reps.indexOf(cur), step = state === 'after' ? 1 : state === 'before' ? -1 : 0;
+    if (i < 0 || !step) return null;
+    let wait = null; // (going back: till the one after the one looked at; cur's, map.wait)
+    for (let j = i + step; j >= 0 && j < reps.length; j += step) {
+      const nb = reps[j], p = placeOf(nb, E, kept(nb), o);
+      if (!p) return { listen: nb };
+      const c = E + p.delay - p.T0; // (the moment on its content)
+      const past = c >= contentAt(nb, nb.total);
+      if (step > 0 && c < 0) return { gap: -c };
+      if (step < 0 && past) return { gap: wait };
+      if (c >= 0 && !past) return null; // (in it after all: the clock's and sound's to say)
+      wait = -c;
+    }
     return null;
   }
 
