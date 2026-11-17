@@ -1265,7 +1265,7 @@ async function sndMeasure(t, vn) {
   // session of F1's own to anchor them, F1's pre-roll borrowed: ±SND.FAR s. The streamer passes
   // those broadcasts on whole, picture and sound, so their sound is found strongly there)
   const guess = FoneSound.guessed({ live: pl.live, vod: !!S.timeline?.vod, clock: S.clock, sessionKey: S.content?.sessionKey, locked: sn.target != null });
-  const { wide, R } = FoneSound.lookRange({ locked: sn.target != null, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
+  const { wide, long, R } = FoneSound.lookRange({ locked: sn.target != null, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
   // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
   // a replay, the delay's mapping at p: it changes at the server's file boundaries)
   const cAt = (p) => {
@@ -1301,9 +1301,11 @@ async function sndMeasure(t, vn) {
     if (!got || S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while decoding'; return; }
     const f = wide ? 2 : 1, sr = SND.SR / f;
     const y = FoneSound.decimate(got.y, f), xx = FoneSound.decimate(x, f);
-    // (±SND.FAR: a wide look's span at a time, the engine's tick let run between)
-    const res = await FoneSound.locateLong(xx, y, sr, { span: 2 * SND.WIDE, pause: vodBreath });
-    if (S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while looking'; return; }
+    let res;
+    if (long) { // (±SND.FAR: a wide look's span at a time, the engine's tick let run between)
+      res = await FoneSound.locateLong(xx, y, sr, { span: 2 * SND.WIDE, pause: vodBreath });
+      if (S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while looking'; return; }
+    } else res = FoneSound.locate(xx, y, sr);
     if (!res) { sn.why = 'no match computed'; return; }
     if (wide) sn.wideAt = t;
     const off = got.m0 + res.lag / sr - pa; // where F1 TV's sound for picture p is in the stream: p + off

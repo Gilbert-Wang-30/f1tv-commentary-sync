@@ -123,12 +123,14 @@ test('a long look a stretch at a time: the same place as one FFT over all of it,
 const P = { SCORE: 8, NEXT: 1.6, AGREE: 0.08, JUMP: 1.5, JUMP_LATER: 3, NEAR: 4, WIDE: 25, FAR: 240, REWIDE: 300, MISSES: 2 };
 
 test('how far a look reaches: widely till locked, now and then, after misses; ±240 s for a start only guessed', () => {
-  const R = (o) => { const r = S.lookRange({ locked: true, sinceWide: 15, misses: 0, guess: false, ...o }, P); return `${r.wide} ${r.R}`; };
-  assert.equal(R({ locked: false }), 'true 25');
-  assert.equal(R({}), 'false 4');
-  assert.equal(R({ sinceWide: 301 }), 'true 25');
-  assert.equal(R({ misses: 2 }), 'true 25');
-  assert.equal(R({ locked: false, guess: true }), 'true 240');
+  const R = (o) => { const r = S.lookRange({ locked: true, sinceWide: 15, misses: 0, guess: false, ...o }, P); return `${r.wide} ${r.R} ${r.long}`; };
+  // (a stretch at a time, locateLong, only the ±240 s one: the others in one go, as before it)
+  assert.equal(R({ locked: false }), 'true 25 false');
+  assert.equal(R({}), 'false 4 false');
+  assert.equal(R({ sinceWide: 301 }), 'true 25 false');
+  assert.equal(R({ misses: 2 }), 'true 25 false');
+  assert.equal(R({ locked: false, guess: true }), 'true 240 true');
+  assert.equal(R({ guess: true }), 'false 4 false'); // (found since: close looks)
   // F1 TV's F1 Academy, F2, F3 videos: the pre-roll's clock borrowed, no session key
   const g = { live: false, vod: false, clock: 'preroll', sessionKey: null, locked: false };
   assert.equal(S.guessed(g), true);

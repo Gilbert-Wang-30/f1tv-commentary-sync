@@ -127,9 +127,10 @@
   // How far a look reaches either side of where the sound was, in s: ±P.NEAR once locked; ±P.WIDE
   // till then, every P.REWIDE s, and after P.MISSES looks that missed (the streamer's latency
   // stepped further than a close look sees); ±P.FAR for a replay whose start is only a guess.
+  // `long`: that one, matched a stretch at a time (locateLong); the others in one go, as ever.
   function lookRange({ locked, sinceWide, misses, guess }, P) {
-    const wide = !locked || sinceWide > P.REWIDE || misses >= P.MISSES;
-    return { wide, R: wide ? (guess ? P.FAR : P.WIDE) : P.NEAR };
+    const wide = !locked || sinceWide > P.REWIDE || misses >= P.MISSES, long = wide && !!guess;
+    return { wide, long, R: long ? P.FAR : wide ? P.WIDE : P.NEAR };
   }
   // A replay whose start is only a guess till it's found: F1 TV's F1 Academy, F2, F3 videos, no
   // session of F1's own to anchor them, F1's pre-roll borrowed (on its clock, no session key; not
