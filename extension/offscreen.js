@@ -1436,7 +1436,8 @@ function sndSteer(t, v) {
 // meanwhile, while it listens: a look is then only the sums, a few seconds)
 const VOD = { WIN: 15, WIN_MAX: 30, STEP: 8, FULL: 5, FULL_EVERY: 8, KEEP: 30, CHUNK: 200, PAR: 3, F: 2, D0: 50, RETRY: 20, SCORE: 9.5, RATIO: 1.5, SURE: 14,
   WEAK: 7, AGREE: 0.3, VERIFY: 6.5, NEAR: 3, FRESH: 12, CANDS: 8, CONFIRM: 8, AGAIN: 600, URL: 'https://vod.fone.invalid/', AHEAD: 75, SCAN: 60,
-  CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, RELOAD: 60, RELOAD_MAX: 1800 };
+  CLOCK_POLL: 3, CLOCK_AGAIN: 20, CLOCK_WAIT: 300, SCREEN: 1.5, CLOCK_NEAR: 240, TRUST: 15, BOUND: 120, RELOAD: 60, RELOAD_MAX: 1800,
+  SCAN_WAIT: 30, SCAN_WAIT_MAX: 300 };
 // (RELOAD: a replay that wouldn't load tried again this many s on, twice as long each time to RELOAD_MAX)
 // (the clock on the streamer's screen, read by a fone server: vodClock*. CLOCK_POLL s between asks
 // while it reads, CLOCK_AGAIN for a reading near a new moment; sound waits CLOCK_WAIT s for it
@@ -1578,10 +1579,12 @@ async function vodCuts(V, gen) {
 // Repeats away from the joins (Bilibili's recording now and then has a whole segment twice: the
 // commentary heard twice, then 5 s late till sync by sound catches it), looked for a window at a
 // time ahead of the moment playing, so it's cut before it's heard (kept with the joins').
+// (failing, offline, Bilibili's 412: again VOD.SCAN_WAIT s on, twice as long each time to SCAN_WAIT_MAX)
 async function vodScan(V, r, gen) {
   const a = r.scanTo, b = Math.min(r.total, a + VOD.SCAN);
   try {
     const c = await FoneVod.scanRepeat(r, (i, t0, t1) => vodFrames(r, i, t0, t1), a, b, r.cuts);
+    r.scanWait = 0;
     if (r.scanTo === a) r.scanTo = b >= r.total ? r.total : b - 15; // (overlapping by more than a repeat is long)
     if (!c || gen !== S.gen || S.vod !== V) return;
     r.cuts = [...r.cuts, c].sort((x, y) => x.m - y.m);
@@ -1589,7 +1592,9 @@ async function vodScan(V, r, gen) {
     diag('vod', { ahead: c });
     if (V.cur === r && V.state === 'placed') { vodApply(V, true); vodSave(); }
   } catch (e) {
-    diag('vod', { scanErr: String(e?.message || e).slice(0, 120) });
+    r.scanWait = Math.min(VOD.SCAN_WAIT_MAX, r.scanWait ? 2 * r.scanWait : VOD.SCAN_WAIT);
+    r.scanNext = now() + r.scanWait;
+    diag('vod', { scanErr: String(e?.message || e).slice(0, 120), wait: r.scanWait });
   }
 }
 // The replay playing as the timeline (as a server's /api/timeline gives one) and its playlist.
@@ -1827,7 +1832,7 @@ function vodTick(t, v) {
   if (V?.unloaded.length && V.state !== 'error' && !V.loading && t >= V.loadNext) vodLoadMore(V, S.gen).catch(() => null);
   // repeats ahead of the moment playing (from where it plays, after a seek)
   const r = V?.cur, m = S.lastTarget;
-  if (V && r && V.state === 'placed' && S.timeline?.vod === r.bvid && m != null && !V.scanning) {
+  if (V && r && V.state === 'placed' && S.timeline?.vod === r.bvid && m != null && !V.scanning && !(t < r.scanNext)) {
     if (r.scanTo == null || r.scanTo < m - 30 || r.scanTo > m + VOD.AHEAD + VOD.SCAN) r.scanTo = Math.max(0, m - 15);
     if (r.scanTo < Math.min(r.total, m + VOD.AHEAD)) {
       V.scanning = true;
