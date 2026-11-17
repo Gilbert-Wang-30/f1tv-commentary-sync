@@ -376,8 +376,9 @@ function shotSource() {
   return null;
 }
 // One look at the picture: its layout (taken once two looks in a row agree: a fade, a frame of
-// another scene, aren't a new layout), its map's window (kept till it has moved for two looks: the
-// cars on its edge move it a little all the time), its session bar's pieces.
+// another scene, aren't a new layout; a look that finds only some of its columns keeps it), its
+// map's window (kept till it has moved for two looks: the cars on its edge move it a little all
+// the time), its session bar's pieces.
 const near = (a, b) => !!a && !!b && Math.abs(a.x - b.x) + Math.abs(a.x + a.w - b.x - b.w) <= 0.12 * Math.max(a.w, b.w)
   && Math.abs(a.y - b.y) + Math.abs(a.y + a.h - b.y - b.h) <= 0.12 * Math.max(a.h, b.h);
 function shotLook(src) {
@@ -390,7 +391,10 @@ function shotLook(src) {
   const cars = E ? (new Date(E * 1000).getUTCFullYear() >= 2026 ? 22 : 20) : null;
   const d = FoneShot.detect(g.getImageData(0, 0, LOOK.W, LOOK.H), { cars });
   if (!d) return;
-  if (!shot.lay || FoneShot.same(d, shot.lay) || FoneShot.same(d, shot.cand)) {
+  // (a look that found only some of the layout's columns, the others there but not read this
+  // time: the layout as it was)
+  if (shot.lay && !FoneShot.same(d, shot.lay) && FoneShot.same(d, shot.lay, true)) shot.cand = null;
+  else if (!shot.lay || FoneShot.same(d, shot.lay) || FoneShot.same(d, shot.cand)) {
     shot.lay = d;
     shot.cand = null;
   } else shot.cand = d;

@@ -88,8 +88,11 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   // with no Web Audio graph in the page's sight: here, built in another realm, an iframe's)
   // (?f1audio=detached: the same stream played by an Audio() never put in the page;
   // ?f1audio=element: F1 TV's sound as its player plays it on the real page in November 2026, a
-  // media element never put in the page playing the sound itself, not a stream)
+  // media element never put in the page playing the sound itself, not a stream; &f1steady=1: its
+  // sound at its own steady pace, the picture's trimmed to it rather than it to the picture, as
+  // Tiledmedia's player does: put right only when a quarter of a second off)
   const f1mode = new URLSearchParams(location.search).get('f1audio');
+  const f1steady = new URLSearchParams(location.search).get('f1steady') === '1';
   if (f1mode === 'element') {
     window.__f1Off = null;
     (async () => {
@@ -102,7 +105,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
         if (window.__f1Off == null || v.paused || v.readyState < 3) { if (!el.paused) el.pause(); return; }
         const want = v.currentTime + window.__off + window.__f1Off;
         if (el.paused || Math.abs(el.currentTime - want) > 0.25) { el.currentTime = Math.max(0, want); el.playbackRate = 1; if (el.paused) el.play().catch(() => {}); return; }
-        el.playbackRate = Math.max(0.99, Math.min(1.01, 1 + (want - el.currentTime) * 0.5));
+        if (!f1steady) el.playbackRate = Math.max(0.99, Math.min(1.01, 1 + (want - el.currentTime) * 0.5));
       }, 200);
     })();
   }
@@ -807,11 +810,12 @@ async def main():
         f1s = await sw.evaluate("chrome.storage.sync.get(null).then((s) => [s.f1Sound, s.f1Pick, s.f1Subs ?? null, s.f1Audio])")
         check(f1s == ["fx", True, None, "mute"] and await page.evaluate("() => window.__muteCalls") == [],
               f"settings: 0.3.10's F1 TV sound 'mute' migrated to Track FX, fone picking it, F1 TV not muted (f1Sound, f1Pick, f1Subs, f1Audio: {f1s})")
-        # The panel's F1 TV block: two rows, its sound and its subtitles (no more muted / as is, nor a Picture row)
+        # The panel's F1 TV block: its sound, its subtitles and its picture (no more muted / as is;
+        # the Picture row back since 0.4.3: F1 TV's own choice, or its sharpest pinned)
         box = await page.evaluate(F1BOX)
-        check(not box["hidden"] and box["labels"] == ["F1 TV", "Subtitles"] and box["old"] == 0
-              and box["rows"] == [[["Track FX", True], ["English Int.", False]], [["on", False], ["off", True]]],
-              f"panel: F1 TV's two rows, sound (Track FX lit) and subtitles (off lit) ({box})")
+        check(not box["hidden"] and box["labels"] == ["F1 TV", "Subtitles", "Picture"] and box["old"] == 0
+              and box["rows"] == [[["Track FX", True], ["English Int.", False]], [["on", False], ["off", True]], [["auto", True], ["best", False]]],
+              f"panel: F1 TV's rows, sound (Track FX lit), subtitles (off lit) and picture (auto lit) ({box})")
         # Subtitles on: kept, and asked of page.js (which reports it; steering them isn't there yet)
         await page.click("#fone-overlay button[data-cc='on']")
         subs = await wait_js(page, TM_SUBS, lambda s: (s or {}).get("want") is True, 5, "subtitles asked of page.js")

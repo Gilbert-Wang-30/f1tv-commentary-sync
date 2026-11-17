@@ -74,7 +74,9 @@ extension and the install paths all go by that name.
   (its recordings are kept for weeks; or the recorder missed it) plays the streamer's own
   直播回放 from their Bilibili space, streamed as you watch: fone finds the replay of that
   session, finds this moment in it by F1 TV's sound (its title only says which hour the stream
-  started in: the first look takes 10-60 s, F1 TV at 1× meanwhile), cuts Bilibili's ~4 s repeats
+  started in: the first look takes 10-60 s, F1 TV at 1× meanwhile; where the race sound is faint
+  under the streamer's voice no one look is sure, so the likeliest places are checked against the
+  sound F1 TV plays on with, and the first found there again is taken), cuts Bilibili's ~4 s repeats
   every half hour and any other stretch Bilibili's recording has twice (a whole ~5 s segment now
   and then: found a minute ahead of what plays, so it's never heard twice and never puts the
   commentary 5 s late), turns F1 TV's own sound off and keeps it in sync by sound, with the replay's own

@@ -8,6 +8,10 @@ to: find the streamer and the replays that may hold the session, find this momen
 sound, play the replay there (hls.js on its fMP4, from Bilibili's mirrors), keep it there by
 sync by sound, find the replay's ~5 s repeats, and the next time the video opens, start where
 it was at once.
+
+FAINT (run.sh's VOD_FAINT): F1 TV's sound only faint in the stream, as with F1 TV's Track FX
+against a streamer talking over the feed they pass on: no one look sure. fone has to find this
+moment all the same (a likely place found again by the sound heard after it), in the right place.
 """
 
 import asyncio
@@ -121,12 +125,35 @@ async def main():
 
         async def open_replay():
             nonlocal page
-            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/2025-british-gp-race?action=play&tm=1&grid=1&f1audio=element")
+            steady = "&f1steady=1" if os.environ.get("FAINT") or os.environ.get("STEADY") else ""  # (F1 TV's sound at its own steady pace, as Tiledmedia plays it)
+            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/2025-british-gp-race?action=play&tm=1&grid=1&f1audio=element{steady}")
             await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
             await page.evaluate("() => { window.__f1Off = 0; }")  # (F1 TV's sound at the picture's own position)
 
         def placed(s):  # where the commentary plays against where F1 TV's sound is in the replay (AT + p)
             return s["m"] - (AT + s["p"])
+
+        if os.environ.get("FAINT"):
+            t0 = time.time()
+            await open_replay()
+            st = await E.wait_status(page, lambda s: (s.get("vod") or {}).get("state") == "placed", 300, "placed by faint sound")
+            took = time.time() - t0
+            for _ in range(40):  # (the engine's diagnostics come a few seconds after the status)
+                if any(d.get("type") == "vod" and d.get("place") for d in DIAG):
+                    break
+                await asyncio.sleep(0.5)
+            looks = [d for d in DIAG if d.get("type") == "vod" and ("look" in d or "again" in d or "check" in d)]
+            how = "a likely place found again" if looks and "again" in looks[-1] else "one look sure"
+            E.check(st["vod"]["bvid"] == BVID and took < 240,
+                    f"F1 TV's sound faint in the stream: found by sound in {took:.0f}s ({st['vod']['tries']} looks; {how})")
+            st = await E.wait_status(page, lambda s: s.get("state") == "sync", 30, "playing there")
+            E.check(abs(placed(st)) < 0.3, f"…in the right place: {placed(st) * 1000:+.0f} ms from F1 TV's sound")
+            n = len([d for d in DIAG if d.get("type") == "vod" and d.get("place")])
+            E.check(n == 1, f"…put there once, nowhere else first ({n})")
+            await ctx.close()
+            srv.shutdown()
+            print(f"== {E.passed} passed")
+            return
 
         # ---- found by sound (at 2× chosen: F1 TV held at 1× while it looks) ----
         await sw.evaluate("chrome.storage.sync.set({speed: 2})")
