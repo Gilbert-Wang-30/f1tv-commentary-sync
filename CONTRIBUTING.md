@@ -40,7 +40,7 @@ docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine \
 ```
 
 **2. Server and recorder tests** (pytest: the server's in its Docker image, which has ffmpeg
-and tesseract; the recorder gate's, `recorder/test_*.py`, need only Python):
+and tesseract; the recorder's, `recorder/test_*.py` for the gate and seed.sh, need only Python and sh):
 
 ```bash
 docker build -t fone:dev server
