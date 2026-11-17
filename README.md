@@ -640,9 +640,9 @@ gets 403, a web page included ([Privacy and security](#privacy-and-security)).
 
 ```bash
 # server: 250+ tests (8 skip without the real recordings, below); -rs lists the skipped ones
-docker build -t fone:dev server
+docker build -t fone:e2e server   # a test tag: a server of yours may run fone:dev or fone:latest
 docker run --rm -v $PWD/server:/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
-  fone:dev sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
+  fone:e2e sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
 
 # extension unit tests: sync maths, dashboard layout, danmaku, self-update, live positions,
 # the in-browser recorder (demuxers, buffer, playlists), sync by sound, F1 TV's settings, the
@@ -661,7 +661,8 @@ python3 tools/check_version.py && tools/check_public.sh
 # a live stream recorded for 30 s by the extension's own code, in Node (checks a platform works)
 docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https://live.bilibili.com/<room>
 
-# end to end, headless Chrome with the real extension
+# end to end, headless Chrome with the real extension; each suite builds server/ as E2E_IMAGE
+# (fone:e2e) first, E2E_IMAGE=<tag> E2E_BUILD=0 runs an image you built instead
 ./e2e/run.sh                  # real server + mock F1 TV player: replay, Tiledmedia, 2x, live, danmaku, onboards
 ./e2e/local/run.sh            # no server: the stream recorded in the browser (mock Bilibili, HLS) with a live F1 TV
 ./tools/platform_check.sh     # any day, no F1 session needed: a stream live right now on each platform (Bilibili,

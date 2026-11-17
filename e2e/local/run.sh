@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
-IMAGE=${E2E_IMAGE:-fone:dev} # only for its ffmpeg
+. e2e/image.sh; IMAGE=$E2E_IMAGE # only for its ffmpeg
 WORK=$(mktemp -d)
 CAP="--cpus 2 --cpu-shares 256"
 cleanup() { docker run --rm -v "$WORK":/w alpine rm -rf /w/media >/dev/null 2>&1 || true; rm -rf "$WORK"; }

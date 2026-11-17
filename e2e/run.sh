@@ -4,14 +4,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
-# Test image: built from server/ as fone:dev (never fone:latest, which production runs).
-# E2E_IMAGE=<tag> E2E_BUILD=0 reuses an existing image instead of building.
+# The server under test: E2E_IMAGE, built from server/ as fone:e2e by default (e2e/image.sh);
+# E2E_IMAGE=<tag> E2E_BUILD=0 runs an existing image instead of building.
 # E2E_ONLY=onboards runs Phase A3 alone (the dashboard's onboard views; a dev shortcut).
 # E2E_CONTENT_SEED=<file.json> ({content id: /api/f1tv answer}, e.g. from a server's cache) seeds
 # the fixtures' F1 TV mapping instead of deriving it: F1's live-timing archive, which the exact
 # anchor comes from, has answered 401 to everyone since 2026-10-18. E2E_NO_TIMING=1 skips the one
 # check that needs that archive's timing data (the dashboard's tower).
-IMAGE=${E2E_IMAGE:-fone:dev}
+. e2e/image.sh
+IMAGE=$E2E_IMAGE
 # Container/network names: fone-dev-* per docs/architecture.md; override to run in parallel.
 NAME=${E2E_NAME:-fone-dev-e2e}
 WORK=$(mktemp -d)
@@ -29,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ "${E2E_BUILD:-1}" != 0 ]; then docker build -q -t "$IMAGE" server >/dev/null; fi
+e2e_image
 mkdir -p "$WORK/rec/胡闹P房" "$WORK/data" "$WORK/media" "$WORK/seed"
 if [ -n "${E2E_CONTENT_SEED:-}" ]; then cp "$E2E_CONTENT_SEED" "$WORK/seed/content.json"; fi
 chmod -R 777 "$WORK"
@@ -131,7 +132,7 @@ echo "== waiting for the server to extract the finished recording"
 # Until the finished fixture is extracted and in the playlist (a replay in Chrome refreshes its
 # timeline only every 60 s: starting before this is a 'No recording covers this session' timeout
 # on a loaded box) and the live one has a few segments.
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   if docker exec $NAME-server python -c "
 import json,urllib.request,sys,time
 t=time.time()

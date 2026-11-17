@@ -14,10 +14,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
-IMAGE=${E2E_IMAGE:-fone:dev} # only for its ffmpeg and python
+. e2e/image.sh; IMAGE=$E2E_IMAGE # only for its ffmpeg and python
 WORK=$(mktemp -d)
 cleanup() { docker run --rm -v "$WORK":/w alpine rm -rf /w/media >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
+e2e_image
 mkdir -p "$WORK/media" && chmod -R 777 "$WORK"
 BVID=${VOD_BVID:-BV1JF31zgEbR} CID=${VOD_CID:-30901406039} AT=${VOD_AT:-2400} LEN=${VOD_LEN:-660} FAINT=${VOD_FAINT:-} STEADY=${VOD_STEADY:-} CLOCK=${VOD_CLOCK:-}
 EXT=${VOD_EXT:-$PWD/extension}

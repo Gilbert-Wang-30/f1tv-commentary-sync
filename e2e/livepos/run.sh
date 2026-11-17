@@ -3,7 +3,7 @@
 #   mock F1 SignalR Core server (mock_f1.py, plays a recorded Position.z archive)
 #   -> livepos.js in Node 22 (relay_node.js) and in headless Chromium as the real extension
 #      setup: background reads a (fake) login cookie, offscreen document relays (relay_chrome.py)
-#   -> a dev fone server (fone:dev-livepos), whose GET /positions must serve the samples back.
+#   -> a dev fone server (E2E_IMAGE: e2e/image.sh), whose GET /positions must serve the samples back.
 #   Once the extension is integrated (offscreen.html loads livepos.js), also the extension
 #   itself: real background + offscreen engine on a LIVE video (relay_extension.py).
 # Everything runs on an --internal Docker network: no traffic to F1, OpenF1 or Bilibili.
@@ -16,6 +16,7 @@ NET=$NAME-net
 FIXTURE=server/tests/fixtures/timing/static/2026/2026-10-04_Bahrain_Grand_Prix/2026-10-03_Qualifying/Position.z.jsonStream.gz
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
 CAP="--cpus 2 --cpu-shares 256"
+. e2e/image.sh
 EXT=${LIVEPOS_EXT:-$PWD/extension}
 CID=1000099901 SESSION=90201  # a LIVE content the dev server is told about (ext phase)
 phase() { [ -z "${LIVEPOS_ONLY:-}" ] || [ "$LIVEPOS_ONLY" = "$1" ]; }
@@ -34,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== building images"
-docker build -q -t fone:dev-livepos server >/dev/null
+e2e_image
 docker build -q -t $NAME-mock - >/dev/null <<'EOF'
 FROM python:3.12-alpine
 RUN apk add --no-cache openssl && pip install --no-cache-dir aiohttp==3.11.18
@@ -50,7 +51,7 @@ mkdir -p "$WORK/data" "$WORK/rec"
 chmod -R 777 "$WORK"
 # For the engine (ext phase): one short recording, so the channel exists, and the LIVE content
 # seeded in the content cache (F1 TV's API is out of reach), answered for the next 10 min.
-docker run --rm $CAP -v "$WORK/rec":/rec -v "$WORK/data":/data fone:dev-livepos sh -c "
+docker run --rm $CAP -v "$WORK/rec":/rec -v "$WORK/data":/data "$E2E_IMAGE" sh -c "
   mkdir -p /rec/livepos-test && ffmpeg -v error -y -f lavfi -i sine=frequency=440:sample_rate=48000:duration=20 \
     -f lavfi -i color=c=black:s=64x36:r=5:d=20 -c:a aac -b:a 64k -c:v libx264 -preset ultrafast -g 10 -shortest \
     -f flv '/rec/livepos-test/20261010-090000-000-livepos test.flv' && python3 -c '
@@ -65,13 +66,13 @@ docker network create --internal $NET >/dev/null
 # Dev fone server: timing only, no live capture or archive downloads (nothing to reach anyway).
 docker run -d $CAP --name $NAME-server --network $NET -v "$WORK/rec":/rec:ro -v "$WORK/data":/data \
   -e FONE_TIMING_RECORD=0 -e FONE_TIMING_ARCHIVE_DAYS=0 -e FONE_ADS=0 -e FONE_SCREENCLOCK=0 -e FONE_VIDEO=0 \
-  -e FONE_BACKFILL=0 fone:dev-livepos >/dev/null
+  -e FONE_BACKFILL=0 "$E2E_IMAGE" >/dev/null
 docker run -d $CAP --name $NAME-mock --network $NET -e FONE_URL=http://$NAME-server:8788 -e MOCK_TLS=1 \
   -v "$PWD/e2e/livepos":/t:ro -v "$PWD/$FIXTURE":/fixture/Position.z.jsonStream.gz:ro \
   $NAME-mock python -I /t/mock_f1.py /fixture/Position.z.jsonStream.gz >/dev/null
 
 echo "== waiting for the dev server and the mock"
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   if docker exec $NAME-mock python -c "
 import urllib.request as u
 u.urlopen('http://$NAME-server:8788/api/health', timeout=2); u.urlopen('http://127.0.0.1:8080/_mock/health', timeout=2)" 2>/dev/null

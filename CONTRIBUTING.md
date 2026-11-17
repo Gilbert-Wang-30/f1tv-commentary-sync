@@ -43,9 +43,9 @@ docker run --rm -v "$PWD":/r -w /r/extension node:22-alpine \
 and tesseract; the recorder gate's, `recorder/test_*.py`, need only Python):
 
 ```bash
-docker build -t fone:dev server
+docker build -t fone:e2e server   # a test tag: a server of yours may run fone:dev or fone:latest
 docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
-  fone:dev sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
+  fone:e2e sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
 docker run --rm -v "$PWD/recorder":/r -w /r -e PYTHONDONTWRITEBYTECODE=1 python:3.12-alpine \
   sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -p no:cacheprovider'
 ```
@@ -77,6 +77,12 @@ all in Docker. These need Docker and a few GB for the Playwright image. They are
 (minutes) and run nowhere automatically. `e2e/local`, `e2e/livepos` and `e2e/layout_run.sh`
 work offline against mocks; `e2e/run.sh`, `e2e/vod`, `tools/platform_check.sh` and
 `e2e/dash_shots.sh` need the internet, live streams or a running server.
+
+The server's image the suites run (the server itself, or only its ffmpeg) is `E2E_IMAGE`,
+`fone:e2e` by default (`e2e/image.sh`), built from `server/` at the start of each suite: seconds
+when `server/` hasn't changed. `E2E_IMAGE=<tag> E2E_BUILD=0` runs one you built instead (a
+release candidate, say). They never build `fone:dev` or `fone:latest`, the tags a server of
+yours may run under.
 
 `e2e/run.sh` looks up real F1 TV content and MultiViewer sessions for its fixtures (the
 commentary audio is synthetic). The exact replay anchor came from F1's live-timing archive,
