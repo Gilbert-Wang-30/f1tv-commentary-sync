@@ -15,7 +15,7 @@ function boot({ running, served, storage = {}, rules = null }) {
     runtime: {
       id: 'fone', getURL: (p) => `chrome-extension://fone/${p}`,
       onMessage: on('message'), onInstalled: on('installed'), reload: () => { env.reloads++; },
-      getContexts: async () => [], sendMessage: async () => {}, openOptionsPage() {},
+      getContexts: async () => [], sendMessage: async () => {}, openOptionsPage: () => { env.options = (env.options || 0) + 1; },
     },
     tabs: {
       onRemoved: on('removed'), sendMessage: async () => {},
@@ -107,6 +107,21 @@ test('Douyin: only its anonymous ttwid cookie is sent, through a session rule', 
   e.jar = [{ name: 'ttwid', value: 'v2' }];
   assert.equal(await ask({ id: 'fone', tab: { id: 4 }, url: 'chrome-extension://fone/options.html' }), true);
   assert.equal(await ask({ id: 'fone', tab: { id: 3 }, url: 'https://f1tv.formula1.com/' }), false);
+});
+
+test('first run: the settings page opens on install (not on an update or reload); the panel\'s ⚙ opens it', async () => {
+  const e = boot({ running: null, served: null });
+  const installed = (reason) => e.listeners.installed.forEach((f) => f({ reason }));
+  installed('update');
+  installed('chrome_update');
+  assert.equal(e.options, undefined);
+  installed('install');
+  assert.equal(e.options, 1);
+  const ask = (sender) => e.listeners.message.forEach((f) => f({ target: 'background', type: 'open-options' }, sender, () => {}));
+  ask({ id: 'fone', tab: { id: 3 }, url: 'https://f1tv.formula1.com/detail/1' }); // the panel, a content script
+  assert.equal(e.options, 2);
+  ask({ id: 'other', tab: { id: 3 } }); // another extension
+  assert.equal(e.options, 2);
 });
 
 test('up to date: never reloads', async () => {

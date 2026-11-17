@@ -62,17 +62,44 @@ off with `FONE_<NAME>=0`, and one that fails to build or start is left out rathe
 the commentary sync down (`/api/health` lists the running ones).
 
 Configuration is environment variables only (`server/fone/config.py`; the README's
-Configuration table lists them).
+Configuration table lists them). An empty one is its default (`docker-compose.yml` passes the
+optional ones through from `.env`, empty where `.env` leaves them so). Nothing names a streamer
+by default: with no `FONE_ROOMS` no Bilibili room is watched, and `config.notes()` (logged as
+the configuration loads) says what that, or a missing recordings or import folder, leaves out.
+`FONE_ROOMS` entries are `room=channel` or a room number alone (its channel is the number);
+anything else is skipped with a warning (`config.room_entries`, which backfill reads too, and
+`recorder/seed.sh` the same way). `/api/health` carries `version` (`FONE_VERSION`, stamped into
+a release's image; `dev` otherwise).
+
+The compose file reads everything that's one setup's from `.env` (`.env.example`):
+`FONE_RECORDINGS` is mounted at `/rec` (read-only) with `fone-import/` in it writable for
+backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into its `fone/`;
+`FONE_FILENAME_TZ` is the server's zone for file names and the recorders' `TZ`.
+`recorder/seed.sh` writes fone-recorder's 录播姬 `config.json` on its first start from the
+template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone, and again only when
+the file has no room (no `RoomId`) and `FONE_ROOMS` names one (the old file kept as
+`config.json.bak`); with no file and no room it exits 1 with what to set, so the recorder
+restarts saying so instead of recording nothing. The gate (`recorder/gate.py`) only logs the
+streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
+profile (`recorder`, `streamlink`) and deletes files under `<FONE_RECORDINGS>/fone/` and
+`fone-import/` `FONE_KEEP_DAYS` (21) after their last write. The server image is
+`ghcr.io/gilbert-wang-30/fone:<version>` from 1.0.1 on (`.github/workflows/release.yml`,
+`docs/releasing.md`); `build: ./server` builds it locally under a name of your own.
 
 ### Recordings and the data directory
 
 `FONE_REC_DIR` (`/rec`) is scanned recursively every `FONE_SCAN_INTERVAL` s. A recording's
-**channel is its parent folder** (BililiveRecorder's `{{ name }}/` template; `FONE_CHANNEL_ALIASES`
-renames folders), its start time is parsed from the file name (`yyyyMMdd-HHmmss-fff-title.flv`
-and the coarser variants in `recordings.py`) in `FONE_FILENAME_TZ`, and its `source` is
-`recorder`, or `import` for files under `FONE_IMPORT_DIR` (backfill's replays, which only ever
-fill gaps). A file still being written (mtime younger than `FONE_GROWING_IDLE_SECONDS`) is
-tailed into ffmpeg so its audio is playable seconds after it was recorded.
+**channel is its parent folder** (fone-recorder's `{{ roomId }}/` template, which `FONE_ROOMS`
+names; BililiveRecorder's `{{ name }}/` or a streamlink channel's; `FONE_CHANNEL_ALIASES`
+renames folders, and wins over `FONE_ROOMS`), its start time is parsed from the file name
+(`yyyyMMdd-HHmmss-fff-title.flv` and the coarser variants in `recordings.py`) in
+`FONE_FILENAME_TZ`, and its `source` is `recorder`, or `import` for files under
+`FONE_IMPORT_DIR` (backfill's replays, which only ever fill gaps). A finished file whose name and
+last write disagree by whole quarter-hours, an hour or more, is placed by its name and logged as
+a likely `FONE_FILENAME_TZ` mismatch (`extractor.zone_offset`), when the zone that would make
+them agree exists (UTC−12 to UTC+14: a file touched days later isn't). A file still being
+written (mtime younger than `FONE_GROWING_IDLE_SECONDS`) is tailed into ffmpeg so its audio is
+playable seconds after it was recorded.
 
 `FONE_DATA_DIR` (`/data`, the `fone-data` volume) holds everything computed:
 
@@ -84,11 +111,12 @@ hls/<fid>/                   one directory per recording (fid = sha1 of its path
   ads.json                     sponsor clips found (ads service)
   screenclock.json             the measured screen delay (screenclock service)
 timing/<session_key>/        live-timing streams, archive and own capture in the same format
-  <Topic>.jsonStream, meta.json
+  <Topic>.jsonStream, meta.json  meta.source: live | relay | archive | openf1
 timing/schedule.json         the OpenF1 calendar; timing/tracks/<meeting>.json (+ .corners.json)
 video/<fid>.json             FLV keyframe index (video handoff)
+vodclock/<bvid>.<key>.json   what a Bilibili replay's frames showed (vodclock)
 danmaku/                     capture/<room>-<yyyymmdd>.jsonl and danmaku.sqlite3
-diag/<day>.jsonl             playback diagnostics, 7 days
+diag/<day>.jsonl             playback diagnostics, 7 days, at most 64 MB a day
 backfill/                    downloads in progress
 ```
 
@@ -112,15 +140,16 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | | |
 |---|---|
 | `GET /` | status page (HTML): every recording, its extraction status and analysis notes |
-| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `notes`: what the setup leaves out (no `FONE_ROOMS`, no ffmpeg/tesseract for the replays' clock), for the options page's Test connection |
+| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out (no `FONE_ROOMS`, no ffmpeg/tesseract for the replays' clock), for the options page's Test connection |
+
 | `GET /api/channels` | `[{name, files, latest, live}]`, newest first; `live` = a file is still growing |
 | `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}`. Cached in SQLite; an anchored replay never changes, everything else is re-checked after 10 min, and a re-check that can't make the exact anchor again (the archive refusing) keeps the cached one |
 | `GET /api/sync/{cid}?channel=&clock=` | the delay to start from: `{delay, source: "content"\|"measured"\|"channel"\|"default"}`; `measured` adds `{screen, reaction, confidence, file}` |
-| `PUT /api/sync/{cid}` `{channel, clock, delay}` | save a tweak for that video (and clock) |
+| `PUT /api/sync/{cid}` `{channel, clock, delay}` | save a tweak for that video (and clock); `delay` a finite number within ±86400 s (422 otherwise) |
 | `GET /api/timeline?channel=&from=&to=` | the commentary between two wall times, below |
 | `GET /api/playlist.m3u8?files=a,b,…` | the files stitched into one HLS EVENT playlist (`#EXT-X-DISCONTINUITY` between files, `#EXT-X-ENDLIST` once all are finished) |
 | `GET /hls/{fid}/seg_NNNNN.ts` | an audio segment |
-| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline |
+| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event with a non-finite number is cut down like an oversized one; a day's file stops at 64 MB (later events stay in memory) |
 
 **Timing** (`timing.py`, `timing_state.py`, `livefeed.py`), prefix `/api/timing`
 
@@ -145,7 +174,7 @@ audio segments, `/api/danmaku` and the services' status and per-file results (`/
 | `POST /api/backfill/import` `{"bvid"}` or `{"from", "to", "channel"}` | import a replay by hand (409 unless `FONE_ROOMS` and `FONE_IMPORT_DIR` are set) |
 | `GET /api/danmaku?channel=&from=&to=[&limit=]` | `{items: [{t, x, m: 1\|4\|5, s, c, u, ul?, ml?, wl?, g?, e?, em?, k?, p?}], live, room}`, oldest first, at most 6000 (see `danmaku.py` for the fields) |
 | `GET /api/danmaku/status` | rooms listened to, capture and archive state |
-| `GET /api/vod/clock?bvid=&key=[&slot=][&E=]` | where the streamer's Bilibili replay `bvid` runs on the event clock of session `key`, read off their screen: `{status: "working"\|"ok"\|"none"\|"error", readings: [{page, at, wall, text}], more, why}` (`wall`: the event time their screen showed `at` s into page `page`); `E` asks for a reading near that event time (vodclock below) |
+| `GET /api/vod/clock?bvid=&key=[&slot=][&E=]` | where the streamer's Bilibili replay `bvid` runs on the event clock of session `key`, read off their screen: `{status: "working"\|"ok"\|"none"\|"error", readings: [{page, at, wall, text}], more, why}` (`wall`: the event time their screen showed `at` s into page `page`); `E` asks for a reading near that event time. `none`: no timing for the session, no clock in it, frames that don't agree, or no ffmpeg/tesseract on the server; `error`: asked again later (vodclock below) |
 
 ### The timeline and the delay
 
@@ -199,10 +228,16 @@ deleted laps after race control's message, Retired once the car has stopped), so
 practice, qualifying and race at 20 s steps: positions 100 %, qualifying and practice bests,
 gaps and last laps 100 %; what differs are the feed's own lags (the compound UNKNOWN for a few
 seconds after a pit exit, tyre ages batched a little late). A finished capture with no car
-positions (nobody relayed them from F1 TV) gets OpenF1's when the map asks. Nothing stored is
-pruned while the archive refuses (`maybe_prune` asks the year index first; when it answers,
-sessions stored more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and fetched again
-on demand). All are stored in the archive's format, one `<Topic>.jsonStream` per topic
+positions (nobody relayed them from F1 TV) gets OpenF1's when the map asks. Car positions
+relayed for a session the server isn't capturing (`FONE_TIMING_RECORD=0`, or the capture
+failed) are stored as meta `source: "relay"`: no timing of its own, so it never stands in the
+way of the archive or an OpenF1 rebuild (either replaces it, its writer closed first), the
+vodclock treats it as no timing, `state()` asks for a fetch once the session is over, and a
+capture's first message turns it into `live` on the relay's `t0`. Pruning (hourly,
+`maybe_prune`): sessions stored more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and
+fetched again on demand, OpenF1's rebuilds always, captures and archives only while F1's archive
+answers (it asks the year index first: while it refuses, a capture is the only copy left). All
+are stored in the archive's format, one `<Topic>.jsonStream` per topic
 (`HH:MM:SS.mmm<json>` lines, offsets from the session's `t0`), so one loader serves them all.
 Each row also carries `grid` (its `GridPos`, races) and `stints` (the car's tyre sets, oldest
 first: `{compound, laps, new}`; a pass through the pit lane on the same tyres folded into the
@@ -211,8 +246,12 @@ Anonymous access has everything except car positions; those come from the viewer
 login through `POST /positions` (the server never sees the token). `docs/f1-data-sources.md`
 has the endpoints and formats.
 
-**ads**: sponsor-reel detection per recording against the reference clips in
-`server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). Growing files are analysed segment by
+**ads**: sponsor-reel detection per recording, on the channels the clips were made for,
+against the reference clips in `server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). The clips are one streamer's, so only
+their channel's recordings are matched: the bundled set's on its own channel
+(`ads.BUNDLED_CHANNELS`, 胡闹P房), a set in `FONE_ADS_REFS` on every channel, or on those
+`FONE_ADS_CHANNELS` names (`*`: all). Another channel's files aren't decoded and have no ad state
+(`adsAnalyzedTo` null, no mutes). Growing files are analysed segment by
 segment as the extractor lists them (a clip is known 2–3 s into its audio); finished files
 once. The extension mutes while the target `m` is inside a `mutes` span (live from the stream
 itself, while the wall time of the target is inside one's `w` span, padded by 1 s). Live, each
@@ -247,7 +286,17 @@ the streamer's own delay moves now and then (Q1 of that qualifying drifted up to
 Q2: their F1 TV buffering, a pause), so frames an hour apart may both be right and still
 disagree. Then, asked with `E` (the moment the extension plays) and no reading within 4 min of
 it, three frames there (once per moment; none where the clock doesn't run: before the session, a
-break). Readings are kept per replay and session in `<data>/vodclock/`. The 2026 Italian GP
+break). What each frame showed is kept per replay and session in `<data>/vodclock/` (with the
+OCR's version and the timing it was worked out from, `[source, t0]`); the event times are worked
+out afresh from the session's timing as it is, so a capture since replaced by the archive, say,
+is placed again from the frames already read, with no new download. The wait for the timing (up
+to 7 min: an OpenF1 rebuild) holds no frame slot (two replays read at once). `none` is for no
+timing at all, no clock in it or frames that don't agree (asked again after 6 h); timing that may
+still come (a rebuild queued, the archive yet to publish) and failed downloads are `error`, asked
+again after 60 s, doubling up to 6 h. A frame that can't be decoded or read is left unread alone;
+a fragment is streamed, at most the bytes asked for, within 120 s, and a mirror answering without
+`206` is refused. No ffmpeg or tesseract on the server: `none`, saying which. The latest 500
+replays are kept in memory, the rest read back from disk. The 2026 Italian GP
 race: a place 1.7 s from where its sound had put it, read in 11-80 s (Bilibili's mirrors);
 qualifying in 10 s, a moment's own reading in 4 s.
 
@@ -263,7 +312,12 @@ recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`.
 
 **danmaku**: an anonymous connection to each room's danmaku feed (`danmaku_feed.py`), written
 as JSON lines and indexed into SQLite, plus danmakus.com's archive for what the capture
-didn't hear (no levels, colours or stickers there). Served by send time.
+didn't hear (no levels, colours or stickers there). Served by send time. The capture file's
+`open` and `beat` lines say when it was listening (the spans the archive's items are checked
+against): a `beat` is written when Bilibili answers a heartbeat (op 3), not when one is sent,
+and 70 s with nothing received ends the connection (a half-open one still takes heartbeats) so
+the capture loop reconnects. An archive import runs in a thread, its items checked against the
+spans by bisection.
 
 ## Extension
 
@@ -789,9 +843,22 @@ rollback). `chrome.storage.local` (per machine): `layout`
 (`'split'` | `'off'`), `onboards` (the two picked drivers), and the self-update's `updateSeen`,
 `lastReload`, `refreshF1tv`.
 
+First run: the service worker opens the options page on install (`onInstalled`, reason
+`install`; not on an update or a self-reload), which with nothing set shows how to start; later
+the panel's ⚙ asks it to (`{target: 'background', type: 'open-options'}`: a content script
+can't open it), highlighted while there's nothing to play from. The options page's logic is
+`FoneOptions` (`options.js`, tested by `options.test.js`): a server as typed gets `http://`
+where no scheme was typed and `:8788` where no port either, anything but http(s) is refused,
+and a save keeps the source that has something in it (a first run's server saved with "This
+computer" still checked is the server). A server line it can't use costs only the server
+list: that and `source` stay as saved (the box keeps what was typed, the message says which
+line and why), everything else on the page is saved. *Test connection* reads `/api/health` (the
+version, where the server has one), `/api/channels` and `/api/danmaku/status` (whether the
+channel has a Bilibili room).
+
 Self-update: a published build (`tools/publish_ext.sh`) carries `build.js` (read once at load),
-`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789) and
-reload into once it has been up for 75 s and no tab is playing, and `local.js` with that
-install's default servers (`self.FONE_LOCAL.servers`; the repository's copy is an empty
-placeholder, so a copy loaded straight from the repository asks for the server in its options
-page and never updates itself).
+`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789; the
+`ext-update` compose profile) and reload into once it has been up for 75 s and no tab is
+playing, and `local.js` with that install's default servers (`self.FONE_LOCAL.servers`; the
+repository's copy is an empty placeholder, so a release's zip or a copy loaded straight from the
+repository asks for the server in its options page and never updates itself).

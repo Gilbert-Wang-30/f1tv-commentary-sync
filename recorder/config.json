@@ -4,7 +4,7 @@
   "global": {
     "FileNameRecordTemplate": {
       "HasValue": true,
-      "Value": "{{ name }}/{{ \"now\" | time_zone: \"Asia/Shanghai\" | format_date: \"yyyyMMdd-HHmmss-fff\" }}-{{ title }}.flv"
+      "Value": "{{ roomId }}/{{ \"now\" | time_zone: \"Asia/Shanghai\" | format_date: \"yyyyMMdd-HHmmss-fff\" }}-{{ title }}.flv"
     },
     "RecordingQuality": {
       "HasValue": true,
@@ -15,16 +15,5 @@
       "Value": false
     }
   },
-  "rooms": [
-    {
-      "RoomId": {
-        "HasValue": true,
-        "Value": 23954427
-      },
-      "AutoRecord": {
-        "HasValue": true,
-        "Value": true
-      }
-    }
-  ]
+  "rooms": []
 }

@@ -107,6 +107,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
+// First run: the settings page opens as soon as fone is installed (with nothing set it says what
+// to fill in), rather than nothing until F1 TV. Later, the panel's ⚙ opens it (a content script
+// can't: openOptionsPage is the extension's own pages' and this worker's), as the toolbar icon
+// does, which Chrome tucks under its puzzle piece until it's pinned.
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === 'install') chrome.runtime.openOptionsPage();
+});
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg?.target === 'background' && msg.type === 'open-options' && sender.id === chrome.runtime.id) chrome.runtime.openOptionsPage();
+});
+
 // ---- self-update -------------------------------------------------------------------
 // Dev installs are loaded unpacked from a network share (FONE_EXT_DEST in tools/publish.env);
 // tools/publish_ext.sh writes new builds there, stamping each one into build.js (read once,

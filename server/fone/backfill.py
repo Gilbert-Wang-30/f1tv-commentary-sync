@@ -34,7 +34,7 @@ from .backfill_dedup import Timeline, find_joins, load_part
 from .backfill_start import SR, AlignIndex, Placement, align, danmaku_origin, decode_8k, estimate_start, \
     parse_dmks_live
 from .backfill_writer import build_import
-from .config import Config
+from .config import Config, parse_rooms  # (FONE_ROOMS read as the server and fone-recorder read it)
 from .store import Store
 
 if TYPE_CHECKING:
@@ -50,16 +50,6 @@ BVID_RE = re.compile(r"^BV[0-9A-Za-z]{10}$")
 
 
 # ---- settings ------------------------------------------------------------------------------------
-
-
-def parse_rooms(spec: str) -> dict[int, str]:
-    """"23954427=胡闹P房,123=other" -> {23954427: "胡闹P房", 123: "other"}."""
-    out = {}
-    for pair in filter(None, (x.strip() for x in spec.split(","))):
-        room, _, channel = pair.partition("=")
-        if room.strip().isdigit() and channel.strip():
-            out[int(room.strip())] = channel.strip()
-    return out
 
 
 @dataclass(frozen=True)
