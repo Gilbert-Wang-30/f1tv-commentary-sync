@@ -311,6 +311,7 @@ newest. How a release is made: [docs/releasing.md](docs/releasing.md).
 git clone https://github.com/Gilbert-Wang-30/f1tv-commentary-sync fone && cd fone   # or a release's source archive
 cp .env.example .env                  # then edit it: FONE_RECORDINGS at least (below)
 mkdir -p /srv/recordings/fone /srv/recordings/fone-import    # your FONE_RECORDINGS, and these two in it
+sudo chown 1000:1000 /srv/recordings/fone /srv/recordings/fone-import   # FONE_UID:FONE_GID (1000 by default)
 docker compose up -d                  # the server alone, on port 8788
 ```
 
@@ -318,16 +319,26 @@ docker compose up -d                  # the server alone, on port 8788
 setup in it. `FONE_RECORDINGS` is the folder every recorder writes under, a folder per streamer:
 the server reads all of it (read-only), backfill writes into `fone-import/`, fone's own
 recorders into `fone/`. A folder that doesn't exist stops the container with an error rather
-than being created empty. `.env.example` says what each setting does; the
-[Configuration](#configuration) tables list them all.
+than being created empty. The two folders belong to `FONE_UID:FONE_GID` (`.env`, 1000:1000 by
+default), the user fone-streamlink and the recorder gate write as: in a folder they don't own
+they fail with *permission denied* (fone-recorder, 录播姬, sets its folder's owner itself).
+`.env.example` says what each setting does; the [Configuration](#configuration) tables list
+them all.
+
+Until the server image is on ghcr.io for everyone (a release's first days, or a fork that
+hasn't published its own), `docker compose up -d` says the pull was *denied* and builds
+`./server` instead: several minutes, and the server reports its version as `dev`. It runs the
+same. That build takes the release image's name, so `up -d` alone keeps it: once the image is
+out, `docker compose pull && docker compose up -d` replaces it.
 
 The status page is at `http://<host>:8788/`. The server keeps everything it computes in the
 `fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. It's
 `fone_fone-data` whatever the folder you run `docker compose` in is called (`docker-compose.yml`
 names the project `fone`), so a release's source archive, which unpacks under another name,
-carries on with the same one. What the configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
-(`docker logs fone`), on the status page and in the settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
-then `docker compose build fone`.
+carries on with the same one. What the configuration leaves out (no Bilibili room, a missing
+folder) is said in its log at start (`docker logs fone`), on the status page and in the
+settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev`
+in `.env`, then `docker compose build fone`.
 
 **Who can reach it.** The server has no login. Its port is published on every interface by
 default, for the browsers elsewhere on your LAN, and anything that reaches it can read its open
@@ -639,7 +650,7 @@ gets 403, a web page included ([Privacy and security](#privacy-and-security)).
 ## Development
 
 ```bash
-# server: 250+ tests (8 skip without the real recordings, below); -rs lists the skipped ones
+# server: 280+ tests (a few skip without the real recordings, below); -rs lists the skipped ones
 docker build -t fone:e2e server   # a test tag: a server of yours may run fone:dev or fone:latest
 docker run --rm -v $PWD/server:/app -w /app -e PYTHONDONTWRITEBYTECODE=1 \
   fone:e2e sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'

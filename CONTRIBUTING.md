@@ -50,7 +50,7 @@ docker run --rm -v "$PWD/recorder":/r -w /r -e PYTHONDONTWRITEBYTECODE=1 python:
   sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -p no:cacheprovider'
 ```
 
-240+ server tests; the ones that need a real recording (`-rs` lists them as skipped) run only
+280+ server tests; the ones that need a real recording (`-rs` lists them as skipped) run only
 when it's mounted into the container: the recordings folder at `/rec`, or the `FONE_*`
 switches in the README's Development section.
 
