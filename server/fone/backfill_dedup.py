@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 SAMPLES_PER_PACKET = 1024  # AAC-LC
+PROBE_TIMEOUT = 1800.0  # a page's demux or packet list takes a minute or two: past this, it's stuck
 ADTS_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 
 SILENT_BYTES = 16          # digital silence is ~8 B/packet at any bitrate
@@ -82,7 +83,7 @@ class AudioPart:
 def demux_adts(src: Path, dest: Path) -> None:
     """Stream-copy the first audio track to ADTS (one frame per AAC packet, no re-encode)."""
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-map", "0:a:0", "-c:a", "copy",
-                    "-f", "adts", str(dest)], check=True, capture_output=True)
+                    "-f", "adts", str(dest)], check=True, capture_output=True, timeout=PROBE_TIMEOUT)
 
 
 def read_adts(path: Path) -> AudioPart:
@@ -454,7 +455,8 @@ class VideoRange:
 
 def video_packets(path: Path) -> list[tuple[float, bool]]:
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags",
-                          "-of", "csv=p=0", str(path)], check=True, capture_output=True, text=True).stdout
+                          "-of", "csv=p=0", str(path)], check=True, capture_output=True, text=True,
+                         timeout=PROBE_TIMEOUT).stdout
     rows = []
     for line in out.splitlines():
         f = line.split(",")

@@ -44,6 +44,7 @@ JOIN_GAP_S = 0.030  # real audio lost at each fragment join (see Placement)
 JOIN_TOL = 0.02  # how far one join's loss strays from that (observed <= 13 ms)
 
 SR = 8000
+DECODE_TIMEOUT = 1800.0  # a page's audio decodes in about a minute: past this, ffmpeg is stuck
 HOP = 80  # 10 ms feature frames
 NFFT = 256
 EDGES = np.geomspace(150, 3800, 9)  # 8 log-spaced bands
@@ -123,9 +124,9 @@ def decode_8k(inputs: list[Path], dest: Path | None = None) -> np.ndarray:
     src = str(inputs[0]) if len(inputs) == 1 else "concat:" + "|".join(str(p) for p in inputs)
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", src, "-map", "0:a:0", "-ac", "1", "-ar", str(SR), "-f", "f32le"]
     if dest is None:
-        out = subprocess.run(cmd + ["-"], check=True, capture_output=True).stdout
+        out = subprocess.run(cmd + ["-"], check=True, capture_output=True, timeout=DECODE_TIMEOUT).stdout
         return np.frombuffer(out, dtype="<f4")
-    subprocess.run(cmd + ["-y", str(dest)], check=True, capture_output=True)
+    subprocess.run(cmd + ["-y", str(dest)], check=True, capture_output=True, timeout=DECODE_TIMEOUT)
     return np.memmap(dest, dtype="<f4", mode="r")
 
 

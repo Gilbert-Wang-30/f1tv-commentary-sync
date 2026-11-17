@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,12 @@ SHOWINFO_PTS = re.compile(rb"\bn:\s*\d+\s+pts:\s*-?\d+\s+pts_time:([-0-9.e]+)")
 # Background work: never compete with the live audio extraction.
 NICE = ["nice", "-n", "10"] if shutil.which("nice") else []
 TESS_ENV = dict(os.environ, OMP_THREAD_LIMIT="1")
+# A frame's OCR (or upscale) takes ~2 s at most: one that hangs is given up on, the frame unread,
+# rather than wedging whoever waits (the screen-clock loop, a vodclock job and its slot).
+OCR_TIMEOUT = 60.0
+# decode() waiting this long for ffmpeg's next frame (a recording's read stalled on the NAS, a
+# wedged ffmpeg): ffmpeg is killed, the frames so far are all there is.
+DECODE_IDLE = 120.0
 MS_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 # Label crop vs its template (mean abs difference, 0-255): above this the clock moved
 # or is covered, and the frame goes back to full-frame search.
@@ -273,16 +280,32 @@ def decode(feed: Callable[[BinaryIO], None], vf: str = "") -> Iterator[Frame]:
             log.debug("ffmpeg: %s", b" | ".join(tail).decode(errors="replace"))
         pts_q.put(None)
 
-    threads = [threading.Thread(target=pump_in, daemon=True), threading.Thread(target=pump_err, daemon=True)]
+    waiting: list[float | None] = [None]  # since when the next frame's been waited for
+    over = threading.Event()
+
+    def watch() -> None:  # (only waiting counts: the caller may take its time with each frame)
+        while not over.wait(min(5.0, DECODE_IDLE / 4)):
+            if waiting[0] is not None and time.monotonic() - waiting[0] > DECODE_IDLE:
+                log.warning("ffmpeg gave no frame for %.0f s: stopped", DECODE_IDLE)
+                proc.kill()
+                return
+
+    threads = [threading.Thread(target=f, daemon=True) for f in (pump_in, pump_err, watch)]
     for t in threads:
         t.start()
     try:
-        while (img := _read_pgm(proc.stdout)) is not None:
+        while True:
+            waiting[0] = time.monotonic()
+            img = _read_pgm(proc.stdout)
+            waiting[0] = None
+            if img is None:
+                break
             pts = pts_q.get(timeout=60)
             if pts is None:
                 break
             yield Frame(pts, img)
     finally:
+        over.set()
         proc.stdout.close()
         if proc.poll() is None:
             proc.kill()
@@ -338,8 +361,12 @@ def pgm(img: np.ndarray) -> bytes:
 
 
 def tesseract(image: bytes, *args: str) -> str:
-    r = subprocess.run(NICE + ["tesseract", "stdin", "stdout", *args], input=image, capture_output=True,
-                       env=TESS_ENV, check=False)
+    try:
+        r = subprocess.run(NICE + ["tesseract", "stdin", "stdout", *args], input=image, capture_output=True,
+                           env=TESS_ENV, check=False, timeout=OCR_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.warning("tesseract took over %.0f s: nothing read", OCR_TIMEOUT)
+        return ""
     return r.stdout.decode("utf-8", "replace")
 
 
@@ -399,10 +426,14 @@ def frame_words(img: np.ndarray) -> list[dict]:
     h, w = img.shape
     if h >= 1000:
         return _words(tesseract(pgm(img), "--psm", "11", "tsv"))
-    big = subprocess.run(
-        NICE + ["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{w}x{h}", "-i", "-",
-                "-vf", f"scale={w * 2}:{h * 2}:flags=bicubic", "-f", "image2pipe", "-c:v", "pgm", "-"],
-        input=np.ascontiguousarray(img).tobytes(), capture_output=True, check=False).stdout
+    try:
+        big = subprocess.run(
+            NICE + ["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{w}x{h}", "-i", "-",
+                    "-vf", f"scale={w * 2}:{h * 2}:flags=bicubic", "-f", "image2pipe", "-c:v", "pgm", "-"],
+            input=np.ascontiguousarray(img).tobytes(), capture_output=True, check=False, timeout=OCR_TIMEOUT).stdout
+    except subprocess.TimeoutExpired:
+        log.warning("ffmpeg's upscale took over %.0f s: no words", OCR_TIMEOUT)
+        return []
     words = _words(tesseract(big, "--psm", "11", "tsv"))
     for wd in words:
         for k in ("x", "y", "w", "h"):
