@@ -1791,7 +1791,7 @@ async function vodSearch(V, gen, Q, scan = true) {
   const placed = V.state === 'placed', at0 = V.placedAt;
   // (placed meanwhile, by the clock on the streamer's screen, say: this look was for before)
   const gone = () => gen !== S.gen || S.vod !== V || V.placedAt !== at0;
-  const sr = SND.SR / VOD.F, q = FoneSound.decimate(x, VOD.F), hits = [];
+  const sr = SND.SR / VOD.F, q = FoneSound.decimate(x, VOD.F);
   const L = { E, pa, pb: pa + x.length / SND.SR, run: Q.run, q };
   const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100;
   if (!placed && scan) vodSay(V, 'searching', `Looking for this moment in ${vodWho()}'s Bilibili replay…`);
@@ -1824,29 +1824,23 @@ async function vodSearch(V, gen, Q, scan = true) {
   const plan = FoneVod.searchPlan(V.reps, E, { ...opts, full });
   const hour = full ? new Set(FoneVod.searchPlan(V.reps, E, opts).map(vodChunkKey)) : null;
   V.tries++;
-  let k = 0, done = 0, stop = false, err = null;
-  const rivalOf = (h) => Math.max(h.next, 0, ...hits.filter((o) => o !== h && (o.rep !== h.rep || Math.abs(o.m - h.m) > 1)).map((o) => o.score));
-  const worker = async () => {
-    while (!stop && k < plan.length) {
-      const ch = plan[k++];
-      const got = await vodChunk(V, ch, !hour || hour.has(vodChunkKey(ch))).catch((e) => { err = e; return null; });
-      if (gone()) { stop = true; return; }
-      if (!got) continue;
-      const res = FoneSound.locate(q, got.y, sr);
-      done++;
-      await vodBreath();
-      if (gone()) { stop = true; return; }
-      if (!placed) V.text = `Looking for this moment in ${vodWho()}'s Bilibili replay… ${Math.round((100 * done) / plan.length)}%`;
-      if (!res || res.edge) continue;
-      const h = { rep: ch.rep, m: got.m0 + res.lag / sr, score: res.score, next: res.next };
-      hits.push(h);
-      if (h.score >= VOD.SURE && h.score >= 2 * rivalOf(h)) stop = true; // (sure at once: far above all else)
-    }
-  };
-  await Promise.all(Array.from({ length: VOD.PAR }, worker));
+  let done = 0;
+  // (VOD.PAR stretches at once; every one of the hour's looked at, and only past them, over all of
+  // each replay, stopped by a match sure at once: FoneVod.lookOver)
+  const inHour = (ch) => !hour || hour.has(vodChunkKey(ch));
+  const { hits, err } = await FoneVod.lookOver(plan, async (ch) => {
+    const got = await vodChunk(V, ch, inHour(ch));
+    if (!got || gone()) return null;
+    const res = FoneSound.locate(q, got.y, sr);
+    done++;
+    await vodBreath();
+    if (gone()) return null;
+    if (!placed) V.text = `Looking for this moment in ${vodWho()}'s Bilibili replay… ${Math.round((100 * done) / plan.length)}%`;
+    return !res || res.edge ? null : { rep: ch.rep, m: got.m0 + res.lag / sr, score: res.score, next: res.next };
+  }, { par: VOD.PAR, hour: inHour, sure: VOD.SURE, twice: 2, gone });
   if (gone()) return false;
   hits.sort((a, b) => b.score - a.score);
-  const best = hits[0], rival = best ? rivalOf(best) : 0;
+  const best = hits[0], rival = best ? FoneVod.rivalOf(hits, best) : 0;
   diag('vod', { look: V.tries, full, E: Math.round(E), pa: r1(pa), plan: plan.length, done, err: err ? String(err.message || err).slice(0, 100) : null,
     best: best ? { bvid: best.rep.bvid, m: r2(best.m), score: r1(best.score), next: r1(best.next) } : null, rival: r1(rival),
     more: hits.slice(1, 3).map((h) => [r2(h.m), r1(h.score)]), checked, cands: V.cands.length });

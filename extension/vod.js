@@ -460,6 +460,34 @@
     return out.sort((x, y) => x.dist - y.dist);
   }
 
+  // What a look's hit h stands out from: its own runner-up, or the best of the others (another
+  // replay, or more than 1 s from it).
+  const rivalOf = (hits, h) => Math.max(h.next, 0, ...hits.filter((o) => o !== h && (o.rep !== h.rep || Math.abs(o.m - h.m) > 1)).map((o) => o.score));
+  // One look over a plan (searchPlan's), `par` stretches at once: look(ch) matches one, a hit
+  // {rep, m, score, next} or null (a throw: none, the first error kept). Every stretch of the
+  // hour (hour(ch): all of the hour's own plan) is looked at: stopped at the first match sure at
+  // once (`sure`, `twice` its rival so far), it stopped on a repeat (F1's music beds, a stretch the
+  // streamer showed again) at 15-44 in all 7 wrong places of a sweep over real replays, the place
+  // itself 45-96 further on (2026-11). Past the hour's (a look over all of each replay): stopped
+  // by one. gone(): moved on meanwhile, stopped. {hits, err}.
+  async function lookOver(plan, look, { par = 3, hour = () => true, sure = 14, twice = 2, gone = () => false } = {}) {
+    const hits = [];
+    let k = 0, left = plan.filter(hour).length, stop = false, err = null;
+    const worker = async () => {
+      while (!stop && k < plan.length) {
+        const ch = plan[k++];
+        let h = null;
+        try { h = await look(ch); } catch (e) { err = err || e; }
+        if (gone()) { stop = true; return; }
+        if (hour(ch)) left--;
+        if (h) hits.push(h);
+        if (left <= 0 && hits.some((x) => x.score >= sure && x.score >= twice * rivalOf(hits, x))) stop = true;
+      }
+    };
+    await Promise.all(Array.from({ length: par }, worker));
+    return { hits, err };
+  }
+
   // ---- Bilibili ---------------------------------------------------------------------------------
   // Its web pages' own APIs, without a login (the Referer/Origin they want: background.js's
   // session rules, FoneStreams.HEADERS).
@@ -718,7 +746,7 @@
   }
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
-    playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
+    playlist, searchPlan, rivalOf, lookOver, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
     pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, checkClock, clockPlace, clockVeto, listDoes, noneAgain, keptOn,
     placing, placeResets, recheckDue, backoff, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -241,6 +241,50 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.ok(Math.max(...all.map((c) => c.a + c.len)) >= 7199);
   });
 
+  await test("a look over the hour: every stretch of it looked at, not stopped by a repeat sure at once; past it, stopped by one", async () => {
+    // the hour's plan, nearest the guess first: a repeat (an F1 music bed) at 30 in the 2nd stretch,
+    // sure at once by today's numbers (14, twice the rest), the place itself at 70 in the 9th
+    const rep = { bvid: 'BVh' }, B = { bvid: 'BVother' };
+    const plan = Array.from({ length: 12 }, (_, i) => ({ rep, a: 200 * i, len: 227 }));
+    const at = { 200: 30, 1600: 70 };
+    const seen = [];
+    const look = async (ch) => {
+      seen.push(ch.a);
+      await new Promise((r) => setTimeout(r, ch.a % 3)); // (VOD.PAR at once, finishing out of order)
+      if (ch.a === 600) throw new Error('HTTP 403'); // (a stretch that wouldn't load: none there, the error kept)
+      return { rep: ch.rep, m: ch.a + 50, score: at[ch.a] ?? 5, next: 4 };
+    };
+    let { hits, err } = await V.lookOver(plan, look, { par: 3 });
+    assert.equal(seen.length, 12);
+    assert.equal(hits.length, 11);
+    assert.equal(err.message, 'HTTP 403');
+    const best = hits.reduce((a, b) => (b.score > a.score ? b : a));
+    assert.ok(best.m === 1650 && best.score === 70 && V.rivalOf(hits, best) === 30, JSON.stringify(best));
+    // (and so placed: 70 is 9.5 and up, 1.5 times its rival; the repeat never is with it in view)
+    assert.ok(best.score >= 9.5 && best.score >= 1.5 * V.rivalOf(hits, best));
+    // the rival: its own runner-up, or the best elsewhere; never a hit within a second of it
+    assert.equal(V.rivalOf([{ rep, m: 10, score: 20, next: 6 }, { rep, m: 10.5, score: 19, next: 4 }], { rep, m: 10, score: 20, next: 6 }), 6);
+    assert.equal(V.rivalOf([{ rep, m: 10, score: 20, next: 6 }, { rep: B, m: 10.5, score: 9, next: 4 }], { rep, m: 10, score: 20, next: 6 }), 9);
+    // a look over all of the replay (the hour's stretches 0..1600, then the rest): the hour's all
+    // looked at first, even with a repeat sure at once among the first; past them, the first sure stops it
+    const full = Array.from({ length: 30 }, (_, i) => ({ rep, a: 200 * i, len: 227 }));
+    const hour = new Set(plan.slice(0, 9).map((c) => c.a)); // (the 9 nearest: 0..1600)
+    seen.length = 0;
+    ({ hits } = await V.lookOver(full, look, { par: 3, hour: (ch) => hour.has(ch.a) }));
+    assert.ok([...hour].every((a) => seen.includes(a)), JSON.stringify(seen));
+    assert.ok(seen.length <= 9 + 3, `stopped soon after the hour's: ${seen.length}`); // (the ones already under way finish)
+    assert.ok(hits.some((h) => h.score === 70));
+    // none sure at once in the hour: on over the rest, till one is
+    at[200] = 12; at[1600] = 9; at[3400] = 80;
+    seen.length = 0;
+    ({ hits } = await V.lookOver(full, look, { par: 3, hour: (ch) => hour.has(ch.a) }));
+    assert.ok(seen.includes(3400) && seen.length < 30, `${seen.length}`);
+    // moved on meanwhile: stopped
+    seen.length = 0;
+    await V.lookOver(plan, look, { par: 3, gone: () => seen.length >= 4 });
+    assert.ok(seen.length <= 6, `${seen.length}`);
+  });
+
   await test('content time and back: the repeats left out, and put back', () => {
     const rep = { cuts: [{ m: 3600, d: 4 }, { m: 1800, d: 4 }] };
     for (const m of [0, 1799, 1805, 3599, 3605, 9000]) assert.equal(V.atContent(rep, V.contentAt(rep, m)), m);
