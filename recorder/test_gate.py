@@ -46,9 +46,10 @@ class Titles(unittest.TestCase):
         self.assertEqual(load(GATE_RECORD="").RECORD.pattern, load().F1_TITLES)
 
 
-class Tick(unittest.TestCase):
-    ROOM = {"objectId": "o1", "roomId": 123, "name": "Acct", "title": "小播一会粥", "recording": True, "streaming": True}
+ROOM = {"objectId": "o1", "roomId": 123, "name": "Acct", "title": "小播一会粥", "recording": True, "streaming": True}
 
+
+class Tick(unittest.TestCase):
     def run_tick(self, g, rooms):
         calls = []
         g.api = lambda method, path: calls.append((method, path)) if method == "POST" else rooms
@@ -61,22 +62,22 @@ class Tick(unittest.TestCase):
     def test_log_only_by_default(self):
         g = load()
         self.assertEqual(g.ACTION, "log")
-        calls, pending, log = self.run_tick(g, [dict(self.ROOM)])
+        calls, pending, log = self.run_tick(g, [dict(ROOM)])
         self.assertEqual(calls, [])  # nothing stopped
         self.assertEqual(pending, [])  # nothing to delete
         self.assertEqual(log.call_count, 1)  # said once, not every poll
         self.assertIn("would stop", log.call_args[0][0])
         # a session someone else stopped isn't restarted either
-        calls, _, _ = self.run_tick(g, [{**self.ROOM, "title": "F1 Race", "recording": False,
+        calls, _, _ = self.run_tick(g, [{**ROOM, "title": "F1 Race", "recording": False,
                                          "autoRecordForThisSession": False}])
         self.assertEqual(calls, [])
 
     def test_stop_stops_and_restarts(self):
         g = load(GATE_ACTION="stop")
-        calls, pending, _ = self.run_tick(g, [dict(self.ROOM)])
+        calls, pending, _ = self.run_tick(g, [dict(ROOM)])
         self.assertEqual(calls, [("POST", "/api/room/o1/stop")] * 2)
         self.assertEqual(len(pending), 2)
-        calls, _, _ = self.run_tick(g, [{**self.ROOM, "title": "F1 Race", "recording": False,
+        calls, _, _ = self.run_tick(g, [{**ROOM, "title": "F1 Race", "recording": False,
                                          "autoRecordForThisSession": False}])
         self.assertEqual(calls, [("POST", "/api/room/o1/start")] * 2)
 
