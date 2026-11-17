@@ -22,15 +22,14 @@ for pair in ${FONE_ROOMS:-}; do
   pair=$(printf '%s' "$pair" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [ -n "$pair" ] || continue
   id=$(printf '%s' "${pair%%=*}" | sed -e 's/[[:space:]]*$//')
+  # 0123 is room 123, as the server reads it (and a JSON number has no leading zero); 0 is none
+  case $id in *[!0-9]*) ;; *) id=${id#"${id%%[!0]*}"} ;; esac
   case $id in
     '' | *[!0-9]*)
       # (the server's config.parse_rooms says the same)
       echo "seed: skipping '$pair' in FONE_ROOMS: not a room number (room=channel, or the room alone)" >&2
       continue ;;
   esac
-  # 0123 is room 123, as the server reads it (and a JSON number has no leading zero)
-  id=${id#"${id%%[!0]*}"}
-  id=${id:-0}
   case ",$ids," in *",$id,"*) continue ;; esac
   ids="$ids${ids:+,}$id"
   rooms="$rooms${rooms:+, }{\"RoomId\": {\"HasValue\": true, \"Value\": $id}, \"AutoRecord\": {\"HasValue\": true, \"Value\": true}}"

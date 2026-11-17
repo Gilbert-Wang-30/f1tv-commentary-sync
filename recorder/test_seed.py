@@ -1,5 +1,6 @@
 """seed.sh: fone-recorder's config.json from FONE_ROOMS, and when the recorder doesn't start.
-Run with the system's sh (busybox ash in the recorder's image, dash on CI's Ubuntu)."""
+Run with the system's sh: dash in the recorder's image (Debian) and on CI's Ubuntu, busybox ash
+in the python:*-alpine test containers."""
 import json
 import os
 import shutil
@@ -41,6 +42,12 @@ class Seed(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.rooms(), [123, 456])  # (valid JSON: no "Value": 0123)
         self.assertIn("skipping 'abc=x'", r.stderr)
+        self.config.unlink()
+        r = self.seed("0=A, 000, 5")  # (no Bilibili room is 0)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.rooms(), [5])
+        self.assertIn("skipping '0=A'", r.stderr)
+        self.assertIn("skipping '000'", r.stderr)
 
     def test_the_file_names_zone(self):
         self.assertEqual(self.seed("1", tz="Europe/Berlin").returncode, 0)

@@ -56,6 +56,19 @@ class Titles(unittest.TestCase):
                  if isinstance(n, ast.Assign) and [getattr(t, "id", None) for t in n.targets] == ["F1_TITLES"]]
         self.assertEqual(words, [load().F1_TITLES])
 
+    def test_compose_gives_backfill_this_filter(self):
+        """docker-compose.yml hands the gate's GATE_RECORD / GATE_SKIP to the server's backfill
+        (unless FONE_BACKFILL_RECORD / _SKIP are set), and to the gate itself."""
+        compose = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+        if not compose.exists():
+            self.skipTest(f"no {compose}: run from the whole checkout (CONTRIBUTING.md)")
+        text = compose.read_text(encoding="utf-8")
+        server = text.split("\n  fone:\n", 1)[1].split("\n\n", 1)[0]  # (the fone service, to its blank line)
+        gate = text.split("\n  fone-recorder-gate:\n", 1)[1].split("\n\n", 1)[0]
+        for name in ("RECORD", "SKIP"):
+            self.assertIn(f"\n      FONE_BACKFILL_{name}: ${{FONE_BACKFILL_{name}:-${{GATE_{name}:-}}}}\n", server)
+            self.assertIn(f"\n      GATE_{name}:\n", gate)
+
 
 ROOM = {"objectId": "o1", "roomId": 123, "name": "Acct", "title": "小播一会粥", "recording": True, "streaming": True}
 

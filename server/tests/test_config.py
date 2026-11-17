@@ -97,6 +97,7 @@ def test_a_room_with_leading_zeros_is_that_room(env):
     assert cfg.rooms == {123: "123", 456: "Name"}
     assert cfg.channel_aliases == {"123": "123", "456": "Name"}
     assert config.parse_rooms("0123=A, 123=A") == {123: "A"}  # (one room)
+    assert config.room_entries("0=A, 000, 5") == ({5: "5"}, ["0=A", "000"])  # (no Bilibili room is 0)
 
 
 def test_backfill_reads_the_rooms_as_the_server_does():

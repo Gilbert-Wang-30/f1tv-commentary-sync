@@ -138,12 +138,12 @@ def parse_rooms(spec: str) -> dict[int, str]:
 def room_entries(spec: str) -> tuple[dict[int, str], list[str]]:
     """FONE_ROOMS -> (room -> channel, the entries that aren't a room). An entry is room=channel,
     or a room number alone: its channel is then the number, the folder fone-recorder records
-    it in (0123 is room 123, in folder 123). recorder/seed.sh reads FONE_ROOMS the same way for
-    the recorder's rooms."""
+    it in (0123 is room 123, in folder 123; 0 is no room). recorder/seed.sh reads FONE_ROOMS the
+    same way for the recorder's rooms."""
     out, skipped = {}, []
     for pair in filter(None, (x.strip() for x in spec.split(","))):
         room, _, channel = (x.strip() for x in pair.partition("="))
-        if not (room.isascii() and room.isdigit()):
+        if not (room.isascii() and room.isdigit() and int(room)):
             skipped.append(pair)
             continue
         out[int(room)] = channel or str(int(room))
