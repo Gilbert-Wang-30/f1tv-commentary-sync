@@ -377,19 +377,92 @@ const lcg = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 
     assert.ok(Math.abs(V.clockOff(k, A, k.T0, 70, 50) - 20) < 1e-9);
     assert.equal(V.clockOff(k, B, k.T0, 50, 50), Infinity); // (it says another replay holds the moment)
     assert.equal(V.clockOff(null, A, k.T0, 50, 50), null);
-    const moves = (off, d, o = {}) => V.clockMoves({ ...k, d }, off, { placed: true, ...CK, ...o });
-    assert.equal(V.clockMoves(k, null, { placed: false, ...CK }), true); // (not placed: there at once)
-    assert.equal(V.clockMoves(null, null, { placed: false, ...CK }), false);
-    assert.equal(moves(10, 100), false); // (within sync by sound's own drift of a near reading)
-    assert.equal(moves(20, 100), true);
-    assert.equal(moves(20, 400), false); // (a reading minutes away only bounds it)
-    assert.equal(moves(130, 400), true);
-    assert.equal(moves(Infinity, 400), true);
-    // sync by sound locked since: the streamer's delay stepped 20 s since a reading 100 s back,
-    // sound has it now (re-placed by the reading, the commentary jumped back and forth every look)
-    assert.equal(moves(20, 100, { held: true }), false);
-    assert.equal(moves(130, 100, { held: true }), true); // (still never far from it)
-    assert.equal(moves(Infinity, 100, { held: true }), true);
+    // your nudges by hand left out: +20 s on the clock's place is yours, not off it
+    assert.equal(V.clockOff(k, A, k.T0, 70 - 20, 50), 0);
+    const rule = (off, d, o = {}) => V.clockRule({ ...k, d }, off, { placed: true, ...CK, reach: 23, ...o });
+    assert.equal(V.clockRule(k, null, { placed: false, ...CK }), 'move'); // (not placed: there at once)
+    assert.equal(V.clockRule(null, null, { placed: false, ...CK }), 'stay');
+    assert.equal(rule(10, 100), 'stay'); // (within sync by sound's own drift of a near reading)
+    assert.equal(rule(20, 100), 'move');
+    assert.equal(rule(20, 400), 'stay'); // (a reading minutes away only bounds it)
+    assert.equal(rule(130, 400), 'move');
+    assert.equal(rule(Infinity, 400), 'move');
+    // where the clock puts it: your nudges kept on top on the replay playing, none on another
+    assert.deepEqual(V.clockPlace(k, A, 20, 50), { rep: A, T0: k.T0, delay: 70, hand: 20 });
+    assert.deepEqual(V.clockPlace(k, B, 20, 50), { rep: A, T0: k.T0, delay: 50, hand: 0 });
+    assert.deepEqual(V.clockPlace(k, null, undefined, 50), { rep: A, T0: k.T0, delay: 50, hand: 0 });
+  });
+
+  await test('the clock against sync by sound locked elsewhere: a wide look again first; moved unless it finds the lock', () => {
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), k = V.clockAt([A], W + 100, CK);
+    const rule = (off, o = {}) => V.clockRule(k, off, { placed: true, ...CK, reach: 23, ...o });
+    // locked within TRUST of a near reading: no news, nothing asked (sound has the last second)
+    assert.equal(rule(10, { lock: 60 }), 'stay');
+    // a near reading 20 s off the lock: sound asked to look again, widely (±25 s sees both places)
+    assert.equal(rule(20, { lock: 70 }), 'check');
+    const asked = { T0: k.T0, target: 70, at: 1000, looks: 0, seen: 990, says: null };
+    assert.equal(rule(20, { lock: 70, check: asked }), 'wait');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, says: 'confirmed' } }), 'held');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, says: 'refuted' } }), 'move');
+    // checked for another lock (sound moved since), or another reading: asked again
+    assert.equal(rule(20, { lock: 72, check: { ...asked, says: 'confirmed' } }), 'check');
+    assert.equal(rule(20, { lock: 70, check: { ...asked, T0: k.T0 + 5, says: 'confirmed' } }), 'check');
+    // further than sound's wide look sees (no step it followed from the clock's place: a kept place
+    // or an hour-wide match gone wrong): moved; past the bound, whatever sound says
+    assert.equal(rule(40, { lock: 90 }), 'move');
+    assert.equal(rule(130, { lock: 180, check: { ...asked, target: 180, says: 'confirmed' } }), 'move');
+    // a reading minutes away: only the bound, locked or not
+    assert.equal(V.clockRule({ ...k, d: 400 }, 60, { placed: true, ...CK, reach: 23, lock: 110 }), 'stay');
+
+    // the look again, a step each tick: what sound's looks since say
+    const L = { target: 70.3, bias: 0.3 }; // (locked at 70 with a nudge of +0.3 on top)
+    const look = (at, val, sure = true, wide = true) => ({ at, val, sure, wide, score: sure ? 14 : 6, next: 5 });
+    let c = V.clockCheck(asked, look(985, 70), L, 1001);
+    assert.ok(c === asked, 'a look from before it was asked: not counted');
+    c = V.clockCheck(asked, look(1005, 70.02, true, false), L, 1006);
+    assert.ok(!c.says && !c.looks, 'a close look: not one that sees both places');
+    c = V.clockCheck(asked, look(1005, 70.05), L, 1006);
+    assert.equal(c.says, 'confirmed'); // (found at the lock, over the clock's place: the streamer's delay stepped)
+    assert.equal(V.clockCheck(asked, look(1005, 50.1), L, 1006).says, 'refuted'); // (sure at the clock's place)
+    // not sure: counted once each, refuted after 3
+    c = V.clockCheck(asked, look(1005, 61, false), L, 1006);
+    assert.ok(!c.says && c.looks === 1 && c.seen === 1005);
+    assert.equal(V.clockCheck(c, look(1005, 61, false), L, 1007).looks, 1); // (the same look again)
+    c = V.clockCheck(V.clockCheck(c, look(1020, 44, false), L, 1021), look(1035, 70, false), L, 1036);
+    assert.ok(c.says === 'refuted' && c.looks === 3);
+    // no look that says in 2 min (F1 TV silent, paused): refuted
+    assert.equal(V.clockCheck(asked, null, L, 1119).says, null);
+    assert.equal(V.clockCheck(asked, null, L, 1121).says, 'refuted');
+    assert.equal(V.clockCheck({ ...asked, says: 'confirmed' }, look(1200, 10), L, 1300).says, 'confirmed'); // (said: kept)
+  });
+
+  await test('the fight that was: the streamer\'s delay stepped 20 s after a reading, sync by sound and the clock each placing it', () => {
+    // a reading 100 s back puts it at the delay 50; the stream's sound is at 70 now. Ticks of the
+    // engine's own rules: once sound has found 70 again with the clock's place in view, it stays
+    const W = 1.75e9, A = clockRep('BVa', [{ page: 1, at: 1000, wall: W }]), k = V.clockAt([A], W + 100, CK);
+    const R = { ...CK, reach: 23 }, P = { tries: 3, wait: 120 };
+    let delay = 50, lock = null, check = null, moves = 0;
+    const T0 = k.T0, off = () => V.clockOff(k, A, T0, delay, 50);
+    const tick = (t, last) => {
+      let act = V.clockRule(k, off(), { placed: true, lock, check, ...R });
+      if (act === 'stay') check = null;
+      if (act === 'wait') { check = V.clockCheck(check, last, { target: lock, bias: 0 }, t, P); act = check.says === 'confirmed' ? 'held' : check.says ? 'move' : act; }
+      if (act === 'check') check = { T0: k.T0, target: lock, at: t, looks: 0, seen: last?.at ?? null, says: null };
+      if (act === 'move') { moves++; delay = 50; lock = null; check = null; }
+      return act;
+    };
+    assert.equal(tick(0, null), 'stay');
+    lock = 70; delay = 70; // (two sure looks agreeing: locked, jumped there)
+    assert.equal(tick(30, { at: 30, val: 70, sure: true, wide: false }), 'check');
+    assert.equal(tick(31, { at: 30, val: 70, sure: true, wide: false }), 'wait');
+    assert.equal(tick(36, { at: 35, val: 70.01, sure: true, wide: true }), 'held');
+    for (let t = 37; t < 400; t += 0.5) assert.equal(tick(t, { at: 35, val: 70.01, sure: true, wide: true }), 'held');
+    assert.equal(moves, 0);
+    // a lock that was wrong (a kept place 20 s off): the wide look finds the clock's place instead
+    lock = 70; delay = 70; check = null;
+    assert.equal(tick(500, null), 'check');
+    assert.equal(tick(506, { at: 505, val: 50.02, sure: true, wide: true }), 'move');
+    assert.ok(moves === 1 && delay === 50);
   });
 
   await test("the clock refuses a sound match far from where it says (a lap shown again after the session)", () => {

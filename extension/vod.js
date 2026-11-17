@@ -276,15 +276,46 @@
   // How far from the clock's place a reading lets it be: `trust` from one within `near` s of the
   // moment, `bound` from one further away (the streamer's delay may have moved since).
   const clockRoom = (k, { near, trust, bound }) => (k.d <= near ? trust : bound);
-  // Placed by the clock now? When not placed yet, or off it (off: clockOff's) by more than its
-  // room; once sync by sound has found the place itself, `held`: only by more than `bound`. (Sound
-  // heard now against a reading some minutes away: the streamer's delay stepped between.
-  // Re-placed by the reading each tick, sound found it again each look: the commentary jumped
+  // What the clock does about where the replay plays (off: clockOff's), each tick: 'move' (placed
+  // where it says), 'stay', and with sync by sound locked (`lock`: its target) on a place a reading
+  // near the moment disagrees with: 'check' (sound asked to look again, widely: FoneVod.clockCheck),
+  // 'wait' (it's looking), 'held' (it found its lock again: the streamer's delay stepped since the
+  // reading). `check`: {T0 (the clock's place it's for), target (the lock), says}, for this reading
+  // and lock when within `same` s of both. Not placed yet, more than `bound` off, or a near reading
+  // more than its room off without a lock, or one `reach` s off (more than sound's wide look sees
+  // either side: no step it followed from the clock's place; a kept place or an hour-wide match
+  // gone wrong), or a look again that didn't find the lock: 'move'. Off by its room or less
+  // (`trust` s from a near reading, `bound` from a further one): 'stay', sound has it. (Re-placed
+  // by the reading every tick while sound found its own place every look: the commentary jumped
   // back and forth.)
-  function clockMoves(k, off, { placed, held = false, near, trust, bound }) {
-    if (!k) return false;
-    if (!placed) return true;
-    return off > (held ? bound : clockRoom(k, { near, trust, bound }));
+  function clockRule(k, off, { placed, lock = null, check = null, near, trust, bound, reach = Infinity, same = 1 }) {
+    if (!k) return 'stay';
+    if (!placed) return 'move';
+    if (!(off > clockRoom(k, { near, trust, bound }))) return 'stay';
+    if (lock == null || off > Math.min(reach, bound)) return 'move';
+    const c = check && Math.abs(check.T0 - k.T0) <= same && Math.abs(check.target - lock) <= same ? check : null;
+    if (!c) return 'check';
+    return c.says === 'confirmed' ? 'held' : c.says === 'refuted' ? 'move' : 'wait';
+  }
+  // A look again under way (chk: {at (asked), looks, seen (the last look counted), says}), a step:
+  // `last`, sync by sound's latest look ({at, val, sure, wide}); lock: {target, bias}. A wide look
+  // since: sure where the lock is (within `agree` s): 'confirmed'; sure elsewhere, or `tries`
+  // looks not sure: 'refuted'; none that says in `wait` s (F1 TV silent, paused): 'refuted'.
+  function clockCheck(chk, last, { target, bias = 0 }, t, { tries = 3, wait = 120, agree = 1 } = {}) {
+    if (chk.says) return chk;
+    let c = chk;
+    if (last && last.wide && last.at > c.at && last.at !== c.seen) {
+      c = { ...c, seen: last.at, looks: (c.looks || 0) + 1 };
+      if (last.sure && last.val != null && target != null && Math.abs(last.val + bias - target) <= agree) return { ...c, says: 'confirmed' };
+      if (last.sure || c.looks >= tries) return { ...c, says: 'refuted' };
+    }
+    return t - c.at > wait ? { ...c, says: 'refuted' } : c;
+  }
+  // Where the clock puts it (k: clockAt's): its replay at its T0 with the delay at D0; your nudges
+  // (`hand`) kept on top when it's the replay playing (`cur`), none on another.
+  function clockPlace(k, cur, hand, D0) {
+    const h = cur === k.r ? Number(hand) || 0 : 0;
+    return { rep: k.r, T0: k.T0, delay: D0 + h, hand: h };
   }
   // A place found by sound (rep at T0) the clock refuses: another replay, or more than `room` s
   // from where it says.
@@ -656,5 +687,5 @@
 
   root.FoneVod = { parseTitle, parseDanmaku, danmaku, loadVideo, candidates, sidx, segRange, hash, findRepeat, findCuts, timeline, contentAt, atContent,
     playlist, searchPlan, keepLikely, checkLikely, owner, replays, load, sound, urlOf, range, failed, store, FRAG, scanRepeat,
-    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockMoves, clockVeto, listDoes, noneAgain, keptOn, placeOf, holder, outside };
+    pageStart, clockAt, clockPending, clockAsks, clockOff, clockRoom, clockRule, clockCheck, clockPlace, clockVeto, listDoes, noneAgain, keptOn, placeOf, holder, outside };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
