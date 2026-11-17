@@ -322,8 +322,10 @@ than being created empty. `.env.example` says what each setting does; the
 [Configuration](#configuration) tables list them all.
 
 The status page is at `http://<host>:8788/`. The server keeps everything it computes in the
-`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. What the
-configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
+`fone-data` volume: audio HLS, analysis results, timing archives, danmaku and SQLite. It's
+`fone_fone-data` whatever the folder you run `docker compose` in is called (`docker-compose.yml`
+names the project `fone`), so a release's source archive, which unpacks under another name,
+carries on with the same one. What the configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
 (`docker logs fone`), on the status page and in the settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
 then `docker compose build fone`.
 

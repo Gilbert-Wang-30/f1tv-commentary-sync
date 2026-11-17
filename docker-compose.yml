@@ -6,6 +6,11 @@
 #
 # Paths are long-syntax binds: one that doesn't exist is an error, not a new empty folder
 # made by docker as root (on the system disk, if a share isn't mounted).
+#
+# The project is "fone" whatever this folder is called (a clone, or a release's source archive,
+# which unpacks under another name): moving to another copy keeps the same containers and data
+# volume (fone_fone-data), and `docker compose` in any copy manages them.
+name: fone
 services:
   fone:
     # The released image. `docker compose build fone` builds it from ./server instead: give it
