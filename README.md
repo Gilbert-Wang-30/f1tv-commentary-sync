@@ -605,7 +605,7 @@ gets 403, a web page included ([Privacy and security](#privacy-and-security)).
 
 | | |
 |---|---|
-| `GET /api/health` | the server's version, services running, recordings seen |
+| `GET /api/health` | the server's version, services running, recordings seen, what the setup leaves out (`notes`) |
 | `GET /api/channels` | channels and whether they're live |
 | `GET /api/timeline?channel=&from=&to=` | the commentary's pieces (wall clock ↔ playlist), files, sponsor mutes |
 | `GET /api/playlist.m3u8`, `/hls/{file}/{segment}` | the commentary audio |
