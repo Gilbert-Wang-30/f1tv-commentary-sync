@@ -99,7 +99,7 @@ def found(spans: list[dict], t: dict) -> bool:
 def kl(tmp_path_factory):
     """The KL recording's audio HLS, made once by the real Extractor (finished-file path)."""
     if not os.access(KL_FLV, os.R_OK):
-        pytest.skip(f"KL test recording not readable at {KL_FLV} (mount the NAS into the container)")
+        pytest.skip(f"KL test recording not readable at {KL_FLV} (mount the recordings at /rec, or set FONE_TEST_KL_FLV)")
     cfg = replace(config.load(), rec_dir=KL_FLV.parent.parent, data_dir=tmp_path_factory.mktemp("kl"))
     rec = next(r for r in recordings.scan(cfg.rec_dir, cfg.filename_tz) if r.path == KL_FLV)
 
