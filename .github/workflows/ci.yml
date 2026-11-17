@@ -16,8 +16,10 @@ defaults:
 concurrency:
   # its own prefix (called from release.yml, github.workflow is the caller's), and the event: a
   # release dry run on a branch isn't cancelled by a push to it. Only a pull request's run makes
-  # way for its next push; every commit on main and every tag gets a result.
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  # way for its next push. A push's group is its commit's own: a group holds one pending run, and
+  # a third push would otherwise cancel the second's while the first runs. So every commit on
+  # main and every tag gets a result.
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
