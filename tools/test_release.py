@@ -232,8 +232,10 @@ def ip(*octets):
 
 
 NAS = "/" + "mnt/nas/media"
+SHARE = "/" + "mnt/share"
 TS_NAME = "myhost.tail1234" + ".ts.net"
 HOME = "/" + "home/someone"
+LAN = ip(192, 168, 1, 20)
 
 
 class CheckPublic(unittest.TestCase):
@@ -241,12 +243,18 @@ class CheckPublic(unittest.TestCase):
         "extension/local.js": "// placeholder\n" + PLACEHOLDER,
         "tools/mac/install-mac.sh": 'BASE="${FONE_DIST:-__FONE_DIST__}"\n',
         "tools/mac/fone-sync.sh": 'BASE="${FONE_DIST:-__FONE_DIST__}"\n',
-        "tools/publish.env.example": "FONE_SERVERS=http://your-server.your-tailnet.ts.net:8788,http://192.0.2.10:8788\n"
-                                     f"FONE_EXT_DEST={NAS}/apps/fone-extension\n",
-        "README.md": f"mkdir -p {NAS}/library/recordings/fone-import\nhttp://<host>.<tailnet>.ts.net:8788\n",
-        "server/tests/test_x.py": f'KL = "{NAS}/library/recordings/x.flv"\n',
+        # an example to fill in: a home-network address and a share under /mnt, in the docs and
+        # the example settings only
+        "tools/publish.env.example": f"FONE_SERVERS=http://my-server:8788,http://{LAN}:8788\n"
+                                     f"FONE_EXT_DEST={SHARE}/apps/fone-extension\n",
+        ".env.example": f"FONE_RECORDINGS={SHARE}/recordings\n# FONE_SERVER=http://{ip(10, 0, 0, 2)}:8788\n",
+        "README.md": f"mkdir -p {SHARE}/recordings/fone-import\nhttp://{LAN}:8788 or "
+                     "http://<machine>.<tailnet>.ts.net:8788\n",
+        "docs/setup.md": f"`{ip(172, 16, 0, 2)}` is read as http://{ip(172, 16, 0, 2)}:8788\n",
+        "server/tests/test_x.py": 'KL = "/rec/fone/x.flv"\n',
         "docker-compose.yml": "volumes:\n  - ${FONE_REC_ROOT:?set it in .env}:/rec:ro\n",
         "server/fone/app.py": f"VERSION = '{ip(10, 0, 1)}'  # 1.{ip(192, 168, 1, 1)} is a version, not an address\n",
+        "extension/options.html": f"<input placeholder=\"http://my-server:8788\"> <code>{ip(192, 0, 2, 10)}</code>\n",
         "extension/vendor/x.min.js": f"var a='{ip(10, 0, 0, 1)}'\n",
     }
 
@@ -265,6 +273,7 @@ class CheckPublic(unittest.TestCase):
         self.assertNotIn("tools/test_release.py", p.stdout)
 
     def test_findings(self):
+        lan = "home-network address"
         cases = {
             "tools/publish.env": ("FONE_SERVERS=\n", "only belongs on one machine"),
             "recorder/api.env": ("x=y\n", "only belongs on one machine"),
@@ -274,13 +283,24 @@ class CheckPublic(unittest.TestCase):
             "key.pem": ("-----BEGIN PRIVATE KEY-----\n", "only belongs on one machine"),
             "extension/local.js": ('self.FONE_LOCAL = {"servers": ["http://192.0.2.10:8788"]};\n', "not the placeholder"),
             "tools/mac/fone-sync.sh": ('BASE="${FONE_DIST:-http://srv.example:8789}"\n', "update server is filled in"),
+            # a Tailscale name, a Tailscale address and the NAS: in an example or a doc too
             "docs/setup.md": (f"http://{TS_NAME}:8788\n", "a Tailscale name"),
-            "e2e/x.py": (f"HOST = '{ip(192, 168, 1, 20)}'\n", "home-network or Tailscale address"),
-            "server/fone/x.py": (f"H = ('{ip(10, 0, 0, 5)}', 1)\n", "home-network or Tailscale address"),
-            "server/fone/y.py": (f"H = '{ip(172, 20, 0, 5)}'\n", "home-network or Tailscale address"),
-            "recorder/x.json": (f'{{"h": "{ip(100, 101, 102, 103)}:8788"}}\n', "home-network or Tailscale address"),
+            "tools/publish.env.example": ("FONE_SERVERS=http://your-server.your-tailnet" + ".ts.net:8788\n",
+                                          "a Tailscale name"),
+            "docs/tailnet.md": (f"http://{ip(100, 101, 102, 103)}:8788\n", "a Tailscale address"),
+            "recorder/x.json": (f'{{"h": "{ip(100, 101, 102, 103)}:8788"}}\n', "a Tailscale address"),
+            "docs/nas.md": (f"mkdir -p {NAS}/library/recordings/fone-import\n", "a NAS path"),
+            ".env.example": (f"FONE_RECORDINGS={NAS}/library/recordings\n", "a NAS path"),
+            "server/tests/test_y.py": (f'KL = "{NAS}/library/recordings/x.flv"\n', "a NAS path"),
+            # a home-network address or another /mnt path: anywhere but the docs and the examples
+            "e2e/x.py": (f"HOST = '{LAN}'\n", lan),
+            "server/fone/x.py": (f"H = ('{ip(10, 0, 0, 5)}', 1)\n", lan),
+            "server/fone/y.py": (f"H = '{ip(172, 20, 0, 5)}'\n", lan),
+            "extension/options2.html": (f"<code>{LAN}</code> or <code>my-server:8788</code>\n", lan),
+            "extension/options.test.js": (f"assert.equal(O.server('{LAN}').url, 'http://{LAN}:8788');\n", lan),
+            "README.example.txt": (f"http://{LAN}:8788\n", lan),
             "tools/x.sh": (f"cd {HOME}/code\n", "a home directory"),
-            "docker-compose.yml": (f"volumes:\n  - {NAS}/library/recordings:/rec:ro\n", "a NAS path"),
+            "docker-compose.yml": (f"volumes:\n  - {SHARE}/recordings:/rec:ro\n", "a NAS path"),
         }
         for name, (text, why) in cases.items():
             with self.subTest(name):
@@ -291,10 +311,10 @@ class CheckPublic(unittest.TestCase):
 
     def test_github_annotations(self):
         with tempfile.TemporaryDirectory() as t:
-            git_repo(Path(t), {**self.CLEAN, "e2e/x.py": f"\n\nHOST = '{ip(192, 168, 1, 20)}'\n"})
+            git_repo(Path(t), {**self.CLEAN, "e2e/x.py": f"\n\nHOST = '{LAN}'\n"})
             p = run("bash", str(TOOLS / "check_public.sh"), t, env={"GITHUB_ACTIONS": "true"})
-        self.assertEqual(p.stdout.splitlines()[0], "::error file=e2e/x.py,line=3::a home-network or Tailscale "
-                         f"address (use 192.0.2.10 in examples): '{ip(192, 168, 1, 20)}'")
+        self.assertEqual(p.stdout.splitlines()[0], "::error file=e2e/x.py,line=3::a home-network address (an "
+                         f"example to fill in goes in a *.md or *.example file; elsewhere use 192.0.2.10): '{LAN}'")
 
 
 if __name__ == "__main__":

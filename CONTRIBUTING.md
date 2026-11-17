@@ -11,11 +11,14 @@ being rewritten.
 - Keep the change small and the comments in the style around it (the code explains *why*,
   not what the next line does).
 - Run the tests that touch what you changed (below). CI runs the first two layers and the
-  checks on every push and pull request; the third only runs on a machine with Docker and
-  internet access.
+  checks on every push and pull request; the third runs on a machine with Docker (the offline
+  suites also by hand in Actions, `.github/workflows/e2e.yml`).
 - Don't commit anything from your own setup: server names, IPs, Tailscale hosts, NAS paths,
-  credentials (`recorder/api.env` and `tools/publish.env` are gitignored for that reason).
-  `tools/check_public.sh` fails CI on them.
+  credentials (`.env`, `recorder/api.env` and `tools/publish.env` are gitignored for that
+  reason). `tools/check_public.sh` fails CI on them. An address for readers to put their own
+  in place of (`http://192.168.1.20:8788`) belongs in the docs (`*.md`) or a `*.example` file
+  only; code, tests and pages use a name (`my-server`) or `192.0.2.x`. Tailscale names and
+  addresses, and paths on a NAS mounted under `/mnt` as `nas`, fail everywhere.
 - A change someone running fone would notice gets a line in the top section of
   [CHANGELOG.md](CHANGELOG.md); releases are cut from it ([docs/releasing.md](docs/releasing.md)).
 

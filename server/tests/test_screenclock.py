@@ -36,8 +36,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "screenclock"
 # MultiViewer's header strip, on black. Survives the recording's 3-week janitor.
 HEADER_CLIP = FIXTURES / "mv_header_kl.flv"
 KL_NAME = "fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"
-KL = next((p for p in (Path(os.environ.get("FONE_KL_FLV", "/nonexistent")), Path("/rec") / KL_NAME,
-                       Path("/mnt/nas/media/library/recordings") / KL_NAME) if p.is_file()), None)
+KL = next((p for p in (Path(os.environ.get("FONE_KL_FLV", "/nonexistent")), Path("/rec") / KL_NAME)
+           if p.is_file()), None)
 KL_WALL = 1791010992.737  # fone's wall clock of the KL file's audio m=0
 KL_A0 = 0.08  # its first audio packet (FLV pts)
 KL_DELAY = 38.997

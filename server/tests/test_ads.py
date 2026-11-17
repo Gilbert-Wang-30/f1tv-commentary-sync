@@ -27,7 +27,7 @@ from test_ads_detect import A, B, C, clip, mix, talk, write_wav
 FIXTURES = Path(__file__).parent / "fixtures" / "ads"
 KL_FLV = Path(os.environ.get(
     "FONE_TEST_KL_FLV",
-    "/mnt/nas/media/library/recordings/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"))
+    "/rec/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"))
 TOL = 0.2  # allowed edge error vs. ground truth, seconds
 SH = ZoneInfo("Asia/Shanghai")
 

@@ -29,7 +29,7 @@ SH = ZoneInfo("Asia/Shanghai")
 CHANNEL = "胡闹P房"
 KL_FLV = Path(os.environ.get(
     "FONE_TEST_KL_FLV",
-    "/mnt/nas/media/library/recordings/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"))
+    "/rec/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"))
 FLASHES = (5.0, 13.0)  # source seconds: a white video frame and a 1 kHz beep start here
 
 
