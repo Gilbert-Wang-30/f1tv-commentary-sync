@@ -298,11 +298,12 @@ Bilibili's anonymous 超清, the lowest it offers logged out, can be 0.5–1.3 M
 ## Run a server
 
 The server records the streamer around the clock, so it runs on a machine that's on when they
-are live: a home server, a NAS, a small VPS. It needs Docker with Compose v2 and a folder for the
-recordings with room for a few weeks of them (fone's recorders' files are deleted 21 days after
-they end). The image is `ghcr.io/gilbert-wang-30/fone` for amd64 and arm64, from 1.0.1 on:
-`:<version>` for one release (`docker-compose.yml` names the one it came with), `:<major>.<minor>`
-and `:latest` for the newest. How a release is made: [docs/releasing.md](docs/releasing.md).
+are live: a home server, a NAS, a small VPS (on a VPS, bind it to a private address: below). It
+needs Docker with Compose v2 and a folder for the recordings with room for a few weeks of them
+(fone's recorders' files are deleted 21 days after they end). The image is
+`ghcr.io/gilbert-wang-30/fone` for amd64 and arm64, from 1.0.1 on: `:<version>` for one release
+(`docker-compose.yml` names the one it came with), `:<major>.<minor>` and `:latest` for the
+newest. How a release is made: [docs/releasing.md](docs/releasing.md).
 
 ### 1. The server
 
@@ -325,6 +326,16 @@ The status page is at `http://<host>:8788/`. The server keeps everything it comp
 configuration leaves out (no Bilibili room, a missing folder) is said in its log at start
 (`docker logs fone`), on the status page and in the settings' *Test connection*. A server built from source instead of pulled: `FONE_IMAGE=fone:dev` in `.env`,
 then `docker compose build fone`.
+
+**Who can reach it.** The server has no login. Its port is published on every interface by
+default, for the browsers elsewhere on your LAN, and anything that reaches it can read its open
+routes ([Server API](#server-api)); the header the rest asks for (`X-Fone: 1`) keeps web pages
+out, not scripts. On a VPS, or any host the internet reaches, never expose 8788 to the internet:
+set `FONE_BIND` in `.env` to a private address, the host's Tailscale or WireGuard address
+(`tailscale ip -4`) so only your VPN reaches it, or `127.0.0.1` with an SSH tunnel from each
+browser's machine (`ssh -N -L 8788:127.0.0.1:8788 <host>`, then `http://localhost:8788` in fone's
+settings). A firewall on the host doesn't cover it: Docker's published ports bypass ufw's rules.
+`FONE_BIND` is fone-ext's address too (port 8789, [Advanced](#advanced-a-self-hosted-update-channel)).
 
 ### 2. A recorder: configure your streamer
 
@@ -506,6 +517,7 @@ where its player happened to start.
 | `FONE_RECORDINGS` | (required) | the recordings' folder on the host, a folder per streamer: mounted read-only at `/rec`, except `fone-import/` (backfill's); fone's recorders write into `fone/`. Both must exist |
 | `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.1` | the server image (`docker compose build fone` builds `./server` under this name) |
 | `FONE_PORT` | `8788` | the server's port on the host |
+| `FONE_BIND` | `0.0.0.0` | the host address the server's port (and fone-ext's) is published on: every interface by default; on a VPS a private one, a VPN's or `127.0.0.1` ([Run a server](#1-the-server)) |
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |
 | `COMPOSE_PROFILES` | | optional services `docker compose up -d` starts too: `recorder` (fone-recorder, its gate, the janitor), `streamlink` (fone-streamlink, the janitor), `ext-update` (fone-ext, [Advanced](#advanced-a-self-hosted-update-channel)) |
 | `FONE_UID`, `FONE_GID` | `1000` | the user the recorders write as |
@@ -767,8 +779,9 @@ CHANGELOG.md           what changed in each version (a release's notes)
 
 - **The server has no login.** Anything that can reach port 8788 can read its open routes, so
   keep it on your LAN or a private network (a VPN such as Tailscale), never open to the
-  internet. A web page you visit is refused everything but the open reads
-  ([Server API](#server-api)): the writes (`PUT /api/sync`, the `POST` routes) and the reads
+  internet: on a VPS, `FONE_BIND` publishes it on a private address only (Docker's published
+  ports bypass ufw's rules; [Run a server](#1-the-server)). A web page you visit is refused
+  everything but the open reads ([Server API](#server-api)): the writes (`PUT /api/sync`, the `POST` routes) and the reads
   that start work (a Bilibili replay's frames downloaded and read, an OpenF1 rebuild, old
   recordings extracted, F1 TV looked up) or hand out every viewer's playback history
   (`GET /api/diag`), whether it asks by `fetch` or with an `<img>`, a `<script>`, a link or a
