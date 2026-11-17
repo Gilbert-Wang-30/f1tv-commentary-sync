@@ -383,6 +383,33 @@ def test_a_capture_that_joined_late_fails_the_pdt_check(tmp_path):
             assert abs(out["p0"] - Q_EXACT) < 0.17
 
 
+def test_a_session_of_no_known_kind_checks_the_timing_by_any_kinds_lag(tmp_path):
+    # (pre-season testing's "Day 1": no PDT_LAG of its own, no pre-roll) the timing's Started is
+    # taken within 0.5 s of any kind's lag, not as it is: a late capture's isn't
+    info = {"Name": "Day 1", "Path": "2026/x/11730/", "Key": 11730}
+    for timing, anchor in ((Q_STARTED, "timing"), (Q_STARTED + 879, None)):
+        d = tmp_path / str(anchor)
+        d.mkdir()
+        m, w = world_mapper(d, session_start_pdt=Q_PDT, session_info=info)
+        w["timing"][11730] = timing
+        out = asyncio.run(m.content(Q_CID))
+        assert (out["kind"], out["anchor"], out["timingStarted"]) == (None, anchor, timing)
+        assert out["p0"] == (None if anchor is None else Q_STARTED - Q_SSV)
+
+
+def test_the_servers_timing_failing_never_fails_the_lookup(tmp_path):
+    # (TimingService.started reading a store it can't: a malformed meta.json) no timing anchor
+    def broken(key):
+        raise ValueError("could not convert string to float: 'x'")
+    m, w = world_mapper(tmp_path, session_start_pdt=Q_PDT)
+    m.timing_started = broken
+    out = asyncio.run(m.content(Q_CID))
+    assert out["anchor"] == "pdt" and "error" not in out and "timingStarted" not in out
+    assert asyncio.run(m.content(Q_CID)) == out  # (and the cached answer's check for news too)
+    m.store.put_content(Q_CID, {**out, "anchor": "preroll"})
+    assert asyncio.run(m.content(Q_CID))["anchor"] == "preroll"
+
+
 def test_without_multiviewers_session_start_the_pre_roll_whatever_the_timing(tmp_path):
     # live, or the first hours after: no session_start, so no position in the video to put Started at
     m, w = world_mapper(tmp_path, session_start=None, session_start_pdt=Q_PDT)
@@ -528,6 +555,24 @@ def test_a_preroll_anchor_is_upgraded_once_the_servers_timing_has_the_start(tmp_
     w["timing"][11730] = Q_STARTED + 0.2
     n = len(w["asked"])
     assert asyncio.run(m.content(Q_CID))["startedUtc"] == Q_STARTED and len(w["asked"]) == n
+
+
+def test_an_exact_anchor_is_kept_past_10_min_a_preroll_one_is_looked_up_again(tmp_path):
+    # every exact anchor (F1's archive's, the server's timing's, MultiViewer's start time's) is
+    # settled: served from the cache however old; the pre-roll's is looked up again after 10 min
+    ways = {"multiviewer": dict(archive=200), "timing": dict(session_start_pdt=Q_PDT),
+            "pdt": dict(session_start_pdt=Q_PDT), "preroll": {}}
+    for anchor, way in ways.items():
+        d = tmp_path / anchor
+        d.mkdir()
+        m, w = world_mapper(d, **way)
+        if anchor == "timing":
+            w["timing"][11730] = Q_STARTED
+        assert asyncio.run(m.content(Q_CID))["anchor"] == anchor
+        m.store.query("UPDATE f1_content SET fetched_at = fetched_at - 3600")
+        n = len(w["asked"])
+        assert asyncio.run(m.content(Q_CID))["anchor"] == anchor
+        assert (len(w["asked"]) > n) == (anchor == "preroll"), anchor
 
 
 def test_an_exact_anchor_is_never_traded_for_a_lesser_one(tmp_path):

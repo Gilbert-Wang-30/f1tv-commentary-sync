@@ -42,7 +42,7 @@ content's `anchor`), from:
 | anchor | `started_utc` |
 |---|---|
 | `multiviewer` | the archive's `SessionData.json` (`StatusSeries`): replays anchored before 2026-10-18, kept |
-| `timing` | the server's own timing of the session (`timing.py`, `TimingService.started`): the first `SessionStatus` `Started` of its live capture, archive copy or OpenF1 rebuild. Not a capture whose stream opens on `Started` (it connected after the start), and only within ±0.5 s of `session_start_pdt − PDT_LAG[kind]` when MultiViewer gives that (2026 Mexico City FP3's late capture was 879 s off) |
+| `timing` | the server's own timing of the session (`timing.py`, `TimingService.started`): the first `SessionStatus` `Started` of its live capture, archive copy or OpenF1 rebuild. Not a capture whose stream opens on `Started` (it connected after the start), and only within ±0.5 s of `session_start_pdt − PDT_LAG[kind]` when MultiViewer gives that (any kind's lag for a session of no kind known, a test's day; 2026 Mexico City FP3's late capture was 879 s off) |
 | `pdt` | `session_start_pdt − PDT_LAG[kind]`: 7.872 s for races and sprints, 7.469 s for the others, medians of 19 sessions of 2025-26 whose Started is known exactly, each within 0.17 s |
 
 The three are exact; a cached one is never traded for one further down, and a content anchored

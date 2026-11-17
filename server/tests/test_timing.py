@@ -317,6 +317,11 @@ def test_the_sessions_started_for_a_replays_anchor(archived_root, tmp_path):
     # car positions relayed alone: no timing of its own
     late.ingest_positions(KEY, [{"Timestamp": "2026-10-03T08:30:00.100Z", "Entries": {"1": {"X": 1, "Y": 2, "Z": 3}}}])
     assert late.store.meta(KEY)["source"] == "relay" and late.started(KEY) is None
+    # (nor would a status in a relay's directory be: it isn't the session's own feed)
+    w = late._writer(KEY)
+    w.write("SessionStatus", {"Status": "Inactive"}, utc("2026-10-03T08:30:01"), relay=True)
+    w.write("SessionStatus", {"Status": "Started"}, utc("2026-10-03T08:30:02"), relay=True)
+    assert late.store.meta(KEY)["source"] == "relay" and late.started(KEY) is None
 
 
 def test_position_uploads_are_deduplicated_and_validated(tmp_path):

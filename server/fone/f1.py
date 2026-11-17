@@ -210,8 +210,17 @@ class F1Mapper:
         key = data.get("sessionKey")
         if not data.get("isSessionFeed") or not key or _rank(data.get("anchor")) <= _rank("timing"):
             return False
-        started = self.timing_started(key)
+        started = self._started(key)
         return started is not None and started != data.get("timingStarted")
+
+    def _started(self, key: int) -> float | None:
+        """The server's timing's Started for the session (timing_started), None should it fail:
+        a store it can't read (a malformed meta.json) makes no anchor, it doesn't fail the lookup."""
+        try:
+            return self.timing_started(key)
+        except Exception:  # (TimingService.started reads files: never a reason to answer 500)
+            log.exception("timing's Started for session %s", key)
+            return None
 
     async def _find_nearby_session(self, cid: str) -> tuple[dict, dict] | None:
         """F1 TV hides metadata for pre-live content, but MultiViewer already lists the
@@ -287,7 +296,7 @@ class F1Mapper:
 
         # The server's own Started for the session, noted whether used or not (content() looks
         # again when its timing gains one this answer wasn't made with).
-        timing = self.timing_started(sk) if is_main and sk else None
+        timing = self._started(sk) if is_main and sk else None
         if timing is not None:
             out["timingStarted"] = timing
         if is_main and mv.get("session_start"):
@@ -302,11 +311,13 @@ class F1Mapper:
                     anchor, started_utc = "multiviewer", _iso(started[0])
             pdt, lag = _pdt(mv), PDT_LAG.get(out["kind"])
             if anchor is None and timing is not None:
-                if pdt is None or lag is None or abs(pdt - timing - lag) <= PDT_CHECK:
+                # (a session of no kind known, a test's "Day 1": within any kind's lag)
+                lo, hi = (lag, lag) if lag is not None else (min(PDT_LAG.values()), max(PDT_LAG.values()))
+                if pdt is None or lo - PDT_CHECK <= pdt - timing <= hi + PDT_CHECK:
                     anchor, started_utc = "timing", timing
                 else:
                     log.info("content %s: session %s's timing has Started %+.1f s off MultiViewer's; not used",
-                             cid, sk, timing - (pdt - lag))
+                             cid, sk, timing - (pdt - (lo + hi) / 2))
             if anchor is None and pdt is not None and lag is not None:
                 anchor, started_utc = "pdt", pdt - lag
             if anchor is not None:
