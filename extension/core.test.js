@@ -13,6 +13,24 @@ test('replay uses the exact anchor', () => {
   assert.equal(C.eventTime('multiviewer', replay, 307.04, null, now), 1791014093.132 + 307.04);
 });
 
+test("the server's other exact anchors (its own timing, MultiViewer's start time) are the exact clock", () => {
+  // F1's archive has refused since 2026-10-18: the start is dated by the server's timing or by
+  // MultiViewer's session_start_pdt, exact to a fraction of a second; delays saved on the same clock
+  for (const anchor of ['timing', 'pdt']) {
+    const c = { ...replay, anchor };
+    assert.equal(C.exactAnchor(c), true, anchor);
+    assert.equal(C.chooseClock(c, { p: 10, live: false, at: now }, now), 'multiviewer', anchor);
+    assert.equal(C.eventTime(C.chooseClock(c, { p: 10, at: now }, now), c, 307.04, null, now), 1791014093.132 + 307.04);
+    // live, it's still edge to edge
+    assert.equal(C.chooseClock({ ...c, subtype: 'LIVE' }, { p: 3900, seekEnd: 3970, live: true, at: now }, now), 'edge');
+  }
+  assert.equal(C.exactAnchor(replay), true);
+  for (const c of [{ ...replay, anchor: 'preroll' }, { ...replay, anchor: null }, null, { ...replay, anchor: 'other' }]) {
+    assert.equal(C.exactAnchor(c), false, JSON.stringify(c));
+  }
+  assert.equal(C.chooseClock({ ...replay, anchor: 'preroll' }, { p: 10, at: now }, now), 'preroll');
+});
+
 test('a replay stays a replay even if the player briefly reports duration=Infinity', () => {
   assert.equal(C.chooseClock(replay, { p: 10, live: true, seekEnd: 30, at: now }, now), 'multiviewer');
 });

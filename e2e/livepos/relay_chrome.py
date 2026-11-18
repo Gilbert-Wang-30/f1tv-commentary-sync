@@ -42,7 +42,7 @@ def mock(path: str, body: dict | None = None):
 
 
 def fone_get(path: str):
-    return json.load(urllib.request.urlopen(FONE + path, timeout=10))
+    return json.load(urllib.request.urlopen(urllib.request.Request(FONE + path, headers={"X-Fone": "1"}), timeout=10))
 
 
 async def main() -> int:

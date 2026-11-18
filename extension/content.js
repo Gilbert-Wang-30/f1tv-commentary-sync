@@ -319,6 +319,8 @@
   @keyframes pulse { 50% { opacity: .3; } }
   .name { font-weight: 600; } .text { color: #bbb; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chev { color: #888; }
+  .head .opts { background: none; padding: 0 2px; color: #888; font-size: 13px; } .head .opts:hover { color: #eee; background: none; }
+  .head .opts.on { color: #f5c542; background: rgba(245,197,66,.3); border-radius: 4px; } /* (nothing set up yet) */
   .body { margin-top: 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* nothing widens the card */
   .row { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   .delay { font-variant-numeric: tabular-nums; }
@@ -348,7 +350,7 @@
 </style>
 <div class="wrap">
   <div class="card">
-    <div class="head" id="head"><span class="dot" id="dot"></span><span class="name" id="name">解说</span><span class="text" id="text"></span><span class="chev" id="chev">▾</span></div>
+    <div class="head" id="head"><span class="dot" id="dot"></span><span class="name" id="name">Commentary</span><span class="text" id="text"></span><button class="opts" id="opts" title="fone's settings: the streamer's live URL or your fone server, F1 TV's sound">⚙︎</button><span class="chev" id="chev">▾</span></div>
     <div class="body">
       <div class="hold" id="hold" hidden></div>
       <div class="row"><span class="delay" id="delay">delay –</span></div>
@@ -403,7 +405,7 @@
     if (typeof p.l === 'number') { wrap.style.left = `${Math.max(0, Math.min(w - 80, p.l))}px`; wrap.style.right = 'auto'; }
     else { wrap.style.right = `${Math.max(0, Math.min(w - 80, p.r ?? 14))}px`; wrap.style.left = 'auto'; }
   }
-  let drag = null, dragged = false;
+  let drag = null, dragged = 0; // (dragged: when a drag ended, performance.now())
   $('head').addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const r = wrap.getBoundingClientRect();
@@ -420,12 +422,14 @@
     wrap.style.right = 'auto';
     wrap.style.top = `${Math.max(0, Math.min(window.innerHeight - 30, drag.t + dy))}px`;
   });
-  const dragEnd = () => {
+  const dragEnd = (e) => {
     const d = drag;
     drag = null;
     wrap.classList.remove('dragging');
     if (!d?.moved) return;
-    dragged = true; // (the click this ends with doesn't open or close it)
+    // (the click a drag's pointerup ends with doesn't open or close it; a cancelled one ends with
+    // none, and the next click is yours)
+    dragged = e.type === 'pointerup' ? performance.now() : 0;
     const r = wrap.getBoundingClientRect();
     const p = r.left + r.width / 2 < window.innerWidth / 2 ? { l: Math.round(r.left), t: Math.round(r.top) }
       : { r: Math.round(window.innerWidth - r.right), t: Math.round(r.top) };
@@ -447,6 +451,9 @@
     edge: ['live: edge to edge', ''],
     manual: ['manual — line it up', 'est'],
   };
+  // The exact clock's badge by where the server dated the session's start (content.anchor, f1.py):
+  // MultiViewer's above for F1's archive and MultiViewer's own start time; this for the server's timing.
+  const EXACT_FROM = { timing: 'exact (timing)' };
 
   function render() {
     if (host.hidden) return;
@@ -454,13 +461,15 @@
     // Nothing to play from (no server listed, or no stream to record): say so up front rather
     // than letting the engine report every server as unreachable.
     const local = settings.source === 'local';
-    const s = !local && !settings.servers?.length
-      ? { state: 'error', text: "No server set — open fone's settings (toolbar icon) and enter its URL" }
-      : local && !String(settings.stream || '').trim()
-        ? { state: 'error', text: "No stream set — open fone's settings (toolbar icon) and paste the streamer's live URL" }
+    const unset = !local && !settings.servers?.length ? 'server' : local && !String(settings.stream || '').trim() ? 'stream' : null;
+    const s = unset === 'server'
+      ? { state: 'error', text: "No server set — ⚙ opens fone's settings: enter its URL" }
+      : unset === 'stream'
+        ? { state: 'error', text: "No stream set — ⚙ opens fone's settings: paste the streamer's live URL (or a fone server's)" }
         : status || { state: 'loading', text: 'Connecting…' };
     $('dot').className = `dot ${s.state}`;
-    $('name').textContent = s.channel || '解说';
+    $('opts').classList.toggle('on', !!unset);
+    $('name').textContent = s.channel || 'Commentary';
     let text = s.text || '';
     if (s.state === 'sync' && s.drift != null) text += ` ±${Math.round(Math.abs(s.drift) * 1000)}ms`;
     if (s.sound?.state === 'locked' && (s.state === 'sync' || s.state === 'syncing')) text += ' · by sound';
@@ -549,7 +558,8 @@
       sel.dataset.v = chans.join('|');
     }
     sel.value = s.channel || '';
-    const [clockText, est] = CLOCKS[s.clock] || ['–', 'est'];
+    const [clockText, est] = (s.clock === 'multiviewer' && EXACT_FROM[s.anchor] ? [EXACT_FROM[s.anchor], ''] : CLOCKS[s.clock])
+      || ['–', 'est'];
     $('kv').innerHTML = '';
     const rows = [
       ['F1 TV', s.title || cid],
@@ -682,7 +692,19 @@
     toast(`${d > 0 ? '+' : '−'}${Math.abs(d)} s → commentary ${d > 0 ? 'sooner' : 'later'}${next != null ? ` (delay ${next.toFixed(1)} s)` : ''}`);
   }
 
-  $('head').addEventListener('click', () => { if (dragged) { dragged = false; return; } save({ collapsed: !settings.collapsed }); });
+  $('head').addEventListener('click', () => {
+    const d = dragged;
+    dragged = 0;
+    if (d && performance.now() - d < 500) return; // (a drag's own click: see dragEnd)
+    save({ collapsed: !settings.collapsed });
+  });
+  // ⚙ in the head: fone's settings, opened by the service worker (a content script can't). Its
+  // presses stay its own: no drag, collapse or back-to-the-corner of the head under it.
+  for (const t of ['pointerdown', 'dblclick']) $('opts').addEventListener(t, (e) => e.stopPropagation());
+  $('opts').addEventListener('click', (e) => {
+    e.stopPropagation();
+    try { chrome.runtime.sendMessage({ target: 'background', type: 'open-options' }).catch(() => {}); } catch { /* orphaned */ }
+  });
   root.querySelectorAll('button[data-d]').forEach((b) => b.addEventListener('click', () => nudge(Number(b.dataset.d))));
   $('mute').addEventListener('click', () => save({ muted: !settings.muted }));
   $('relive').addEventListener('click', () => { send({ type: 'relive' }); toast('Re-synced to live'); });

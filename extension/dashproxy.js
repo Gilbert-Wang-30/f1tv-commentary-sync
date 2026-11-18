@@ -29,7 +29,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: false, error: 'not a dashboard URL' });
     return undefined;
   }
-  fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+  // (X-Fone: the extension's, not a web page's: the server answers these to it alone)
+  fetch(url, { cache: 'no-store', headers: { 'X-Fone': '1' }, signal: AbortSignal.timeout(8000) })
     .then(async (r) => sendResponse(r.ok ? { ok: true, json: await r.json() } : { ok: false, error: `${url.pathname} → HTTP ${r.status}` }))
     .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
   return true; // the answer comes asynchronously

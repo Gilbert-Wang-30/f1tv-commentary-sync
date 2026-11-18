@@ -1,0 +1,241 @@
+name: Release
+
+# A v* tag on main (v1.0.1, or v1.0.1-rc.1 for a pre-release) becomes a GitHub Release: the
+# extension's zip and SHA256SUMS, the server image on ghcr.io (amd64 and arm64), notes from
+# CHANGELOG.md. Run by hand (Actions → Release → Run workflow, any branch, once this file is on
+# the default branch: GitHub offers it only then) it's a dry run: everything checked and built,
+# the zip kept as the run's artifact, nothing pushed or released. docs/releasing.md has the
+# steps around it.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command before a pipe fails the step
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      image: ${{ steps.v.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # main's history, for the check that the tag is on it
+      - name: the tag, the manifest and CHANGELOG.md agree
+        id: v
+        env:
+          DRY_RUN: ${{ github.event_name != 'push' }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            TAG=v$(python3 -c 'import json; print(json.load(open("extension/manifest.json"))["version"])')
+            python3 tools/check_version.py --tag "$TAG" --dry-run | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 tools/check_version.py --tag "$GITHUB_REF_NAME" | tee -a "$GITHUB_OUTPUT"
+          fi
+          # ghcr.io takes lowercase names only (the owner is Gilbert-Wang-30); a fork publishes to its own
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fone" | tee -a "$GITHUB_OUTPUT"
+      - name: nothing personal committed
+        run: tools/check_public.sh
+      - name: the tag is on ${{ github.event.repository.default_branch }}
+        if: github.event_name == 'push'
+        env:
+          MAIN: ${{ github.event.repository.default_branch }}
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$MAIN" || {
+            echo "::error::$GITHUB_REF_NAME is not on $MAIN: merge the release into $MAIN, then tag $MAIN"; exit 1; }
+
+  tests:
+    name: tests
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  extension:
+    name: extension zip
+    needs: [verify, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Committed files only, local.js the placeholder, no build.js (no self-update polling).
+      - name: build
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          tools/build_ext.sh dist "$VERSION"
+          cd dist
+          sha256sum -- *.zip > SHA256SUMS
+          cat SHA256SUMS
+          unzip -l ./*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: dist/
+          if-no-files-found: error
+
+  # After the zip: nothing goes to ghcr.io unless the extension built too.
+  image:
+    name: server image
+    needs: [verify, tests, extension]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      IMAGE: ${{ needs.verify.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: build for the smoke run (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          load: true
+          tags: fone:smoke
+          build-args: FONE_VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=server   # main's CI (ci.yml): see the build below
+      # Started as a stranger would with nothing recorded yet: it must come up, answer
+      # /api/health and turn healthy. The services that reach out (F1 timing, backfill,
+      # danmaku) stay off.
+      - name: smoke run
+        run: |
+          mkdir -p "$RUNNER_TEMP/rec"
+          docker run -d --name fone-smoke -p 127.0.0.1:8788:8788 --health-interval 2s \
+            -v "$RUNNER_TEMP/rec":/rec:ro -e FONE_TIMING=0 -e FONE_BACKFILL=0 -e FONE_DANMAKU=0 fone:smoke
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:8788/api/health | tee health.json
+          echo
+          python3 - "$VERSION" <<'PY'
+          import json, sys
+          h = json.load(open("health.json"))
+          assert h.get("ok") is True, h
+          assert h.get("version", sys.argv[1]) == sys.argv[1], f"version {h.get('version')!r}, not {sys.argv[1]}"
+          PY
+          [ "$(docker exec fone-smoke printenv FONE_VERSION)" = "$VERSION" ]
+          for _ in $(seq 30); do
+            s=$(docker inspect -f '{{.State.Health.Status}}' fone-smoke)
+            [ "$s" = healthy ] && break
+            sleep 2
+          done
+          echo "health check: $s"
+          [ "$s" = healthy ]
+      - name: the smoke run's log
+        if: always()
+        run: docker logs fone-smoke 2>&1 | tail -n 50 || true
+      - name: tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # 1.0.1 and 1.0 (and latest) for a release, 1.0.1-rc.1 alone for a pre-release
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=dry-run,enable=${{ github.event_name != 'push' }}
+      - name: log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # arm64 under QEMU: every dependency is an apk package or a musllinux wheel, so nothing
+      # compiles (a dry run is how to find out it still holds). Both platforms are built before
+      # anything is pushed: a failed arm64 build pushes nothing.
+      # The cache: a run reads only its own ref's and main's, so whatever a tag wrote, the next
+      # tag could never read. Tags only read: amd64 layers from main's CI (scope=server), and both
+      # platforms' from the last dry run on main (scope=server-multiarch), the one run that
+      # writes it. Without that it builds cold, which only takes longer.
+      - name: build linux/amd64 and linux/arm64 (pushed for a tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: FONE_VERSION=${{ env.VERSION }}
+          cache-from: |
+            type=gha,scope=server
+            type=gha,scope=server-multiarch
+          cache-to: ${{ github.event_name != 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && 'type=gha,scope=server-multiarch,mode=max' || '' }}
+      - name: what was pushed
+        if: github.event_name == 'push'
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"
+
+  release:
+    name: GitHub release
+    if: github.event_name == 'push'
+    needs: [verify, extension, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+      - name: notes from CHANGELOG.md, then the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          IMAGE: ${{ needs.verify.outputs.image }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          python3 tools/check_version.py --tag "$GITHUB_REF_NAME" --notes notes.md > /dev/null
+          cat >> notes.md <<'EOF'
+
+          ## Install
+
+          **Upgrading: update the extension before the server.** A server can need what only its
+          own release's extension sends, and answer an older extension with 403.
+
+          **Extension.** Download `fone-extension-@VERSION@.zip` below and extract it into a folder
+          you'll keep (not Downloads): it holds one folder, `fone`. In Chrome open
+          `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick that `fone`
+          folder. fone's settings then ask for your streamer's live URL, or your fone server.
+
+          **Updating.** Chrome tells an unpacked extension, and its settings, by its folder's path.
+          Extract each new zip into the same place, so that its `fone` lands on the old `fone` folder
+          and replaces its files, then click ↻ on fone's card in `chrome://extensions`. A `fone`
+          folder anywhere else is a new extension, with its settings starting over.
+          - Windows: right-click the zip → **Extract All…** → **Browse** to the folder that holds
+            your `fone` (not the new `fone-extension-…` folder it offers) → **Extract**, then
+            **Replace the files in the destination**.
+          - macOS, Linux: `unzip -o fone-extension-@VERSION@.zip -d <the folder that holds fone>`.
+            (Double-clicking the zip on a Mac never replaces a folder: it extracts a new one next
+            to the zip.)
+
+          **Server** (optional: replays, stats, 弹幕): `docker pull @IMAGE@:@VERSION@`
+          (linux/amd64, linux/arm64). The README covers running it on your recordings with
+          `docker compose`, and updating it (once the extension is): `git pull`, then
+          `docker compose pull` and `docker compose up -d`.
+
+          **Checking the download** against `SHA256SUMS`: `sha256sum -c SHA256SUMS` (Linux),
+          `shasum -a 256 -c SHA256SUMS` (macOS), or on Windows
+          `certutil -hashfile fone-extension-@VERSION@.zip SHA256` and compare the two.
+          EOF
+          sed -i "s|@VERSION@|$VERSION|g; s|@IMAGE@|$IMAGE|g" notes.md
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "fone $VERSION" \
+            --notes-file notes.md "${flags[@]}"

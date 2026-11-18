@@ -300,7 +300,7 @@ async def main():
         check(yellow(color(img, 5, 5)) and yellow(color(img, 1338, 5)) and yellow(color(img, 5, 378)),
               "pixels: the whole video frame is scaled into the box (yellow border at its top-left, top-right, left edge)")
         if STUB:
-            check(near(color(img, 1700, 540), NAVY) and near(color(img, 600, 800), PURPLE) and near(color(img, 1900, 1060), NAVY),
+            check(near(color(img, 1700, 540), NAVY) and near(color(img, 600, 950), PURPLE) and near(color(img, 1900, 1060), NAVY),
                   "pixels: the dashboard's right column and bottom strip fill the L around the box")
         # clicks outside the box reach the dashboard
         if STUB:

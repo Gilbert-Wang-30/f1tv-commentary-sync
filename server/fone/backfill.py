@@ -2,7 +2,9 @@
 
   live log  poll each configured room every 60 s; store [live_time, last seen live] periods
   gaps      once a period has ended and its recordings are extracted, compare it with the
-            channel's recording coverage (fone's wall-clock pieces); > 60 s missing -> a job
+            channel's recording coverage (fone's wall-clock pieces); > 60 s missing -> a job.
+            Only a live with a title the recorder gate keeps is filled by itself (F1: not a game
+            stream whose recording the gate stopped); one asked for by hand always is.
   job       poll the uploader's '直播回放' series every 10 min for up to 36 h (publish delay:
             median ~1 h, max seen 18.4 h; some streams never get one); match by title hour +
             duration, pinned by our live_time; download the pages covering the gap (audio of
@@ -34,7 +36,7 @@ from .backfill_dedup import Timeline, find_joins, load_part
 from .backfill_start import SR, AlignIndex, Placement, align, danmaku_origin, decode_8k, estimate_start, \
     parse_dmks_live
 from .backfill_writer import build_import
-from .config import Config
+from .config import Config, parse_rooms  # (FONE_ROOMS read as the server and fone-recorder read it)
 from .store import Store
 
 if TYPE_CHECKING:
@@ -47,19 +49,13 @@ MAX_ATTEMPTS = 5
 WINDOWS = 8  # recording windows to align against
 WINDOW_S = 30.0
 BVID_RE = re.compile(r"^BV[0-9A-Za-z]{10}$")
+# The titles fone-recorder-gate records unless GATE_RECORD says otherwise: recorder/gate.py's
+# F1_TITLES, word for word (recorder/test_gate.py keeps the two the same).
+F1_TITLES = (r"F1|F2|F3|Formula|Grand Prix|\bGP\b|FP[123]|Qualifying|Sprint|\bRace\b"
+             r"|一练|二练|三练|练习赛|排位赛|冲刺|正赛|大奖赛|发布会|围场|方程式|巡游")
 
 
 # ---- settings ------------------------------------------------------------------------------------
-
-
-def parse_rooms(spec: str) -> dict[int, str]:
-    """"23954427=胡闹P房,123=other" -> {23954427: "胡闹P房", 123: "other"}."""
-    out = {}
-    for pair in filter(None, (x.strip() for x in spec.split(","))):
-        room, _, channel = pair.partition("=")
-        if room.strip().isdigit() and channel.strip():
-            out[int(room.strip())] = channel.strip()
-    return out
 
 
 @dataclass(frozen=True)
@@ -74,6 +70,11 @@ class Settings:
     settle: float = 1800.0  # longest wait for an ended period's recordings to finish extracting
     danmakus: bool = True  # third-party danmakus.com for S0 / missing live_time
     keep_work: bool = False
+    # Which lives are filled without being asked: the gate's filter (GATE_RECORD / GATE_SKIP,
+    # which docker-compose.yml passes on as FONE_BACKFILL_RECORD / _SKIP). With GATE_ACTION=stop
+    # the gate stops a game stream's recording, and the whole live would read as missing.
+    record: re.Pattern = field(default_factory=lambda: re.compile(F1_TITLES, re.I))
+    skip: re.Pattern | None = None
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -87,11 +88,29 @@ class Settings:
             give_up_after=float(env.get("FONE_BACKFILL_GIVE_UP_HOURS", "36")) * 3600,
             danmakus=env.get("FONE_BACKFILL_DANMAKUS", "1") not in ("0", "false", "no"),
             keep_work=env.get("FONE_BACKFILL_KEEP_WORK", "0") in ("1", "true", "yes"),
+            # (as the gate reads them: empty is the default words)
+            record=_regex(env, "FONE_BACKFILL_RECORD") or re.compile(F1_TITLES, re.I),
+            skip=_regex(env, "FONE_BACKFILL_SKIP"),
         )
 
     @property
     def enabled(self) -> bool:
         return bool(self.rooms) and self.import_dir is not None
+
+    def wanted(self, title: str | None) -> bool | None:
+        """A title judged as the gate judges it (gate.is_f1); None when there's none to judge."""
+        if not title or not title.strip():
+            return None
+        return bool(self.record.search(title)) and not (self.skip and self.skip.search(title))
+
+
+def _regex(env: dict[str, str], name: str) -> re.Pattern | None:
+    if not env.get(name):
+        return None
+    try:
+        return re.compile(env[name], re.I)
+    except re.error as e:  # (backfill is then left out, and the log says why)
+        raise ValueError(f"{name}={env[name]!r} isn't a regex: {e}") from e
 
 
 # ---- persistence (tables in fone's sqlite DB) ------------------------------------------------------
@@ -106,6 +125,8 @@ CREATE TABLE IF NOT EXISTS bf_period (
     uid INTEGER NOT NULL,
     channel TEXT NOT NULL,
     checked REAL,               -- when gap detection ran (NULL = pending)
+    wanted INTEGER,             -- 1: a title it had while live is one to fill, 0: none was, NULL: none seen
+    skipped TEXT,               -- why gap detection left it alone (not a live to fill)
     PRIMARY KEY (room, start)
 );
 CREATE TABLE IF NOT EXISTS bf_job (
@@ -126,7 +147,9 @@ CREATE TABLE IF NOT EXISTS bf_series (
 );
 """
 
-PERIOD_COLS = ("room", "start", "last_live", "stop", "title", "uid", "channel", "checked")
+PERIOD_COLS = ("room", "start", "last_live", "stop", "title", "uid", "channel", "checked", "wanted", "skipped")
+# Columns added since bf_period was first made: a database from before has them added, NULL.
+PERIOD_ADDED = (("wanted", "INTEGER"), ("skipped", "TEXT"))
 
 
 @dataclass
@@ -157,15 +180,27 @@ class BackfillDB:
     def __init__(self, store: Store):
         self.store = store
         store.ensure_schema(SCHEMA)
+        have = {r[1] for r in self._q("PRAGMA table_info(bf_period)")}
+        for name, kind in PERIOD_ADDED:
+            if name not in have:
+                self._q(f"ALTER TABLE bf_period ADD COLUMN {name} {kind}")
 
     def _q(self, sql: str, args: tuple = ()) -> list[tuple]:
         return self.store.query(sql, args)
 
     # periods
-    def upsert_live(self, room: int, start: float, now: float, title: str, uid: int, channel: str) -> None:
-        self._q("INSERT INTO bf_period (room, start, last_live, title, uid, channel) VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (room, start) DO UPDATE SET last_live = excluded.last_live, stop = NULL",
-                (room, start, now, title, uid, channel))
+    def upsert_live(self, room: int, start: float, now: float, title: str, uid: int, channel: str,
+                    wanted: bool | None = None) -> None:
+        """One poll that saw the room live. wanted: its title then (Settings.wanted); a live is one
+        to fill once any title it had was. One it was left alone for, live again (the same 开播
+        after a poll that missed it), is judged again when it ends."""
+        self._q("INSERT INTO bf_period (room, start, last_live, title, uid, channel, wanted) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (room, start) DO UPDATE SET last_live = excluded.last_live, stop = NULL, "
+                "wanted = CASE WHEN excluded.wanted IS NULL THEN wanted "
+                "ELSE MAX(COALESCE(wanted, 0), excluded.wanted) END, "
+                "checked = CASE WHEN skipped IS NULL THEN checked END, skipped = NULL",
+                (room, start, now, title, uid, channel, None if wanted is None else int(wanted)))
 
     def close_period(self, room: int, start: float, stop: float) -> None:
         self._q("UPDATE bf_period SET stop = ? WHERE room = ? AND start = ? AND stop IS NULL", (stop, room, start))
@@ -189,8 +224,13 @@ class BackfillDB:
         rows = self._q(sql + " ORDER BY start DESC LIMIT ?", (*args, limit))
         return [dict(zip(PERIOD_COLS, r)) for r in rows]
 
-    def mark_checked(self, room: int, start: float, now: float) -> None:
-        self._q("UPDATE bf_period SET checked = ? WHERE room = ? AND start = ?", (now, room, start))
+    def period(self, room: int, start: float) -> dict | None:
+        rows = self._q(f"SELECT {', '.join(PERIOD_COLS)} FROM bf_period WHERE room = ? AND start = ?", (room, start))
+        return dict(zip(PERIOD_COLS, rows[0])) if rows else None
+
+    def mark_checked(self, room: int, start: float, now: float, skipped: str | None = None) -> None:
+        self._q("UPDATE bf_period SET checked = ?, skipped = ? WHERE room = ? AND start = ?",
+                (now, skipped, room, start))
 
     # jobs
     def add_job(self, channel: str, data: dict, now: float, state: str = "waiting") -> Job:
@@ -357,7 +397,12 @@ class BackfillService:
             if not (st.live and st.live_time == p["start"]):  # ended, or restarted with a new 开播
                 self.db.close_period(st.room, p["start"], now)
         if st.live and st.live_time:
-            self.db.upsert_live(st.room, st.live_time, now, st.title, st.uid, channel)
+            wanted = self.settings.wanted(st.title)
+            p = self.db.period(st.room, st.live_time)
+            if p is not None and p["wanted"] is None and (first := self.settings.wanted(p["title"])) is not None:
+                # logged before titles were judged (fone upgraded during this live): its first title counts
+                wanted = first or bool(wanted)
+            self.db.upsert_live(st.room, st.live_time, now, st.title, st.uid, channel, wanted)
 
     # ---- gap detection -----------------------------------------------------------------------
 
@@ -383,6 +428,20 @@ class BackfillService:
     def gaps(self, channel: str, lo: float, hi: float) -> list[list[float]]:
         return subtract((lo, hi), self.coverage(channel, lo, hi), self.settings.min_gap)
 
+    def wanted(self, p: dict) -> bool:
+        """Whether an ended live is one to fill: a title it had while live was (the gate would have
+        recorded it), or it had none to judge. A period logged before titles were judged has only
+        its first title."""
+        if p["wanted"] is not None:
+            return bool(p["wanted"])
+        return self.settings.wanted(p["title"]) is not False
+
+    @staticmethod
+    def not_wanted(p: dict) -> str:
+        """Why an ended live is left alone (the title quoted is the first it had)."""
+        return (f"no title it had while live matches FONE_BACKFILL_RECORD / _SKIP (the gate's words unless set); "
+                f"its first: {p['title']!r}")
+
     def check_periods(self, now: float | None = None) -> list[Job]:
         now = time.time() if now is None else now
         created = []
@@ -392,6 +451,12 @@ class BackfillService:
             # i.e. the whole stream missing: a full replay download for nothing.
             return created
         for p in self.db.periods(pending=True):
+            if not self.wanted(p):
+                # (a game stream, say: the gate stopped its recording, so all of it reads as missing)
+                why = self.not_wanted(p)
+                self.db.mark_checked(p["room"], p["start"], now, skipped=why)
+                log.info("room %s live %s: %s", p["room"], p["start"], why)
+                continue
             lo, hi = p["start"], p["last_live"]
             files = self._files(p["channel"], lo, hi)
             busy = [st for st in files if st.status in ("idle", "queued", "running")]
@@ -511,6 +576,12 @@ class BackfillService:
 
     async def _find(self, job: Job) -> None:
         d, now = job.data, time.time()
+        if d.get("source") == "auto" and not d.get("bvid") and d.get("room"):
+            # (one made before its live was judged, by an older server: a game stream, say)
+            p = self.db.period(d["room"], (d.get("period") or [d.get("liveTime")])[0])
+            if p is not None and not self.wanted(p):
+                job.state, job.error = "expired", "not a live to fill: " + self.not_wanted(p)
+                return
         uid = await self._uid(job)
         reps = await self.replays(uid)
         if d.get("bvid"):
@@ -659,8 +730,9 @@ class BackfillService:
         live_time = live["start"] if slot <= live["start"] < slot + 3600 else None
         if not live["danmaku"]:
             return None, [], live_time
-        full = parse_dmks_live(await bb.dmks_live_full(self.http, live["id"]))
-        s0, _ = danmaku_origin(await self.bili.dm_xml(cid), full.messages)
+        # (in threads: a multi-hour live is seconds of pure-Python msgpack, then of regexes)
+        full = await asyncio.to_thread(parse_dmks_live, await bb.dmks_live_full(self.http, live["id"]))
+        s0, _ = await asyncio.to_thread(danmaku_origin, await self.bili.dm_xml(cid), full.messages)
         return s0, [e for e in full.live_events if slot <= e < slot + 3600], live_time
 
     async def _process(self, job: Job) -> None:

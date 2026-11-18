@@ -4,14 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
-# Test image: built from server/ as fone:dev (never fone:latest, which production runs).
-# E2E_IMAGE=<tag> E2E_BUILD=0 reuses an existing image instead of building.
+# The server under test: E2E_IMAGE, built from server/ as fone:e2e by default (e2e/image.sh);
+# E2E_IMAGE=<tag> E2E_BUILD=0 runs an existing image instead of building.
 # E2E_ONLY=onboards runs Phase A3 alone (the dashboard's onboard views; a dev shortcut).
 # E2E_CONTENT_SEED=<file.json> ({content id: /api/f1tv answer}, e.g. from a server's cache) seeds
 # the fixtures' F1 TV mapping instead of deriving it: F1's live-timing archive, which the exact
 # anchor comes from, has answered 401 to everyone since 2026-10-18. E2E_NO_TIMING=1 skips the one
-# check that needs that archive's timing data (the dashboard's tower).
-IMAGE=${E2E_IMAGE:-fone:dev}
+# check that needs that archive's timing data (the dashboard's tower), and the server under test
+# doesn't rebuild timing from OpenF1 instead (FONE_TIMING_OPENF1=0: ~66 requests, ~200 MB a run).
+. e2e/image.sh
+IMAGE=$E2E_IMAGE
 # Container/network names: fone-dev-* per docs/architecture.md; override to run in parallel.
 NAME=${E2E_NAME:-fone-dev-e2e}
 WORK=$(mktemp -d)
@@ -19,6 +21,9 @@ NET=$NAME
 # Keeps CPU low on a box that also runs the recorders (and the production server).
 CAP="--cpus 2 --cpu-shares 256"
 CAP_CHROME="--cpus 4 --cpu-shares 256"
+# E2E_NO_TIMING=1: nothing the server's containers ask reaches OpenF1, its schedule (once a run)
+# included: the box may share OpenF1's rate limit with a production server.
+if [ "${E2E_NO_TIMING:-}" = 1 ]; then CAP="$CAP --add-host api.openf1.org:127.0.0.1"; fi
 cleanup() {
   local rc=$?
   if [ $rc != 0 ]; then echo "== server log (tail)"; docker logs --tail 40 $NAME-server 2>&1 || true; fi
@@ -29,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ "${E2E_BUILD:-1}" != 0 ]; then docker build -q -t "$IMAGE" server >/dev/null; fi
+e2e_image
 mkdir -p "$WORK/rec/胡闹P房" "$WORK/data" "$WORK/media" "$WORK/seed"
 if [ -n "${E2E_CONTENT_SEED:-}" ]; then cp "$E2E_CONTENT_SEED" "$WORK/seed/content.json"; fi
 chmod -R 777 "$WORK"
@@ -97,9 +102,11 @@ EOF
 
 # The live fixture is the 2026-10-04 race (content 1000011022), which F1 TV now lists as a
 # REPLAY: keep its real data (anchor, p0) but seed it as LIVE in the server's content cache.
+# Phase B's replay (1000010385) is put just past the growing recording's edge by its delay: seeded
+# with the race's data and p0 now, so that delay is minutes (PUT /api/sync takes a day at most).
 echo "== seeding the race fixture as LIVE"
 docker run --rm $CAP -v "$WORK/data":/data -v "$WORK/seed":/seed "$IMAGE" python3 -c '
-import asyncio, json, os
+import asyncio, json, os, time
 from pathlib import Path
 from fone.f1 import F1Mapper
 from fone.store import Store
@@ -112,12 +119,15 @@ async def main():
     d = await m.content("1000011022"); await m.close()
     assert d.get("anchor") == "multiviewer", d
     d["subtype"] = "LIVE"; s.put_content("1000011022", d)
+    s.put_content("1000010385", {**d, "contentId": "1000010385", "title": "2026 Azerbaijan GP - Race", "subtype": "REPLAY", "p0": time.time()})
 asyncio.run(main())'
 
 docker network create $NET >/dev/null
+OPENF1=1
+if [ "${E2E_NO_TIMING:-}" = 1 ]; then OPENF1=0; fi
 docker run -d $CAP --name $NAME-server --network $NET \
   -v "$WORK/rec":/rec:ro -v "$WORK/data":/data \
-  -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 \
+  -e FONE_GROWING_IDLE_SECONDS=20 -e FONE_ROOMS=23954427=胡闹P房 -e FONE_BACKFILL=0 -e FONE_TIMING_OPENF1=$OPENF1 \
   -e FONE_DANMAKU_CAPTURE=0 -e FONE_DANMAKU_ARCHIVE=0 -e FONE_DANMAKU_KEEP_DAYS=3650 "$IMAGE" >/dev/null
 
 echo "== starting a live (growing) commentary recording"
@@ -131,11 +141,11 @@ echo "== waiting for the server to extract the finished recording"
 # Until the finished fixture is extracted and in the playlist (a replay in Chrome refreshes its
 # timeline only every 60 s: starting before this is a 'No recording covers this session' timeout
 # on a loaded box) and the live one has a few segments.
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   if docker exec $NAME-server python -c "
 import json,urllib.request,sys,time
 t=time.time()
-tl=json.load(urllib.request.urlopen('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%d&to=%d'%(t-30*86400,t+3600)))
+tl=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%d&to=%d'%(t-30*86400,t+3600),headers={'X-Fone':'1'})))
 fs=tl['files']
 done=[f for f in fs if f['status']=='done' and f['inPlaylist'] and not f['growing']]
 live=[f for f in fs if f['growing'] and f['inPlaylist'] and f['duration']>=6]
@@ -147,7 +157,7 @@ docker exec $NAME-server python -c "
 import json,urllib.request,time
 p0=$(python3 -c "import json; print(json.load(open('$WORK/media/meta.json'))['p0'])")
 for label,a,b in (('replay window',p0+40-7200,p0+33609),('wide window',time.time()-30*86400,time.time()+3600)):
-    tl=json.load(urllib.request.urlopen('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%f&to=%f'%(a,b)))
+    tl=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8788/api/timeline?channel=%%E8%%83%%A1%%E9%%97%%B9P%%E6%%88%%BF&from=%f&to=%f'%(a,b),headers={'X-Fone':'1'})))
     print('  timeline', label, ': pieces', len(tl['pieces']), 'files', [(f['name'][:13], f['status'], f['inPlaylist'], round(f['duration'])) for f in tl['files']])
 " 2>&1 | head -4
 

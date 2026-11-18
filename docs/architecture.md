@@ -32,11 +32,11 @@ The clock (`FoneCore.chooseClock`) is one of:
 
 | clock | `E` from | when |
 |---|---|---|
-| `multiviewer` | `p0 + p`, `p0` exact from MultiViewer's `session_start` and the live-timing archive's `SessionStatus: Started` | a session feed whose anchor MultiViewer has published and the archive has dated. The archive has answered 401 to everyone since 2026-10-18, so that is a replay anchored before then (a cached exact anchor is kept) |
-| `preroll` | `p0 + p`, `p0 = scheduledStart + PREROLL[kind]` (the replay's fixed pre-roll per session type) | a session feed before MultiViewer publishes, or one the archive refuses to date (every replay not anchored before 2026-10-18, while it refuses) |
+| `multiviewer` | `p0 + p`, `p0 = Started − session_start`: MultiViewer's `session_start` (where `SessionStatus: Started` falls in the replay) and the UTC of that Started, exact to well under a second. The server's `anchor` says where Started came from, best first: `multiviewer` (the live-timing archive's `SessionData`), `timing` (the server's own timing of the session: a live capture, an archive copy or an OpenF1 rebuild, `TimingService.started`; not a capture that opens on Started, which connected late; and when MultiViewer gives a `session_start_pdt`, only within ±0.5 s of what it says, by any kind's lag for a session of no kind known; without one, as it is), `pdt` (`session_start_pdt − PDT_LAG[kind]`: 7.872 s races and sprints, 7.469 s the rest, within 0.17 s on 19 sessions of 2025-26). Any of the three is this clock | a session feed whose `session_start` MultiViewer has published. The archive has answered 401 to everyone since 2026-10-18, so `multiviewer` is a replay anchored before then (an exact anchor cached is never traded for a lesser one) |
+| `preroll` | `p0 + p`, `p0 = scheduledStart + PREROLL[kind]` (the replay's fixed pre-roll per session type): the median, but up to ~6 s off on a session, and ten minutes off one that started late (the 2026 Japanese GP race) | a session feed before MultiViewer publishes `session_start` (live, and the first hours after), or one with no `session_start_pdt` the server has no timing of |
 | `epoch` | `p` itself: the player hands out unix time | a replay player that exposes UTC directly |
 | `edge` | measured back from the live edge | the video is live: after one alignment the commentary follows F1 TV's playhead (`m0 + (p − p0)`) and only moves on a seek or a nudge |
-| `manual` | your own alignment | not a session feed (pre-/post-shows), or F1 TV doesn't know the content |
+| `manual` | your own alignment | not a session feed (pre-/post-shows, the F1 Kids video), or F1 TV doesn't know the content. A session feed is a video MultiViewer's `sync_offsets` list for the session on the main channel (1025); only where they list none of the session's own is it the one MultiViewer names for the session (`f1tv_content_id`), which for some is now another video of the session, filed under its session key: the post-race show for the 2026 Italian GP race, the F1 Kids video for Singapore's. Those stay manual |
 
 Two rules follow from this:
 
@@ -62,17 +62,46 @@ off with `FONE_<NAME>=0`, and one that fails to build or start is left out rathe
 the commentary sync down (`/api/health` lists the running ones).
 
 Configuration is environment variables only (`server/fone/config.py`; the README's
-Configuration table lists them).
+Configuration table lists them). An empty one is its default (`docker-compose.yml` passes the
+optional ones through from `.env`, empty where `.env` leaves them so). Nothing names a streamer
+by default: with no `FONE_ROOMS` no Bilibili room is watched, and `config.notes()` (logged as
+the configuration loads, and in `/api/health`'s `notes` and on the status page) says what that,
+or a missing recordings or import folder, leaves out.
+`FONE_ROOMS` entries are `room=channel` or a room number alone (its channel is the number);
+anything else is skipped with a warning (`config.room_entries`, which backfill reads too, and
+`recorder/seed.sh` the same way). `/api/health` carries `version` (`FONE_VERSION`, stamped into
+a release's image; `dev` otherwise).
+
+The compose file reads everything that's one setup's from `.env` (`.env.example`):
+`FONE_RECORDINGS` is mounted at `/rec` (read-only) with `fone-import/` in it writable for
+backfill, and fone's recorders (profiles `recorder` and `streamlink`) write into its `fone/`;
+`FONE_FILENAME_TZ` is the server's zone for file names and the recorders' `TZ`.
+`recorder/seed.sh` writes fone-recorder's 录播姬 `config.json` on its first start from the
+template `recorder/config.json`, with `FONE_ROOMS`'s rooms and that zone, and again only when
+the file has no room (no `RoomId`) and `FONE_ROOMS` names one (the old file kept as
+`config.json.bak`); with no room in the file (or no file) and none in `FONE_ROOMS` it exits 1
+with what to set, so the recorder keeps restarting (Docker backs off, up to a minute apart),
+saying so each time, instead of recording nothing. The gate
+(`recorder/gate.py`) only logs the streams it would stop until `GATE_ACTION=stop`. `fone-janitor` comes with either recorder
+profile (`recorder`, `streamlink`) and deletes files under `<FONE_RECORDINGS>/fone/` and
+`fone-import/` `FONE_KEEP_DAYS` (21) after their last write. The server image is
+`ghcr.io/gilbert-wang-30/fone:<version>` from 1.0.1 on (`.github/workflows/release.yml`,
+`docs/releasing.md`); `build: ./server` builds it locally under a name of your own.
 
 ### Recordings and the data directory
 
 `FONE_REC_DIR` (`/rec`) is scanned recursively every `FONE_SCAN_INTERVAL` s. A recording's
-**channel is its parent folder** (BililiveRecorder's `{{ name }}/` template; `FONE_CHANNEL_ALIASES`
-renames folders), its start time is parsed from the file name (`yyyyMMdd-HHmmss-fff-title.flv`
-and the coarser variants in `recordings.py`) in `FONE_FILENAME_TZ`, and its `source` is
-`recorder`, or `import` for files under `FONE_IMPORT_DIR` (backfill's replays, which only ever
-fill gaps). A file still being written (mtime younger than `FONE_GROWING_IDLE_SECONDS`) is
-tailed into ffmpeg so its audio is playable seconds after it was recorded.
+**channel is its parent folder** (fone-recorder's `{{ roomId }}/` template, which `FONE_ROOMS`
+names; BililiveRecorder's `{{ name }}/` or a streamlink channel's; `FONE_CHANNEL_ALIASES`
+renames folders, and wins over `FONE_ROOMS`), its start time is parsed from the file name
+(`yyyyMMdd-HHmmss-fff-title.flv` and the coarser variants in `recordings.py`) in
+`FONE_FILENAME_TZ`, and its `source` is `recorder`, or `import` for files under
+`FONE_IMPORT_DIR` (backfill's replays, which only ever fill gaps). A finished file whose name and
+last write disagree by whole quarter-hours, an hour or more, is placed by its name and logged as
+a likely `FONE_FILENAME_TZ` mismatch (`extractor.zone_offset`), when the zone that would make
+them agree exists (UTC−12 to UTC+14: a file touched days later isn't). A file still being
+written (mtime younger than `FONE_GROWING_IDLE_SECONDS`) is tailed into ffmpeg so its audio is
+playable seconds after it was recorded.
 
 `FONE_DATA_DIR` (`/data`, the `fone-data` volume) holds everything computed:
 
@@ -84,36 +113,46 @@ hls/<fid>/                   one directory per recording (fid = sha1 of its path
   ads.json                     sponsor clips found (ads service)
   screenclock.json             the measured screen delay (screenclock service)
 timing/<session_key>/        live-timing streams, archive and own capture in the same format
-  <Topic>.jsonStream, meta.json
+  <Topic>.jsonStream, meta.json  meta.source: live | relay | archive | openf1
 timing/schedule.json         the OpenF1 calendar; timing/tracks/<meeting>.json (+ .corners.json)
 video/<fid>.json             FLV keyframe index (video handoff)
+vodclock/<bvid>.<key>.json   what a Bilibili replay's frames showed (vodclock)
 danmaku/                     capture/<room>-<yyyymmdd>.jsonl and danmaku.sqlite3
-diag/<day>.jsonl             playback diagnostics, 7 days
+diag/<day>.jsonl             playback diagnostics, 7 days after the (UTC) day, at most 64 MB a day
 backfill/                    downloads in progress
 ```
 
 ### Routes
 
-All reads are open to anyone who can reach the port. **Writes (anything but GET/HEAD/OPTIONS)
-are refused with 403 when the request carries an `Origin` that isn't `chrome-extension://` or
-`moz-extension://`** (`RefuseWebPageWrites`): the extension's own pages and scripts without an
-Origin (curl) can write, a web page you visit cannot. CORS is `*` with private-network access
-allowed, so a page on https://f1tv.formula1.com can read from a server on the LAN.
+**Everything but a few reads is the extension's and scripts' alone** (`RefuseWebPages`): writes,
+and the GETs that start work or hand out what viewers did (`/api/f1tv`, `/api/sync`,
+`/api/timeline`, `/api/timing/session/*`, `/api/timing/content/*`, `/api/vod`, `/api/video`,
+`/api/diag`, anything not listed as open). Those need an `Origin` of `chrome-extension://` or
+`moz-extension://`, or no `Origin` and the header `X-Fone: 1` (the extension sends it on all its
+requests; curl and scripts add it: `curl -H 'X-Fone: 1' …`, as `tools/diag.py` does), else 403
+with `{"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) or
+send X-Fone: 1"}` (an extension from before 1.0.1 sends no `X-Fone`).
+A web page can send neither: its fetch() carries its own Origin, its `<img>`, `<script>`, links
+and forms can't carry a header, and a fetch() adding one needs a CORS preflight, which is refused.
+CORS allows the extension's origins only (with private-network access), so no page reads the
+server's answers either. Open to anyone: `/`, `/api/health`, `/api/channels`, the playlist and
+audio segments, `/api/danmaku` and the services' status and per-file results (`/api/timing/status`,
+`/api/danmaku/status`, `/api/backfill/status`, `/api/ads/{fid}`, `/api/screenclock/{fid}`).
 
 **Core**
 
 | | |
 |---|---|
 | `GET /` | status page (HTML): every recording, its extraction status and analysis notes |
-| `GET /api/health` | `{ok, recDir, files, now, services: [...]}` |
+| `GET /api/health` | `{ok, version, recDir, files, now, services: [...], notes: [...]}`; `version`: `FONE_VERSION`, else `dev`; `notes`: what the setup leaves out, in words (`config.notes`, also logged at start: no room in `FONE_ROOMS`, a recordings or import folder that isn't there; and no ffmpeg/tesseract for the replays' clock; an optional service that's on but couldn't start, e.g. a bad `FONE_BACKFILL_SKIP` regex, with why), shown by the options page's Test connection and the status page |
 | `GET /api/channels` | `[{name, files, latest, live}]`, newest first; `live` = a file is still growing |
-| `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}`. Cached in SQLite; an anchored replay never changes, everything else is re-checked after 10 min, and a re-check that can't make the exact anchor again (the archive refusing) keeps the cached one |
+| `GET /api/f1tv/{cid}[?refresh=1]` | an F1 TV video (`f1.py`): `{contentId, title, subtype: "LIVE"\|"REPLAY"\|…, duration, meetingKey, sessionKey, meetingName, sessionName, kind: "practice"\|"sprint_qualifying"\|"qualifying"\|"sprint"\|"race"\|null, scheduledStart, scheduledEnd, isSessionFeed, anchor: "multiviewer"\|"timing"\|"pdt"\|"preroll"\|null, p0, startedUtc, sessionStartVideo, timingStarted, channelOffsets: {channelId: seconds}, streams: [{channelId, type: "obc"\|"additional", title, number, name, team, color}]}` or `{…, error}` (anchors: the clock table above; `timingStarted`: the session's Started in the server's timing when it was looked up, used or not). Cached in SQLite; a replay anchored by the archive or the server's timing never changes, one on MultiViewer's start time (`pdt`) only to take the server's timing once it has it (a fraction of a second); everything else is re-checked after 10 min, or at once when the server's timing has a Started for the session it wasn't made with; a re-check that can't make as good an exact anchor again (the archive refusing, the timing gone) keeps the cached one |
 | `GET /api/sync/{cid}?channel=&clock=` | the delay to start from: `{delay, source: "content"\|"measured"\|"channel"\|"default"}`; `measured` adds `{screen, reaction, confidence, file}` |
-| `PUT /api/sync/{cid}` `{channel, clock, delay}` | save a tweak for that video (and clock) |
+| `PUT /api/sync/{cid}` `{channel, clock, delay}` | save a tweak for that video (and clock); `delay` a finite number within ±86400 s (422 otherwise) |
 | `GET /api/timeline?channel=&from=&to=` | the commentary between two wall times, below |
 | `GET /api/playlist.m3u8?files=a,b,…` | the files stitched into one HLS EVENT playlist (`#EXT-X-DISCONTINUITY` between files, `#EXT-X-ENDLIST` once all are finished) |
 | `GET /hls/{fid}/seg_NNNNN.ts` | an audio segment |
-| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline |
+| `POST /api/diag` `{client, build, platform, events: [{t, type, …}]}` · `GET /api/diag?client=&type=&since=&limit=` | playback diagnostics from the extension's engine; `tools/diag.py` reads them as a timeline. `t` is kept a finite number or null, `type` at most 40 characters; an event over 8000 bytes, or with a non-finite number, is kept as `{t, type, truncated}`; a day's file stops at 64 MB (later events stay in memory); a line a restart can't read is skipped, not the rest of its day |
 
 **Timing** (`timing.py`, `timing_state.py`, `livefeed.py`), prefix `/api/timing`
 
@@ -134,11 +173,11 @@ allowed, so a page on https://f1tv.formula1.com can read from a server on the LA
 | `GET /api/screenclock/{fid}` | `{delayScreen, n, confidence: "high"\|"medium"\|"low"\|"none", updated, basis, status, …}`; `delayScreen` = file wall time − the F1 feed UTC shown on screen |
 | `GET /api/video/{fid}/info` | `{id, name, growing, t0, a0, mOffset, duration, edge, width, height, codec, wallStart}`; `m = v + mOffset` converts this playlist's time `v` into the file's audio-HLS time |
 | `GET /api/video/{fid}/index.m3u8[?start=]` · `/seg/{a}_{b}.ts` | the recording's own picture and sound, cut at keyframes, no re-encode (VOD when finished, EVENT while growing); `202` + `Retry-After` while the FLV is being indexed |
-| `GET /api/backfill/status` | `{enabled, importDir, rooms, periods, jobs}` |
+| `GET /api/backfill/status` | `{enabled, importDir, rooms, periods, jobs}`; a period's `wanted` (a title it had while live is one to fill) and `skipped` (why it was left alone) |
 | `POST /api/backfill/import` `{"bvid"}` or `{"from", "to", "channel"}` | import a replay by hand (409 unless `FONE_ROOMS` and `FONE_IMPORT_DIR` are set) |
 | `GET /api/danmaku?channel=&from=&to=[&limit=]` | `{items: [{t, x, m: 1\|4\|5, s, c, u, ul?, ml?, wl?, g?, e?, em?, k?, p?}], live, room}`, oldest first, at most 6000 (see `danmaku.py` for the fields) |
 | `GET /api/danmaku/status` | rooms listened to, capture and archive state |
-| `GET /api/vod/clock?bvid=&key=[&slot=][&E=]` | where the streamer's Bilibili replay `bvid` runs on the event clock of session `key`, read off their screen: `{status: "working"\|"ok"\|"none"\|"error", readings: [{page, at, wall, text}], more, why}` (`wall`: the event time their screen showed `at` s into page `page`); `E` asks for a reading near that event time (vodclock below) |
+| `GET /api/vod/clock?bvid=&key=[&slot=][&E=]` | where the streamer's Bilibili replay `bvid` runs on the event clock of session `key`, read off their screen: `{status: "working"\|"ok"\|"none"\|"error", readings: [{page, at, wall, text}], more, why}` (`wall`: the event time their screen showed `at` s into page `page`); `E` asks for a reading near that event time. `none`: no timing for the session, no clock in it, frames that don't agree, or no ffmpeg/tesseract on the server; `error`: asked again later (vodclock below) |
 
 ### The timeline and the delay
 
@@ -184,18 +223,26 @@ cached calendar) or by the plan for one that just ended uncaptured, once it has 
 30 min; never over a capture or the archive (a complete archive, should F1 serve it again,
 still replaces a rebuild). OpenF1's tables (drivers, laps, intervals, position, stints, pit,
 race_control, weather, session_result, and each car's location within the session's window:
-~35 requests, one at a time 0.5 s apart, backing off on 429/5xx; a race ~100 MB down, ~12 MB
-stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
+~35 requests, one at a time 1 s apart, also from one session to the next, backing off on
+429/5xx, after a 429's `Retry-After` when it says longer; over 2 min, the rebuild is given up
+and no session's rebuild or car positions ask OpenF1 until it's over; a race ~100 MB down,
+~12 MB stored, ~70 s) are turned into the topics the state reads, each message at the moment the live
 feed would have shown it (a lap's time when the lap ends, a stint's tyre at the pit exit, the
 deleted laps after race control's message, Retired once the car has stopped), so the state at
 `t` never shows the future. Checked against the server's real archives of the 2026 Singapore
 practice, qualifying and race at 20 s steps: positions 100 %, qualifying and practice bests,
 gaps and last laps 100 %; what differs are the feed's own lags (the compound UNKNOWN for a few
 seconds after a pit exit, tyre ages batched a little late). A finished capture with no car
-positions (nobody relayed them from F1 TV) gets OpenF1's when the map asks. Nothing stored is
-pruned while the archive refuses (`maybe_prune` asks the year index first; when it answers,
-sessions stored more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and fetched again
-on demand). All are stored in the archive's format, one `<Topic>.jsonStream` per topic
+positions (nobody relayed them from F1 TV) gets OpenF1's when the map asks. Car positions
+relayed for a session the server isn't capturing (`FONE_TIMING_RECORD=0`, or the capture
+failed) are stored as meta `source: "relay"`: no timing of its own, so it never stands in the
+way of the archive or an OpenF1 rebuild (either replaces it, its writer closed first), the
+vodclock treats it as no timing, `state()` asks for a fetch once the session is over, and a
+capture's first message turns it into `live` on the relay's `t0`. Pruning (hourly,
+`maybe_prune`): sessions stored more than `FONE_TIMING_KEEP_DAYS` (30) days ago are deleted and
+fetched again on demand, OpenF1's rebuilds always, captures and archives only while F1's archive
+answers (it asks the year index first: while it refuses, a capture is the only copy left). All
+are stored in the archive's format, one `<Topic>.jsonStream` per topic
 (`HH:MM:SS.mmm<json>` lines, offsets from the session's `t0`), so one loader serves them all.
 Each row also carries `grid` (its `GridPos`, races) and `stints` (the car's tyre sets, oldest
 first: `{compound, laps, new}`; a pass through the pit lane on the same tyres folded into the
@@ -204,8 +251,12 @@ Anonymous access has everything except car positions; those come from the viewer
 login through `POST /positions` (the server never sees the token). `docs/f1-data-sources.md`
 has the endpoints and formats.
 
-**ads**: sponsor-reel detection per recording against the reference clips in
-`server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). Growing files are analysed segment by
+**ads**: sponsor-reel detection per recording, on the channels the clips were made for,
+against the reference clips in `server/fone/ads/` (`refs.npz`: fingerprints of the clips, built by `fone/ads/build_refs.py` from 8 kHz mono WAVs, plus `ads.json`, the manifest). The clips are one streamer's, so only
+their channel's recordings are matched: the bundled set's on its own channel
+(`ads.BUNDLED_CHANNELS`, 胡闹P房), a set in `FONE_ADS_REFS` on every channel, or on those
+`FONE_ADS_CHANNELS` names (`*`: all). Another channel's files aren't decoded and have no ad state
+(`adsAnalyzedTo` null, no mutes). Growing files are analysed segment by
 segment as the extractor lists them (a clip is known 2–3 s into its audio); finished files
 once. The extension mutes while the target `m` is inside a `mutes` span (live from the stream
 itself, while the wall time of the target is inside one's `w` span, padded by 1 s). Live, each
@@ -240,7 +291,17 @@ the streamer's own delay moves now and then (Q1 of that qualifying drifted up to
 Q2: their F1 TV buffering, a pause), so frames an hour apart may both be right and still
 disagree. Then, asked with `E` (the moment the extension plays) and no reading within 4 min of
 it, three frames there (once per moment; none where the clock doesn't run: before the session, a
-break). Readings are kept per replay and session in `<data>/vodclock/`. The 2026 Italian GP
+break). What each frame showed is kept per replay and session in `<data>/vodclock/` (with the
+OCR's version and the timing it was worked out from, `[source, t0]`); the event times are worked
+out afresh from the session's timing as it is, so a capture since replaced by the archive, say,
+is placed again from the frames already read, with no new download. The wait for the timing (up
+to 7 min: an OpenF1 rebuild) holds no frame slot (two replays read at once). `none` is for no
+timing at all, no clock in it or frames that don't agree (asked again after 6 h); timing that may
+still come (a rebuild queued, the archive yet to publish) and failed downloads are `error`, asked
+again after 60 s, doubling up to 6 h. A frame that can't be decoded or read is left unread alone;
+a fragment is streamed, at most the bytes asked for, within 120 s, and a mirror answering without
+`206` is refused. No ffmpeg or tesseract on the server: `none`, saying which. The latest 500
+replays are kept in memory, the rest read back from disk. The 2026 Italian GP
 race: a place 1.7 s from where its sound had put it, read in 11-80 s (Bilibili's mirrors);
 qualifying in 10 s, a moment's own reading in 4 s.
 
@@ -252,11 +313,22 @@ segments are the FLV bytes between two keyframes, remuxed by ffmpeg with timesta
 stream ends and the channel's recordings leave a gap over 60 s, the streamer's official
 replay (直播回放) is polled for up to 36 h, downloaded, de-duplicated, placed on the wall
 clock (aligned against what was recorded, else from the room's live time) and written as a
-recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`.
+recorder-style FLV into `FONE_IMPORT_DIR/<channel>/`. Only a live with a title the recorder
+gate keeps is filled by itself (`FONE_BACKFILL_RECORD` / `_SKIP`: compose passes the gate's
+`GATE_RECORD` / `GATE_SKIP`; empty, the gate's F1 words, `backfill.F1_TITLES`): any title it had
+while live will do, and a live with no title seen is filled. A game stream the gate stopped
+would otherwise read as one long gap. An import asked for by hand takes any live. A live logged
+by a server from before 1.0.1 is judged by the one title it kept (its first), and an automatic
+job such a server made for a live that isn't to fill expires before it asks Bilibili again.
 
 **danmaku**: an anonymous connection to each room's danmaku feed (`danmaku_feed.py`), written
 as JSON lines and indexed into SQLite, plus danmakus.com's archive for what the capture
-didn't hear (no levels, colours or stickers there). Served by send time.
+didn't hear (no levels, colours or stickers there). Served by send time. The capture file's
+`open` and `beat` lines say when it was listening (the spans the archive's items are checked
+against): a `beat` is written when Bilibili answers a heartbeat (op 3), not when one is sent,
+and 70 s with nothing received ends the connection (a half-open one still takes heartbeats) so
+the capture loop reconnects. An archive import runs in a thread, its items checked against the
+spans by bisection.
 
 ## Extension
 
@@ -501,9 +573,12 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   frames as an ADTS file through `OfflineAudioContext.decodeAudioData` at 8 kHz), around where
   the sound was last (or the lock has it): ±25 s until it's found, every 5 min, after two looks
   that missed, and after a sure match more than 1 s from where it was (till that's confirmed);
-  ±4 s otherwise. The stretch looked for is the newest; after a look that missed, every other
-  look an older one of the run (not a silent one), so the look reaches past where it was within
-  what's recorded (the streamer's latency grown past the commentary's lead).
+  ±4 s otherwise. On a replay whose start is only a guess till it's found (F1 TV's F1 Academy, F2
+  and F3 videos: no session of F1's own to anchor them, F1's pre-roll borrowed) the wide look is
+  ±4 min (`SND.FAR`), matched a stretch at a time (`FoneSound.locateLong`). The stretch looked
+  for is the newest; after a look that missed, every other look an older one of the run (not a
+  silent one), so the look reaches past where it was within what's recorded (the streamer's
+  latency grown past the commentary's lead).
   Nothing new heard since the last look: no look (old sound would only confirm old news). GCC-PHAT (both
   spectra whitened, 150–3600 Hz) gives one sharp peak where a quiet copy lines up; its height in
   standard deviations is how sure (`score`: ~4-5 with no copy, 10-30 for one 10-20 dB under the
@@ -514,8 +589,11 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   segment of a Bilibili replay, followed only ~50 s later). **⟳ resync sound** (the Sync row,
   `R`: `{type: 'resync'}`) looks again at once, widely, every `SND.QUICK` (3) s for up to
   `SND.RESYNC_MAX` (90) s, and takes the first sure match (jumped to unless it's within 50 ms);
-  by hand too (found once, then the delay it set is the user's to nudge). A Bilibili replay not
-  placed yet is looked for again. The panel says resyncing / resynced (`sound.resync`).
+  on a ±4 min look, the first two that agree, as any look does (`FoneSound.judge`'s `long`): so
+  long a look is sure on a repeat now and then (0.44 % of them on real replays, 2026-11, scoring
+  14-106, which no score or ratio to the runner-up leaves out), never two agreeing. By hand too
+  (found once, then the delay it set is the user's to nudge). A Bilibili replay not placed yet is
+  looked for again. The panel says resyncing / resynced (`sound.resync`).
 - **Getting there unheard** (`sndSteer`): the lock's offset is brought to the match plus your
   bias by a speed eased off 1× and back: `v` heads for `sign(err)·min(2 %, √(2·0.001·|err|))`,
   changing by at most 0.1 % a second (so it stops right there: 0.6 s took 78 s in the e2e). The
@@ -605,29 +683,53 @@ section):
   playing (`vodClockAt`) gives `T0 = wall + 50 − content(m) − 1.5` (`VOD.SCREEN`: their screen's
   clock runs ~1.5 s ahead of the sound they pass on; 1.2 and 1.7 s on the 2026 Italian GP race),
   the delay at 50 s, and sync by sound then finds the last second near there itself (no looks
-  over the hour). A reading within 4 min of the moment rules: a place off it by more than 15 s
-  (`VOD.TRUST`; sync by sound's own window is ±25 s) is moved there, whatever put it there (a
-  sound match, the place kept from last time); a further one only bounds: off by more than 2 min
-  (`VOD.BOUND`), moved. Sound's own placements must agree with it the same way, and while the
-  server still reads (up to 5 min) sound places only when sure at once: on 2026-11-17 a lap
-  replayed after qualifying matched F1 TV's sound at 13.9 (1.8× anything else) 28 min from
-  where the clock put that moment. Without a server, or a clock on the streamer's screen, by
-  sound alone as follows.
+  over the hour, on an exact anchor: see below for the pre-roll's guess). A reading within 4 min
+  of the moment rules: a place off it by more than 15 s (`VOD.TRUST`; sync by sound's own window
+  is ±25 s) is moved there, whatever put it there (a sound match, the place kept from last time);
+  a further one only bounds: off by more than 2 min (`VOD.BOUND`), moved. Sound's own placements
+  must agree with it the same way, and while the server still reads (up to 5 min) sound places
+  only when sure at once: on 2026-11-17 a lap replayed after qualifying matched F1 TV's sound at
+  13.9 (1.8× anything else) 28 min from where the clock put that moment. Without a server, or a
+  clock on the streamer's screen, by sound alone as follows.
+- **The clock on F1 TV's pre-roll guess.** Their screen tells the event time rightly; F1 TV's is
+  exact on an exact anchor (`multiviewer`, `timing` or `pdt`, the `multiviewer` clock's:
+  `FoneVod.anchorGuessed` is false for the same set as `FoneCore.exactAnchor`) but only a guess
+  on the pre-roll's, minutes off now and then (the 2026 Japanese GP race: F1 TV's
+  video began 599 s later than the pre-roll has it), and the clock's place is as far off, for all
+  of the video. So on the guess the clock's place is looked for again as a place by sound is
+  (`FoneVod.recheckDue`, below: sync by sound not finding it near there), over the hour and 20 min
+  more either side (`VOD.WIDER`, `FoneVod.lookWider`: the hour is around F1 TV's event time, as
+  far off; that race's moment lay 50 s past the hour's last stretch). A sure match there that
+  the clock refuses is kept (a likely place marked `sure`) and wins once it's found there again,
+  by another look (`FoneVod.foundAgain`) or by F1 TV's sound heard after it
+  (`FoneVod.checkLikely`): two agreeing, since a lone one is a repeat now and then
+  (`vodOverrule`; not while the server still reads). The clock is then put right by as much
+  (`FoneVod.clockShift`: `dE`, F1 TV's event time that far from the screen's), kept for the video
+  (`vodShift|<cid>`: `{dE, p0}`, moved with `p0` as F1 TV's anchor is refined,
+  `FoneVod.shiftOn`; none on an exact anchor), so it doesn't move the replay back, places the
+  replays after it rightly and asks the server for readings near the screen's own moment
+  (`E − dE`). On an exact anchor none of this: the clock rules as above.
 - **Where this moment is.** Found by sound: the newest 25 s of F1 TV's sound heard (sync by
   sound's runs, on the picture's time) looked for by `FoneSound.locate` at 4 kHz in 227 s
   stretches of every candidate (`FoneVod.searchPlan`: over the hour the replay may start in plus
   −2…+3 min of delay, nearest a guess of half an hour in and 50 s of delay first; three fetched at once,
   kept as 16-bit while it looks, the matching a stretch at a time so the rest of fone runs
   between; after five misses, all of each replay, then every eighth look: its stretches past the
-  hour's aren't kept, so the hour's stay). Taken when sure (score ≥ 9.5 and 1.5× anything else
-  anywhere; ≥ 14 and twice: at once): real sync-by-sound matches scored a median of 14
-  (2026-11-11). A look that isn't sure keeps its likeliest places (`FoneVod.keepLikely`: its top
-  three ≥ 7, the eight strongest kept), and each is checked (`FoneVod.checkLikely`) against F1
-  TV's sound heard after it, at least 12 s of it past the sound that found it (that sound would
-  find the same place again, right or not), looked for ±3 s around where the place says it now
-  is: found there again (within 0.3 s, ≥ 6.5) is where this moment is; checked ten times without,
-  let go. Checks run with every 8 s more of F1 TV's sound, between looks too. (The 2026 Italian
-  GP, F1 TV's Track FX against 胡闹P房's replay: the formation lap's look found the place at 11.8
+  hour's aren't kept, so the hour's stay). Every stretch of the hour is looked at before the best
+  is taken (`FoneVod.lookOver`): stopping at the first match sure at once (≥ 14, twice the rest so
+  far) stopped a sweep over real replays on a repeat (F1's music beds, a stretch the streamer
+  showed again) scoring 15-44 in all 7 of its wrong places, the place itself scoring 45-96
+  further on (2026-11: without the stop none wrong, and 0.62 % of looks for sound that isn't
+  there sure, not 0.97 %). A look over all of each replay stops at such a match only once the
+  hour's stretches are done. Taken when sure (score ≥ 9.5 and 1.5× anything else anywhere; ≥ 14
+  and twice when placed already, or while the server still reads the clock): real sync-by-sound
+  matches scored a median of 14 (2026-11-11). A look that isn't sure keeps its likeliest places
+  (`FoneVod.keepLikely`: its top three ≥ 7, the eight strongest kept), and each is checked
+  (`FoneVod.checkLikely`) against F1 TV's sound heard after it, at least 12 s of it past the
+  sound that found it (that sound would find the same place again, right or not), looked for ±3 s
+  around where the place says it now is: found there again (within 0.3 s, ≥ 6.5) is where this
+  moment is; checked ten times without, let go. Checks run with every 8 s more of F1 TV's sound,
+  between looks too. (The 2026 Italian GP, F1 TV's Track FX against 胡闹P房's replay: the formation lap's look found the place at 11.8
   but not sure, a broadcast replay of the start or the like scoring 10 elsewhere; the next minute
   under 7, then 10.9, 13.6, 23.6 at the same place; 6½ min to a place when only two looks in a
   row agreeing counted, and each look after the fifth fetched all 6 h of the replay again.) The
@@ -635,10 +737,13 @@ section):
   stream's nudge bias), `T0 = E + 50 − content(m)`, and sync by sound runs on it as on any replay,
   reading its sound from Bilibili (`vodRead`: segments by one range request, `FoneDemux.mp4Audio`
   to ADTS, decoded at 8 kHz). Where it was put (`T0`, delay) is kept per video and replay
-  (`vodPlace|<cid>|<bvid>`): the next time it starts there at once. Sync by sound not confirming a
-  place in 8 looks of its own (2 min) while hearing F1 TV: looked for again, playing on (then
-  every 10 min). Off the end (or start) of the replay playing: the streamer's next (previous)
-  one, kept or looked for. Placed by sound, the replay carries F1 TV's sound: F1 TV's own is
+  (`vodPlace|<cid>|<bvid>`; F1 TV's guessed anchor put right by sound, `vodShift|<cid>`, above):
+  the next time it starts there at once. Sync by sound not confirming a place in 8 looks of its
+  own (2 min) while hearing F1 TV: looked for again, playing on (then every 10 min;
+  `FoneVod.recheckDue`). That's a place by sound or one kept from before; one the clock made only
+  on F1 TV's pre-roll guess (above), over the hour and 20 min more either side, as a kept one is
+  then. Off the end (or start) of the replay playing: the streamer's next (previous) one, kept or
+  looked for. Placed by sound, the replay carries F1 TV's sound: F1 TV's own is
   turned off at once (`sound.carries`), not only once sync by sound locks (on the 2025 British GP
   its looks scored 5-6 for long stretches against Track FX, then 17-108). A nudge on a replay is
   kept for that replay (`soundBias|vod:<bvid>`), not the channel's: the streamer's setup then may
@@ -782,9 +887,23 @@ rollback). `chrome.storage.local` (per machine): `layout`
 (`'split'` | `'off'`), `onboards` (the two picked drivers), and the self-update's `updateSeen`,
 `lastReload`, `refreshF1tv`.
 
+First run: the service worker opens the options page on install (`onInstalled`, reason
+`install`; not on an update or a self-reload), which with nothing set shows how to start; later
+the panel's ⚙ asks it to (`{target: 'background', type: 'open-options'}`: a content script
+can't open it), highlighted while there's nothing to play from. The options page's logic is
+`FoneOptions` (`options.js`, tested by `options.test.js`): a server as typed gets `http://`
+where no scheme was typed and `:8788` where no port either, anything but http(s) is refused,
+and a save keeps the source that has something in it (a first run's server saved with "This
+computer" still checked is the server). A server line it can't use costs only the server
+list: that and `source` stay as saved (the box keeps what was typed, the message says which
+line and why), everything else on the page is saved. *Test connection* reads `/api/health` (the
+version and the setup's notes, where the server has them), `/api/channels` and
+`/api/danmaku/status` (whether the channel has a Bilibili room; from a server without notes, also
+that it has none at all).
+
 Self-update: a published build (`tools/publish_ext.sh`) carries `build.js` (read once at load),
-`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789) and
-reload into once it has been up for 75 s and no tab is playing, and `local.js` with that
-install's default servers (`self.FONE_LOCAL.servers`; the repository's copy is an empty
-placeholder, so a copy loaded straight from the repository asks for the server in its options
-page and never updates itself).
+`build.json`, which installed copies poll from the update channel (`fone-ext`, port 8789; the
+`ext-update` compose profile) and reload into once it has been up for 75 s and no tab is
+playing, and `local.js` with that install's default servers (`self.FONE_LOCAL.servers`; the
+repository's copy is an empty placeholder, so a release's zip or a copy loaded straight from the
+repository asks for the server in its options page and never updates itself).

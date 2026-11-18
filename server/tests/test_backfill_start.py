@@ -10,11 +10,10 @@ import pytest
 from fone.backfill_dedup import JoinFinder, Timeline, load_part, find_joins
 from fone.backfill_start import (ARRIVAL_LATENCY, JOIN_GAP_S, SR, AlignIndex, align, danmaku_origin, decode_8k,
                                  estimate_start, from_t0, parse_dmks_live, unpackb)
-from test_backfill_synth import synth  # noqa: F401  (fixture)
 
 FIX = Path(__file__).parent / "fixtures" / "backfill"
 REPLAY = Path(os.environ.get("FONE_TEST_KL_REPLAY", ""))  # the KL replay download (p1/p2_audio.m4a); unset: skipped
-KL_FLV = Path("/mnt/nas/media/library/recordings/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv")
+KL_FLV = Path(os.environ.get("FONE_TEST_KL_FLV", "/rec/fone/胡闹P房/20261003-150312-650-【胡闹P房】16点 巴林 排位赛.flv"))
 KL_W0 = 1791010992.737  # fone's wall clock of that recording's media 0
 
 

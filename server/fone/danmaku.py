@@ -22,6 +22,8 @@ GET /api/danmaku?channel=&from=&to=   the items sent in [from, to) (unix s), old
 from __future__ import annotations
 
 import asyncio
+import bisect
+import itertools
 import json
 import logging
 import os
@@ -29,6 +31,7 @@ import sqlite3
 import threading
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -230,8 +233,18 @@ class DanmakuStore:
         return n
 
 
-def covered(spans: list[tuple[float, float]], t: float) -> bool:
-    return any(a - SPAN_SLACK[0] <= t <= b + SPAN_SLACK[1] for a, b in spans)
+def covering(spans: list[tuple[float, float]]) -> Callable[[float], bool]:
+    """Whether t falls in a span (give or take SPAN_SLACK), for many t: the spans sorted once,
+    each t found by bisection (a live's thousands of items against KEEP_DAYS of spans)."""
+    spans = sorted(spans)
+    starts = [a for a, _ in spans]
+    reach = list(itertools.accumulate((b for _, b in spans), max))  # (the furthest any span so far ends)
+
+    def covers(t: float) -> bool:
+        i = bisect.bisect_right(starts, t + SPAN_SLACK[0]) - 1
+        return i >= 0 and t <= reach[i] + SPAN_SLACK[1]
+
+    return covers
 
 
 # ---- the capture files -> database ---------------------------------------------------------------
@@ -396,6 +409,15 @@ class DanmakuService:
                 await client.close()
         return self.uids[room] or None
 
+    def _import(self, room: int, raw: bytes) -> tuple[int, int, int]:
+        """A live's archive into the database, what the capture didn't hear: (added, items, not
+        heard). In a thread: a multi-hour live is seconds of pure-Python msgpack, not to be had
+        on the event loop (the /hls the commentary plays from waits on it)."""
+        items = archive_items(raw)
+        heard = covering(self.store.spans(room))
+        fresh = [it for it in items if not heard(it["t"])]
+        return self.store.add(room, fresh, "archive"), len(items), len(fresh)
+
     async def archive_once(self, http, now: float | None = None) -> int:
         from .backfill_bili import dmks_live_full, dmks_lives
 
@@ -412,14 +434,11 @@ class DanmakuService:
                 if not x["danmaku"]:
                     self.store.mark_imported(x["id"], room, x["start"], x["stop"], 0)
                     continue
-                items = archive_items(await dmks_live_full(http, x["id"]))
-                spans = self.store.spans(room)
-                fresh = [it for it in items if not covered(spans, it["t"])]
-                n = self.store.add(room, fresh, "archive")
+                n, total, fresh = await asyncio.to_thread(self._import, room, await dmks_live_full(http, x["id"]))
                 self.store.mark_imported(x["id"], room, x["start"], x["stop"], n)
                 self.status["archived"] += n
-                log.info("danmaku: archived live %s (%s): %d of %d items%s", x["id"][:8], x["title"], n, len(items),
-                         f" ({len(items) - len(fresh)} heard live)" if len(fresh) < len(items) else "")
+                log.info("danmaku: archived live %s (%s): %d of %d items%s", x["id"][:8], x["title"], n, total,
+                         f" ({total - fresh} heard live)" if fresh < total else "")
                 done += 1
             if done >= ARCHIVE_PER_TICK:
                 break

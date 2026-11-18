@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -12,8 +13,8 @@ from dataclasses import replace
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 
 from . import config, recordings
 from .extractor import Extractor, FileState, Piece
@@ -22,7 +23,9 @@ from .store import CLOCK_FAMILY, Store
 from .timeline import MIN_CLIP_SECONDS, MIN_FILL_SECONDS, content_span, mutes as ad_mutes, uncovered, union
 
 log = logging.getLogger("fone")
+VERSION = os.environ.get("FONE_VERSION") or "dev"  # a release's image is stamped with its own
 SEG_RE = re.compile(r"^seg_\d{5}\.ts$")
+MAX_DELAY = 86400.0  # no streamer's delay is further off than this
 # Screen-clock results good enough to beat the channel's calibrated default.
 MEASURED_CONFIDENCE = ("high", "medium")
 
@@ -40,6 +43,7 @@ def _timing():
     from .timing import TimingService, make_router
 
     svc = TimingService(cfg, mapper)
+    mapper.timing_started = svc.started  # (a replay's exact anchor from the session's own timing)
     return svc, make_router(svc)
 
 
@@ -93,14 +97,16 @@ def _build(name, build):
         return None
     try:
         svc, router = build()
-    except Exception:
+    except Exception as e:
         log.exception("%s disabled: failed to initialise", name)
+        FAILED[name] = str(e) or type(e).__name__
         return None
     routers.append(router)
     return svc
 
 
 routers: list = []
+FAILED: dict[str, str] = {}  # (a service that's on but couldn't start: why, for /api/health's notes)
 timing = _build("timing", _timing)
 ads = _build("ads", _ads)
 screenclock = _build("screenclock", _screenclock)
@@ -149,34 +155,65 @@ async def lifespan(_: FastAPI):
     await mapper.close()
 
 
-class RefuseWebPageWrites:
-    """Requests that change something come from the extension's own pages (Origin
-    chrome-extension://…) or from no browser at all (curl, scripts: no Origin). Any other
-    web page is refused: with CORS * and private-network access granted below, a page you
-    merely visit could otherwise re-tune your delays, write fake car positions into a live
-    session or start replay downloads (GBs, over the recorders' connection, into the NAS).
-    Reads stay open to everyone, as before."""
+EXTENSION_ORIGIN = r"(chrome|moz)-extension://[^/]+"  # the extension's pages (Chrome's, Firefox's)
 
-    EXTENSION = re.compile(r"^(chrome|moz)-extension://")
-    SAFE = {"GET", "HEAD", "OPTIONS"}
+
+class RefuseWebPages:
+    """What changes something, starts work or hands out what viewers did is for the extension
+    (an Origin of its own, chrome-extension://…) and for scripts (no Origin, and the header
+    X-Fone: 1, which curl, tools/ and the e2e harnesses send). A web page you merely visit is
+    refused: it could otherwise re-tune your delays, write fake car positions into a live
+    session, start replay downloads (GBs, over the recorders' connection, into the NAS) and
+    OpenF1 rebuilds of any session, extract old recordings, or read every viewer's playback.
+
+    A page can pass for neither. Its fetch() carries its own Origin. Its <img>, <script>, link,
+    form GET or no-cors fetch() carry no Origin, but no header of its choosing either; a fetch()
+    that adds one is a CORS request, whose preflight is refused (CORS below allows the
+    extension's origins only). Sec-Fetch-Site can't tell them apart: Chrome sends it only to
+    https and localhost, and a fone server is mostly plain http on the LAN or a VPN. (DNS
+    rebinding, a page's own name pointed at the server, makes its requests same-origin: that
+    isn't stopped here, Chrome's asking before a site reaches the local network is.)
+
+    Open to anyone (OPEN): GETs that start nothing (status, the channels) and the recordings'
+    audio for hls.js. The extension sends X-Fone on all of its requests anyway."""
+
+    EXTENSION = re.compile(EXTENSION_ORIGIN)
+    READ = frozenset({"GET", "HEAD"})
+    # (JSON, as every answer: an extension from before 1.0.1 sends no X-Fone and gets this, and
+    # whoever looks at the answer reads what to do rather than a bare 403)
+    REFUSAL = {"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) "
+                        "or send X-Fone: 1"}
+    OPEN = re.compile(r"^/(|api/(health|channels|playlist\.m3u8|danmaku|danmaku/status|timing/status|backfill/status"
+                      r"|ads/[^/]+|screenclock/[^/]+)|hls/[^/]+/[^/]+)$")
 
     def __init__(self, app):
         self.app = app
 
+    @classmethod
+    def trusted(cls, headers: dict[bytes, bytes]) -> bool:
+        origin = headers.get(b"origin")
+        if origin is not None:  # (a page's, "null" included; a script sends none)
+            return bool(cls.EXTENSION.fullmatch(origin.decode("latin-1")))
+        return headers.get(b"x-fone") == b"1"
+
+    @classmethod
+    def gated(cls, method: str, path: str) -> bool:
+        # (an OPTIONS here is no preflight, CORS answered those: FastAPI's 405)
+        return method != "OPTIONS" and not (method in cls.READ and cls.OPEN.match(path))
+
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] not in self.SAFE:
-            origin = next((v for k, v in scope["headers"] if k == b"origin"), None)
-            if origin is not None and not self.EXTENSION.match(origin.decode("latin-1")):
-                resp = PlainTextResponse("changes are only accepted from the fone extension", status_code=403)
-                return await resp(scope, receive, send)
+        if scope["type"] == "http" and self.gated(scope["method"], scope["path"]) and not self.trusted(dict(scope["headers"])):
+            resp = JSONResponse(self.REFUSAL, status_code=403)
+            return await resp(scope, receive, send)
         await self.app(scope, receive, send)
 
 
 app = FastAPI(title="fone", lifespan=lifespan)
-app.add_middleware(RefuseWebPageWrites)  # inside CORS, so its 403 still carries CORS headers
-# allow_private_network: Chrome preflights requests from public origins to LAN hosts.
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-                   allow_private_network=True)
+app.add_middleware(RefuseWebPages)  # inside CORS, so its 403 carries the extension's CORS headers
+# Only the extension's pages may read answers across origins, or send X-Fone. allow_private_network:
+# Chrome preflights requests from a public origin to a LAN host.
+app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN, allow_methods=["GET", "HEAD", "PUT", "POST"],
+                   allow_headers=["Content-Type", "X-Fone"], allow_private_network=True)
 for _router in routers:
     app.include_router(_router)
 
@@ -239,10 +276,23 @@ async def _measured(cid: str, channel: str) -> dict | None:
 # ---- routes ----------------------------------------------------------------
 
 
+def _notes() -> list[str]:
+    """What this server's setup leaves out that a viewer may wonder about: the configuration's
+    (config.notes, also logged at start: no room, a folder that isn't there) and the tools'.
+    The options page's Test connection and the status page show them."""
+    out = config.notes(cfg)
+    out += [f"{name} is off: it couldn't start ({why}); the server's log has the details"
+            for name, why in FAILED.items()]
+    if vodclock is not None and vodclock.missing:
+        out.append(f"No {' or '.join(vodclock.missing)} on the server: Bilibili replays aren't placed by the clock on "
+                   "the streamer's screen")
+    return out
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "recDir": str(cfg.rec_dir), "files": len(extractor.files), "now": time.time(),
-            "services": sorted(SERVICES)}
+    return {"ok": True, "version": VERSION, "recDir": str(cfg.rec_dir), "files": len(extractor.files),
+            "now": time.time(), "services": sorted(SERVICES), "notes": _notes()}
 
 
 @app.get("/api/channels")
@@ -265,9 +315,9 @@ async def f1tv(cid: str, refresh: bool = False):
 
 
 class SyncBody(BaseModel):
-    channel: str
-    clock: str
-    delay: float
+    channel: str = Field(max_length=200)
+    clock: str = Field(max_length=40)
+    delay: float  # (put_sync checks it: pydantic's own error would echo an Infinity back, unanswerable)
 
 
 @app.get("/api/sync/{cid}")
@@ -286,6 +336,10 @@ async def get_sync(cid: str, channel: str, clock: str):
 
 @app.put("/api/sync/{cid}")
 def put_sync(cid: str, body: SyncBody):
+    # (Python's json reads Infinity and NaN: stored, the channel's every comparable clock would
+    # start from it, and no answer can carry it)
+    if not abs(body.delay) <= MAX_DELAY:
+        raise HTTPException(422, f"delay must be a number of seconds within ±{MAX_DELAY:.0f}")
     store.set_delay(cid, body.channel, body.clock, round(body.delay, 3))
     return {"ok": True}
 
@@ -432,6 +486,7 @@ def index():
         "<!doctype html><meta charset=utf-8><title>fone</title>"
         "<style>body{font:14px system-ui;margin:2em}td{padding:4px 10px;border-bottom:1px solid #ddd}</style>"
         f"<h2>fone — {len(rows)} recordings in {html.escape(str(cfg.rec_dir))}</h2>"
-        "<table><tr><th>channel</th><th>file</th><th>status</th><th>audio</th><th>analysis</th><th>error</th></tr>"
+        + "".join(f"<p>⚠ {html.escape(n)}</p>" for n in _notes())
+        + "<table><tr><th>channel</th><th>file</th><th>status</th><th>audio</th><th>analysis</th><th>error</th></tr>"
         + "".join(rows) + "</table>"
     )

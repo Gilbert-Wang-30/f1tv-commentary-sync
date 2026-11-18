@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 SH = ZoneInfo("Asia/Shanghai")
 CHANNEL = "胡闹P房"
+SCRIPT = {"X-Fone": "1"}  # what a script sends for the routes only the extension and scripts may use
 
 
 def make_flv(path, seconds, realtime=False):
@@ -46,7 +47,7 @@ def server(tmp_path, monkeypatch):
     import fone.app
 
     app_mod = importlib.reload(fone.app)
-    with TestClient(app_mod.app) as client:
+    with TestClient(app_mod.app, headers=SCRIPT) as client:  # (as curl and tools/ ask)
         yield client, rec / CHANNEL
 
 
@@ -184,3 +185,160 @@ def test_sync_channel_default_only_from_comparable_clocks(server):
     put("1000011101", "epoch", 0.4)
     assert get("2", "multiviewer") == {"delay": 43.5, "source": "channel"}
     assert get("3", "epoch") == {"delay": 0.4, "source": "channel"}
+
+
+def test_sync_takes_only_a_finite_delay(server):
+    """Python's json reads 'Infinity': stored, it was every comparable clock's starting point,
+    and no answer can carry it (500s for the whole channel)."""
+    client, _ = server
+    q = {"channel": CHANNEL, "clock": "multiviewer"}
+    for bad in ("Infinity", "-Infinity", "NaN", "1e9"):
+        r = client.put("/api/sync/123", content=f'{{"channel": "{CHANNEL}", "clock": "multiviewer", "delay": {bad}}}',
+                       headers={"content-type": "application/json"})
+        assert r.status_code == 422, (bad, r.text)
+    assert client.put("/api/sync/123", json={"channel": "x" * 1000, "clock": "multiviewer", "delay": 1}).status_code == 422
+    assert client.get("/api/sync/456", params=q).json() == {"delay": 40.0, "source": "default"}
+    assert client.put("/api/sync/123", json={**q, "delay": -0.25}).status_code == 200
+    assert client.get("/api/sync/456", params=q).json() == {"delay": -0.25, "source": "channel"}
+
+
+EVIL = {"Origin": "https://example.com"}  # a page the viewer happens to visit
+EXT = {"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
+
+
+def test_web_pages_can_neither_write_nor_start_work(server):
+    client, _ = server
+    tl = {"channel": CHANNEL, "from": 0, "to": 1e12}  # (every recording extracted, were there any)
+    q = {"channel": CHANNEL, "clock": "multiviewer"}
+    # scripts (X-Fone: 1, as this client sends) and the extension (its Origin, or X-Fone: Chrome's
+    # fetch() GET to a host it may reach can come with no Origin)
+    assert client.get("/api/timeline", params=tl).status_code == 200
+    assert client.put("/api/sync/123", json={**q, "delay": 41}).status_code == 200
+    del client.headers["X-Fone"]
+    assert client.get("/api/timeline", params=tl, headers=EXT).status_code == 200
+    assert client.put("/api/sync/123", json={**q, "delay": 41}, headers=EXT).status_code == 200
+    # a page: by its fetch() (its Origin, X-Fone or not), or by an <img>, <script>, link, form or
+    # no-cors fetch(), which on a plain-http server come with no Origin and no Sec-Fetch-* at all
+    work = (("/api/timeline", tl), ("/api/f1tv/1000011024", {"refresh": True}), ("/api/sync/123", q), ("/api/diag", {}),
+            ("/api/vod/clock", {"bvid": "BV1ATbL6dEp9", "key": 11357}), ("/api/timing/session/11730/state", {"t": 1}),
+            ("/api/timing/content/1000011024", {}), ("/api/video/abc/info", {}))
+    for path, params in work:
+        for h in ({}, EVIL, {**EVIL, **SCRIPT}, {"Origin": "null"}, {"X-Fone": "0"},
+                  {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},  # (https)
+                  {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}):  # (typed in: tools/diag.py reads diag)
+            r = client.get(path, params=params, headers=h)
+            assert r.status_code == 403 and "access-control-allow-origin" not in r.headers, (path, h, r.status_code)
+        assert client.head(path, params=params).status_code == 403
+    assert client.put("/api/sync/123", json={**q, "delay": 1}).status_code == 403
+    assert client.put("/api/sync/123", json={**q, "delay": 1}, headers=EVIL).status_code == 403
+    assert client.post("/api/diag", json={"client": "x", "events": []}, headers=EVIL).status_code == 403
+    assert client.get("/api/sync/123", params=q, headers=SCRIPT).json()["delay"] == 41
+    # its fetch() can't add X-Fone: the preflight is refused; the extension's passes
+    pre = {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-fone",
+           "Access-Control-Request-Private-Network": "true"}
+    assert client.options("/api/timeline", headers={**EVIL, **pre}).status_code == 400
+    r = client.options("/api/timeline", headers={**EXT, **pre})
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == EXT["Origin"]
+    assert "x-fone" in r.headers["access-control-allow-headers"].lower() and r.headers["access-control-allow-private-network"] == "true"
+    r = client.options("/api/sync/123", headers={**EXT, "Access-Control-Request-Method": "PUT",
+                                                 "Access-Control-Request-Headers": "content-type,x-fone"})
+    assert r.status_code == 200
+    # other reads stay open to anyone, readable across origins by the extension alone
+    r = client.get("/api/health", headers=EVIL)
+    assert r.status_code == 200 and "access-control-allow-origin" not in r.headers
+    assert client.get("/api/health", headers=EXT).headers["access-control-allow-origin"] == EXT["Origin"]
+    assert client.get("/api/channels").status_code == 200
+    assert client.get("/").status_code == 200
+
+
+def test_a_refusal_says_what_to_do(server):
+    """An extension from before 1.0.1 (no X-Fone) on this server: the answer says why, in JSON."""
+    client, _ = server
+    del client.headers["X-Fone"]
+    want = {"error": "refused: not the fone extension. Update the fone extension (1.0.1 or later) or send X-Fone: 1"}
+    for r in (client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}),
+              client.get("/api/f1tv/1000011024", headers=EVIL),
+              client.put("/api/sync/123", json={"channel": CHANNEL, "clock": "multiviewer", "delay": 1})):
+        assert r.status_code == 403 and r.headers["content-type"] == "application/json" and r.json() == want
+    r = client.get("/api/timeline", params={"channel": CHANNEL, "from": 0, "to": 1}, headers=EXT)
+    assert r.status_code == 200  # (the rule itself as it was)
+
+
+def test_f1tv_for_a_session_with_no_key_of_its_own(server):
+    """F1 Academy, F2, F3: no session key, so the pre-roll of the session's kind, as the
+    extension's guess reads it (sessionKey null, anchor preroll: sound.js guessed())."""
+    import httpx
+
+    import fone.app
+    from fone.f1 import PREROLL
+    from test_f1 import feeder_metadata
+
+    client, _ = server
+    page = feeder_metadata("1000077807", "F1A Reverse Grid Race")
+    fone.app.mapper.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=page) if "f1tv.formula1.com" in str(r.url) else httpx.Response(404)))
+    r = client.get("/api/f1tv/1000077807")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["sessionKey"], out["anchor"], out["kind"], out["isSessionFeed"]) == (None, "preroll", "race", False)
+    assert out["p0"] == out["scheduledStart"] + PREROLL["race"]
+
+
+def test_what_is_open_to_anyone(server):
+    import fone.app
+
+    gate = fone.app.RefuseWebPages
+    for path in ("/api/vod/clock", "/api/timing/session/11730/state", "/api/timing/session/11730/positions",
+                 "/api/timing/session/11730/track", "/api/timing/content/1000011024", "/api/timeline",
+                 "/api/f1tv/1000011024", "/api/video/abc/info", "/api/video/abc/index.m3u8", "/api/video/abc/seg/x.ts",
+                 "/api/sync/123", "/api/diag", "/docs", "/openapi.json",
+                 "/api/diagnostics", "/api/timelines", "/api/health/x", "/api/hls/a/b", "/hls/a/b/c"):  # (and what's new)
+        assert gate.gated("GET", path) and gate.gated("HEAD", path), path
+    for path in ("/", "/api/health", "/api/channels", "/api/playlist.m3u8", "/hls/abc/seg_00000.ts",
+                 "/api/danmaku", "/api/danmaku/status", "/api/timing/status", "/api/backfill/status",
+                 "/api/screenclock/abc", "/api/ads/abc"):
+        assert not gate.gated("GET", path), path
+    assert gate.gated("PUT", "/api/sync/1") and gate.gated("POST", "/api/health") and not gate.gated("OPTIONS", "/api/diag")
+
+
+def test_health_says_the_servers_version(server, monkeypatch):
+    client, _ = server
+    import fone.app
+
+    assert client.get("/api/health").json()["version"] == (os.environ.get("FONE_VERSION") or "dev")  # (a checkout: dev)
+    monkeypatch.setattr(fone.app, "VERSION", "1.0.1")
+    assert client.get("/api/health").json()["version"] == "1.0.1"
+
+
+def test_health_says_what_the_setup_leaves_out(server, monkeypatch):
+    """(the options page's Test connection and the status page show these)"""
+    client, _ = server
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import fone.app
+
+    monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={}))
+    # (config.notes' words, the ones logged at start: said once)
+    assert [n for n in client.get("/api/health").json()["notes"] if "FONE_ROOMS" in n] == \
+        [n for n in fone.app.config.notes(fone.app.cfg) if "FONE_ROOMS" in n] != []
+    assert "FONE_ROOMS names no Bilibili room" in client.get("/").text
+    monkeypatch.setattr(fone.app, "cfg", replace(fone.app.cfg, rooms={23954427: CHANNEL}))
+    assert client.get("/api/health").json()["notes"] == []
+    monkeypatch.setattr(fone.app, "vodclock", SimpleNamespace(missing=["tesseract"]))
+    assert client.get("/api/health").json()["notes"] == [
+        "No tesseract on the server: Bilibili replays aren't placed by the clock on the streamer's screen"]
+
+
+def test_health_says_which_service_couldnt_start(server, monkeypatch):
+    """A setting it can't use (a bad FONE_BACKFILL_SKIP regex) leaves the service out; the notes
+    say so, not only the log's traceback."""
+    client, _ = server
+    import fone.app
+
+    monkeypatch.setattr(fone.app, "FAILED", {})
+    monkeypatch.setenv("FONE_BACKFILL_SKIP", "F1 (")
+    assert fone.app._build("backfill", fone.app._backfill) is None
+    (note,) = [n for n in client.get("/api/health").json()["notes"] if n.startswith("backfill")]
+    assert note.startswith("backfill is off: it couldn't start (FONE_BACKFILL_SKIP='F1 (' isn't a regex: ")
+    assert note.endswith("); the server's log has the details")

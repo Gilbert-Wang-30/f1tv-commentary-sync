@@ -2,37 +2,121 @@ name: CI
 
 on:
   push:
+    branches: ['**']   # a v* tag goes through release.yml, which runs this first
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command before a pipe fails the step
+
+concurrency:
+  # its own prefix (called from release.yml, github.workflow is the caller's), and the event: a
+  # release dry run on a branch isn't cancelled by a push to it. Only a pull request's run makes
+  # way for its next push. A push's group is its commit's own: a group holds one pending run, and
+  # a third push would otherwise cancel the second's while the first runs. So every commit on
+  # main and every tag gets a result.
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   extension:
     name: extension unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Most of the extension (offscreen.js, content.js, page.js, dashboard.js…) runs only in
+      # Chrome: parsing it is all CI can do, and a syntax error would ship otherwise.
+      - name: every script parses
+        run: |
+          for f in extension/*.js extension/vendor/*.min.js tools/*.js; do
+            node --check "$f" || { echo "::error file=$f::does not parse"; exit 1; }
+          done
+      # The release zip, built and thrown away: it fails when a file the manifest,
+      # background.js or a page loads is missing.
+      - name: package (every file the extension loads is there)
+        run: tools/build_ext.sh "$RUNNER_TEMP/ext"
       # livepos.test.js reads ../server/tests/fixtures, so the tests run from extension/
       # inside the full checkout.
       - name: run the unit tests
         working-directory: extension
         run: |
-          for t in core dashcore dmcore background livepos demux localcore recorder sound settings teamradio vod shotlayout; do
+          for t in *.test.js; do
             echo "== $t"
-            node "$t.test.js"
+            node "$t"
           done
 
   server:
     name: server tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Layers cached between runs: apk's ffmpeg and tesseract and the pip install are most of a
+      # cold build. A run reads the caches of its own branch and of main, so main's are the ones
+      # release.yml's image starts from. Not written from a tag: no later run could read it.
       - name: build the server image
-        run: docker build -t fone:ci server
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          load: true
+          tags: fone:ci
+          cache-from: type=gha,scope=server
+          cache-to: ${{ !startsWith(github.ref, 'refs/tags/') && 'type=gha,scope=server,mode=max' || '' }}
       # -rs lists the skipped tests: the ones that need a real recording (not in the
       # repository) skip here.
       - name: pytest
         run: |
           docker run --rm -v "$PWD/server":/app -w /app -e PYTHONDONTWRITEBYTECODE=1 fone:ci \
-            sh -c 'pip install -q pytest && python -m pytest -q -rs -p no:cacheprovider tests'
+            sh -c 'pip install -q pytest==9.2.0 && python -m pytest -q -rs -p no:cacheprovider tests'
+
+  recorder:
+    name: recorder tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # the gate's title filter and actions (gate.py is stdlib only)
+      - name: pytest
+        working-directory: recorder
+        run: |
+          pip install -q pytest==9.2.0
+          python -m pytest -q -p no:cacheprovider
+
+  checks:
+    name: release checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: version and changelog
+        run: python3 tools/check_version.py
+      - name: nothing personal committed
+        run: tools/check_public.sh
+      # ruff.toml at the root: E4/E7/E9/F. Not e2e/ yet.
+      - name: ruff
+        run: |
+          pip install -q ruff==0.17.5
+          ruff check --output-format=github server recorder tools
+      - name: release tools
+        run: python3 tools/test_release.py
+      - name: diag tool
+        run: python3 tools/test_diag.py
+      - name: actionlint (these workflows)
+        run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color
+      - name: shellcheck (release scripts)
+        run: shellcheck -S warning tools/build_ext.sh tools/check_public.sh tools/publish_ext.sh

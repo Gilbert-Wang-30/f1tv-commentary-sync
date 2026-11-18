@@ -57,7 +57,8 @@ async function getJSON(url, signal) {
     return r.json;
   }
   const timeout = AbortSignal.timeout(8000);
-  const opts = { cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
+  // (X-Fone: the extension's, not a web page's: the server answers these to it alone)
+  const opts = { cache: 'no-store', headers: { 'X-Fone': '1' }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
   // An iframe without the proxy can still reach a server Chrome knows is on the home network
   // (localhost is no mixed content to begin with).
   if (MODE === 'iframe' && !/^(localhost|127\.|\[::1\])/.test(new URL(url).host)) opts.targetAddressSpace = 'local';
@@ -360,7 +361,7 @@ function place(el, box) {
 // replay, or a server's recording), in a frame of its own behind the panels.
 const LOOK = { W: 960, H: 540, EVERY: 1500 }; // (the picture looked at at 960×540, every 1.5 s)
 const SRC = { pref: 'ours' };
-const shot = { frame: null, cv: {}, raf: 0, lay: null, cand: null, map: null, mapCand: null, bar: null, lookAt: 0, look: null, strip: null };
+const shot = { frame: null, cv: {}, raf: 0, lay: null, cand: null, parts: 0, map: null, mapCand: null, bar: null, lookAt: 0, look: null, strip: null };
 // (no session for the video, or one the server has no timing for)
 const noTiming = () => !!S.server && (!!(S.key && S.na) || (!S.key && !!S.cid && S.cids.has(`${S.server}|${S.cid}`)));
 function screenOn() {
@@ -392,12 +393,8 @@ function shotLook(src) {
   const d = FoneShot.detect(g.getImageData(0, 0, LOOK.W, LOOK.H), { cars });
   if (!d) return;
   // (a look that found only some of the layout's columns, the others there but not read this
-  // time: the layout as it was)
-  if (shot.lay && !FoneShot.same(d, shot.lay) && FoneShot.same(d, shot.lay, true)) shot.cand = null;
-  else if (!shot.lay || FoneShot.same(d, shot.lay) || FoneShot.same(d, shot.cand)) {
-    shot.lay = d;
-    shot.cand = null;
-  } else shot.cand = d;
+  // time: the layout as it was; the same ones look after look, ~12 s: a column closed)
+  Object.assign(shot, FoneShot.follow(shot, d));
   if (d.map) {
     if (shot.map && near(d.map, shot.map)) shot.mapCand = null; // (the same window: kept as it was)
     else if (!shot.map || near(d.map, shot.mapCand)) {
@@ -538,7 +535,7 @@ function shotMode(on) {
     shot.frame = f;
   } else if (!on && shot.frame) {
     shot.frame.remove();
-    Object.assign(shot, { frame: null, lay: null, cand: null, map: null, mapCand: null, bar: null });
+    Object.assign(shot, { frame: null, lay: null, cand: null, parts: 0, map: null, mapCand: null, bar: null });
     for (const c of Object.values(shot.cv)) c.remove();
     shot.cv = {};
   }

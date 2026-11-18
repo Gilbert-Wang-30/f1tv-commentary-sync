@@ -7,13 +7,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PW_IMAGE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
-IMAGE=${E2E_IMAGE:-fone:dev} # only for its ffmpeg
+. e2e/image.sh; IMAGE=$E2E_IMAGE # only for its ffmpeg
 WORK=$(mktemp -d)
 CAP="--cpus 2 --cpu-shares 256"
 cleanup() { docker run --rm -v "$WORK":/w alpine rm -rf /w/media >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-if [ "${E2E_BUILD:-1}" != 0 ]; then docker build -q -t "$IMAGE" server >/dev/null; fi
+e2e_image
 mkdir -p "$WORK/media/hls" "$WORK/media/fmp4" && chmod -R 777 "$WORK"
 
 echo "== generating the mock F1 TV video and the 'live' commentary streams (20 min: FLV, HLS TS and fMP4)"

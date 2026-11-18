@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 BASE=${PW_IMAGE:-mcr.microsoft.com/playwright/python:v1.63.0-noble}
 IMAGE=${LAYOUT_IMAGE:-fone-dev-layout-pw:latest} # $BASE + playwright + pillow, built once
 NAME=${LAYOUT_NAME:-fone-dev-layout-test}
-FFMPEG_IMAGE=${FFMPEG_IMAGE:-fone:latest} # any image with ffmpeg/libx264; only runs ffmpeg
+. e2e/image.sh # E2E_IMAGE: only its ffmpeg
 DASH=${DASH:-stub}
 WORK=$(mktemp -d)
 SHOTS=${SHOTS:-$(mktemp -d)}
@@ -35,9 +35,10 @@ RUN pip install -q --break-system-packages playwright==1.63.0 pillow
 EOF
 fi
 
+e2e_image
 echo "== test pattern video (16:9, yellow border)"
 mkdir -p "$WORK/media" && chmod 777 "$WORK/media"
-docker run --rm --cpus 2 --cpu-shares 256 -v "$WORK/media":/m "$FFMPEG_IMAGE" ffmpeg -v error -y -f lavfi \
+docker run --rm --cpus 2 --cpu-shares 256 -v "$WORK/media":/m "$E2E_IMAGE" ffmpeg -v error -y -f lavfi \
   -i "testsrc2=s=1280x720:r=25:d=30,drawbox=x=0:y=0:w=iw:h=ih:color=yellow:t=12" \
   -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 25 -movflags +faststart /m/test.mp4
 

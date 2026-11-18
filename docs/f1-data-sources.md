@@ -33,18 +33,30 @@ F1 live timing     ->  the UTC of that Started moment (SessionData.json, StatusS
 event_utc(p) = p0 + p,   p0 = started_utc - session_start
 ```
 
-Checked across the 2026 sessions, the anchor is consistent to under 0.5 s. Until MultiViewer
-publishes (live, and the first hours after a session) the fallback is
-`scheduledStart + PREROLL[kind]`, the replay's fixed pre-roll measured from every 2026 session
-(`−307.0` s qualifying, `−307.3` race, `−249.7` sprint, `−1162.3` sprint qualifying, `−1165`
-practice).
+Checked across the 2026 sessions, the anchor is consistent to under 0.5 s.
 
 F1's live-timing archive has answered 401 to everyone since 2026-10-18
-([below](#f1-live-timing-the-static-archive)), so the `Started` UTC can't be fetched while it
-refuses. Replays anchored before then stay exact (`f1.py` keeps a cached exact anchor); newer
-replays use the pre-roll estimate. The same goes for the stats: a session has timing only if
-the server captured it live (`FONE_TIMING_RECORD`), and nothing stored is pruned while the
-archive refuses (`timing.py`, `maybe_prune`).
+([below](#f1-live-timing-the-static-archive)), so the `Started` UTC comes, best first (the
+content's `anchor`), from:
+
+| anchor | `started_utc` |
+|---|---|
+| `multiviewer` | the archive's `SessionData.json` (`StatusSeries`): replays anchored before 2026-10-18, kept |
+| `timing` | the server's own timing of the session (`timing.py`, `TimingService.started`): the first `SessionStatus` `Started` of its live capture, archive copy or OpenF1 rebuild. Not a capture whose stream opens on `Started` (it connected after the start), and only within ±0.5 s of `session_start_pdt − PDT_LAG[kind]` when MultiViewer gives that (any kind's lag for a session of no kind known, a test's day; 2026 Mexico City FP3's late capture was 879 s off) |
+| `pdt` | `session_start_pdt − PDT_LAG[kind]`: 7.872 s for races and sprints, 7.469 s for the others, medians of 19 sessions of 2025-26 whose Started is known exactly, each within 0.17 s |
+
+The three are exact; a cached one is never traded for one further down, and a content anchored
+less well is looked up again as soon as the server's timing has the session's `Started`. Without
+`session_start` (live, and the first hours after a session), or with neither the timing nor a
+`session_start_pdt`, the fallback is `scheduledStart + PREROLL[kind]` (`preroll`), the replay's
+fixed pre-roll measured from every 2026 session (`−307.0` s qualifying, `−307.3` race, `−249.7`
+sprint, `−1162.3` sprint qualifying, `−1165` practice): right on the median, but up to ~6 s off on
+a session (+5.6 and +11.3 s on two 2025 races), and ten minutes off on one that started late
+(2026 Japanese GP race, +599 s).
+
+For the stats, a session has timing only if the server captured it live (`FONE_TIMING_RECORD`)
+or OpenF1 has it, and nothing captured is pruned while the archive refuses (`timing.py`,
+`maybe_prune`).
 
 ## F1 TV content API
 
@@ -85,9 +97,10 @@ https://api.multiviewer.app/api/v1/meetings/{meetingKey}/sessions/{sessionKey}
 | field | |
 |---|---|
 | `session_start` | replay position (s) of `SessionStatus: Started` in the main feed; absent until MultiViewer has synced the session, usually some hours after it |
-| `f1tv_content_id` | the main (session) feed's content id; fone treats a content as a session feed only when this matches |
+| `session_start_pdt` | a UTC (`2026-10-03T08:00:07.520Z`) that has run 7.30–8.02 s after the official `Started` on every session checked (races and sprints ~7.87 s, the others ~7.47 s): fone's `pdt` anchor, and the check on its `timing` one. Absent on some sessions (2026 Italian GP race) |
+| `f1tv_content_id` | the main (session) feed's content id; by November 2026 another video of the session for some, which F1 TV files under the race's own session key (the 2026 Italian GP race's post-race show, 1000011143; Singapore race's F1 Kids video, 1000079710; `sync_offsets.session_type` says `post_race_show`, `f1_kids`), where it had named the race's own |
 | `session_info.Path`, `.Name` | the live-timing archive path and the session name |
-| `sync_offsets.sync_offsets[]` | per stream `{streamData: {channelId, contentId}, diff}`: how far each channel runs from the main feed (seconds); onboards run ~7 s behind |
+| `sync_offsets.sync_offsets[]` | per stream `{streamData: {channelId, contentId, sessionKey}, diff}`: how far each channel runs from the main feed (seconds); onboards run ~7 s behind. fone treats a content as the session feed when these list it on the main channel (1025, INTERNATIONAL) for the session, or, only where they list none of the session's own (some list only another session's video: Singapore's FP1, 11378, lists 1000010188 for session 11236; or none), when `f1tv_content_id` is it |
 
 ```
 https://api.multiviewer.app/api/v1/circuits/{circuitKey}/{year}
@@ -102,9 +115,10 @@ live timing's `SessionInfo` (`Meeting.Circuit.Key`, `StartDate`).
 > **Since 2026-10-18 the archive answers `401` to every request** (a CloudFront function, for
 > every year and `Index.json` too); the live SignalR Core feed below still answers anonymously.
 > fone keeps what it has: sessions it captured live, and the exact replay anchors already in its
-> content cache (`f1.py` doesn't trade a known one for the pre-roll estimate). A replay it never
-> anchored gets the pre-roll estimate, and a session it never captured has no timing. While the
-> archive refuses, `timing.py` prunes nothing it has stored.
+> content cache (`f1.py` doesn't trade a known one for a lesser one). A replay it never anchored
+> is dated by the server's own timing of the session or by MultiViewer's `session_start_pdt`
+> ([above](#how-the-anchor-is-built)), and a session it never captured has OpenF1's timing or none.
+> While the archive refuses, `timing.py` prunes nothing it captured.
 
 *As used by fone* (`timing.py`, `f1.py`). Every session's timing feed is published as flat
 files about 20 minutes after it ends (403 until then), no auth until 2026-10-18, under

@@ -311,8 +311,12 @@ def make_app(mock: Mock) -> web.Application:
             entry["status"] = 503
             return web.Response(status=503, text="flaky")
         async with ClientSession() as s:
+            # (X-Fone as the extension sent it: its Origin isn't passed on, and fone refuses the
+            # positions and lookups to a request with neither)
+            fwd = {"Content-Type": req.headers.get("Content-Type", "application/json"),
+                   **({"X-Fone": req.headers["X-Fone"]} if "X-Fone" in req.headers else {})}
             async with s.request(req.method, FONE_URL + "/" + req.match_info["tail"], params=req.query, data=body,
-                                 headers={"Content-Type": req.headers.get("Content-Type", "application/json")}) as r:
+                                 headers=fwd) as r:
                 entry["status"] = r.status
                 return web.Response(status=r.status, body=await r.read(), content_type=r.content_type)
 

@@ -26,6 +26,7 @@ import shutil
 import statistics
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, tzinfo
 from pathlib import Path
 
 from .config import Config
@@ -184,6 +185,35 @@ def build_pieces(segs: list[Segment], lags: list[tuple[int, float]], fallback_la
             start = nxt.start
     pieces.append(Piece(wall=start + lag, media=start, duration=segs[-1].end - start))
     return pieces
+
+
+# Real UTC offsets, in hours: from UTC-12 (Baker Island) to UTC+14 (Kiribati's Line Islands).
+UTC_OFFSETS = (-12.0, 14.0)
+
+
+def zone_offset(lag: float, name_time: float, zone: tzinfo | None = None) -> float | None:
+    """Hours between the start a file's last write gives (lag: mtime - duration) and the one
+    its name gives, when that looks like a time zone and not a later touch: an hour or more,
+    a whole quarter-hour within two minutes (zones are whole quarter-hours apart), and a zone
+    that exists: the name is read in `zone` (FONE_FILENAME_TZ), so a recorder writing names
+    in another zone is off by just that, and that zone's own offset (`zone`'s plus this) is
+    within UTC_OFFSETS. A file touched days later is none of that (without `zone`: no two
+    zones are more than 26 h apart)."""
+    d = name_time - lag
+    q = round(d / 900)
+    if abs(d) < 3540 or abs(d - q * 900) > 120:
+        return None
+    if zone is None:
+        mine, (lo, hi) = 0.0, (UTC_OFFSETS[0] - UTC_OFFSETS[1], UTC_OFFSETS[1] - UTC_OFFSETS[0])
+    else:
+        mine, (lo, hi) = utc_hours(zone, name_time), UTC_OFFSETS
+    return q / 4 if lo <= mine + q / 4 <= hi else None
+
+
+def utc_hours(zone: tzinfo, t: float) -> float:
+    """`zone`'s UTC offset at t, in hours."""
+    off = datetime.fromtimestamp(t, zone).utcoffset()
+    return off.total_seconds() / 3600 if off is not None else 0.0
 
 
 class Extractor:
@@ -438,6 +468,11 @@ class Extractor:
             lo = rec.name_time - 30
             hi = rec.name_time + rec.name_precision + 30
             if not lo <= lag <= hi:  # mtime was touched later; trust the filename instead
+                tz = self.cfg.filename_tz
+                if (hours := zone_offset(lag, rec.name_time, tz)) is not None:
+                    log.warning("%s: its name puts its start %+g h from where its last write does, as if its "
+                                "recorder wrote names in UTC%+g: is FONE_FILENAME_TZ (%s) the zone it writes them "
+                                "in? Trusting the name", rec.relpath, hours, utc_hours(tz, rec.name_time) + hours, tz.key)
                 lag = rec.name_time + (rec.name_precision / 2 if rec.name_precision >= 60 else 0)
         return lag
 

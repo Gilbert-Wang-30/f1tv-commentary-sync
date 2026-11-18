@@ -489,7 +489,7 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
 
 def api(path, data=None, method=None):
     req = urllib.request.Request(SERVER + path, data=json.dumps(data).encode() if data else None,
-                                 method=method, headers={"content-type": "application/json"})
+                                 method=method, headers={"content-type": "application/json", "X-Fone": "1"})
     return json.load(urllib.request.urlopen(req, timeout=20))
 
 
@@ -618,7 +618,9 @@ async def main():
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             tempfile.mkdtemp(), channel="chromium", headless=True,  # full Chromium: the headless shell has no extensions
-            args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required"],
+            # (team radio asks OpenF1 for a session's messages: never from a test, its rate limit is shared)
+            args=["--load-extension=/ext", "--disable-extensions-except=/ext", "--autoplay-policy=no-user-gesture-required",
+                  "--host-resolver-rules=MAP api.openf1.org ~NOTFOUND"],
         )
         sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
         # (F1 TV's sound as 0.3.10 left it by default, 'mute': migrated to Track FX, the audio-track
