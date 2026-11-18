@@ -12,7 +12,7 @@ machines); those versions are summarised here from the git history.
 <!-- Release checklist for a section: say what changed for someone running fone, not which
      file moved; give it its date when the tag is cut (tools/check_version.py insists). -->
 
-## [1.0.1] - unreleased
+## [1.0.1] - 2026-11-18
 
 The first release for other people: the extension as a zip to load in Chrome, the server as an
 image to run with your own streamer, recorder and storage.
@@ -167,11 +167,15 @@ image to run with your own streamer, recorder and storage.
   panel shows only "HTTP 403".
 
 ### Known issues
-<!-- TODO(release owner): fill this in before the tag, or take the section out (tools/check_version.py
-     refuses a release whose section still has the marker). Each as someone running fone sees it. -->
-- TODO(release owner): sync by sound with F1 TV's sound as fone copies it (the fix on another
-  branch for how that copy is taken): merged before the tag, or listed here; and whatever else
-  the 1.0.1 checks leave open.
+- Sync by sound can be slow to lock, or ease back and forth by a few tenths of a second, on
+  some machines: fone's copy of F1 TV's sound is uneven there (every copy the page plays is
+  summed, and Chrome drops some of it). The fix is due in the next release; meanwhile the panel's
+  Sync row can be switched to by hand.
+- Live, the commentary can start up to ~25 s off when the streamer's own delay has changed since
+  your last session; sync by sound (or a nudge) puts it right.
+- F1 Academy, F2 and F3 replays have no published start, so fone starts from F1 TV's schedule and
+  sync by sound looks ±4 min to find the place: the first lock takes longer than on F1 sessions.
+- The arm64 server image is built and checked under emulation only.
 
 ## [0.5.4] - 2026-11-17
 
