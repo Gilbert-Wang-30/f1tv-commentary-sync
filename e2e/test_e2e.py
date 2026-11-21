@@ -93,10 +93,25 @@ TM_PAGE = """<!doctype html><title>F1 TV</title><body style="margin:0;background
   // Tiledmedia's player does: put right only when a quarter of a second off)
   const f1mode = new URLSearchParams(location.search).get('f1audio');
   const f1steady = new URLSearchParams(location.search).get('f1steady') === '1';
+  // (&f1eme=1: protected content, as F1 TV's live streams and newest replays are: no element's
+  // stream can be captured, captureStream throws as Chrome's does with EME. fone then has to
+  // take the sound through its own context, and plays it on through its own gain: __gainSets,
+  // what that gain is told, [target, time constant])
+  const f1eme = new URLSearchParams(location.search).get('f1eme') === '1';
+  if (f1eme) {
+    HTMLMediaElement.prototype.captureStream = function () { throw new DOMException('Stream capture not supported with EME', 'NotSupportedError'); };
+    window.__gainSets = [];
+    const setTarget = AudioParam.prototype.setTargetAtTime;
+    AudioParam.prototype.setTargetAtTime = function (v, t, tau) { window.__gainSets.push([v, tau]); return setTarget.call(this, v, t, tau); };
+  }
   if (f1mode === 'element') {
     window.__f1Off = null;
     (async () => {
       const el = new Audio();
+      window.__f1El = el; // (for a test to read how F1 TV's sound is played: its volume, its mute)
+      window.__gain0 = window.__foneTap?.gain() ?? null; // (fone's gain at the page's start: before page.js runs)
+      // the player's mute silences its element, so what fone hears of it too
+      setInterval(() => { el.muted = !!window.__player?.audioMuted; }, 50);
       while (window.__f1Off == null) await new Promise((r) => setTimeout(r, 200));
       el.src = '/media/f1.wav';
       await new Promise((r) => el.addEventListener('canplay', r, { once: true }));

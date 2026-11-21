@@ -1074,9 +1074,15 @@ function goLive(held = false, chase = false, pMax = null) {
 // for SND.LOST s: lost, the delay holds and it listens again. A nudge of yours on top of where the
 // sound puts it is kept (bias, per stream); one while it's still easing there takes from that first.
 const SND = { EVERY: 15, WIN: 25, WIDE: 25, FAR: 240, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
-  VMAX: 0.02, AMAX: 0.001, JUMP: 1.5, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0, SOON: 5, QUICK: 3, RESYNC_MAX: 90 };
+  VMAX: 0.02, AMAX: 0.001, JUMP: 0.15, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0, SOON: 5, QUICK: 1.5, RESYNC_MAX: 90,
+  HUNT: 6, HUNT_FOR: 150, LIKELY: 6, LIKELY_NEXT: 1.15, AGREE_LIKELY: 0.04, APART: 12, LAST: 8,
+  MIN: 2, SHORT: 3, FAST: 1, FAST_FOR: 30, SOLO: 10, SOLO_NEXT: 2 };
 // (SOON: the look after one that found it moved; QUICK: looks this often while a resync asked for
-// looks for it, given up after RESYNC_MAX s)
+// looks for it, given up after RESYNC_MAX s; HUNT: live, looks this often till it's first found,
+// for HUNT_FOR s; LIKELY…: looks short of sure that still count together, FoneSound.judge; MIN:
+// the shortest stretch looked for, till it's found: a look as soon as that much is heard, every
+// FAST s for the first FAST_FOR s, each with all that's heard by then; SOLO…: a first look strong
+// enough to be taken alone. So with F1 TV's sound plain in the stream it's found some 3 s in.)
 // (a Bilibili replay's own: the streamer's setup then may not be theirs now)
 const sndBiasKey = () => `soundBias|${S.timeline?.vod ? `vod:${S.timeline.vod}` : S.local && S.stream ? FoneStreams.parse(S.stream).key : `channel:${S.channel}`}`;
 // (and whether its stream has been heard to carry F1 TV's sound: F1 TV's own ducked from the start)
@@ -1093,7 +1099,8 @@ function sndStart() {
 function sndReset(why) {
   const bias = S.snd?.bias ?? 0, v = S.snd?.v ?? 0, carries = !!S.snd?.carries;
   S.snd = { runs: [], est: [], target: null, v, at: null, lock: S.liveLock, measAt: 0, wideAt: 0, miss: 0, accepted: 0, okAt: null,
-    heardAt: null, seen: null, busy: false, startedAt: now(), bias, carries, state: 'listening', last: null, why: why || null };
+    heardAt: null, seen: null, busy: false, startedAt: now(), bias, carries, state: 'listening', last: null, why: why || null, solo: false,
+    looks: S.snd?.looks || 0, full: S.snd?.full || 0 };
 }
 // The video reports kept a while: where F1 TV's picture was at a wall time.
 function vAt(w) {
@@ -1260,20 +1267,35 @@ const mAtDelay = (p, delay) => momentAt(C.eventTime(S.clock, S.content, p, null,
 // One look: the newest stretch of F1 TV's sound (older, when the newest would be looked for past
 // what's recorded yet), found in the stream around where the sound was last (or the lock has it).
 async function sndMeasure(t, vn) {
-  // (15 s looks till it's found, quicker to a first lock; 25 s once locked: stronger matches)
-  const WIN = S.snd?.target == null ? 15 : SND.WIN;
   const sn = S.snd, L = S.liveLock, pl = sndPlace(), src = sndSource();
   const r = sn.runs[sn.runs.length - 1];
   // (sn.why: what the last look came to, for the status and the diag)
   if (S.clock === 'edge' && !S.local) { sn.why = "live from the server's recording: not yet"; return; }
-  if (!pl || !src || !r || r.x.length < WIN * SND.SR) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
-  if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
-  sn.seen = { r, n: r.n };
   // (a replay whose start is only a guess till it's found: F1 TV's F1 Academy, F2, F3 videos, no
   // session of F1's own to anchor them, F1's pre-roll borrowed: ±SND.FAR s. The streamer passes
   // those broadcasts on whole, picture and sound, so their sound is found strongly there)
-  const guess = FoneSound.guessed({ live: pl.live, vod: !!S.timeline?.vod, clock: S.clock, sessionKey: S.content?.sessionKey, locked: sn.target != null });
-  const { wide, long, R } = FoneSound.lookRange({ locked: sn.target != null, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
+  const guess = !!pl && FoneSound.guessed({ live: pl.live, vod: !!S.timeline?.vod, clock: S.clock, sessionKey: S.content?.sessionKey, locked: sn.target != null });
+  // Till it's found (and for a resync): all that's heard in one go, from SND.MIN s on, up to 15 s
+  // while little is heard yet (a shorter stretch can be placed further either way in a recording
+  // just begun), the full 25 s from then on: a match half as strong again, F1 TV's sound being
+  // faint under the streamer's voice. Once it's held: the full 25 s. (A ±SND.FAR look: 15 s at
+  // least, so far a look on less finds repeats.)
+  const heard = r ? r.x.length / SND.SR : 0;
+  const hunting = sn.target == null || !!sn.solo || sn.quick != null;
+  const cap = heard < SND.WIN + (pl?.live ? 15 : 0) ? 15 : SND.WIN;
+  // Two looks in three take a short stretch instead, SND.SHORT s, the newest and then an old
+  // one: a short one's place is inside a recording just begun sooner, whichever way the delay
+  // it started from was wrong (all that's heard has its place there only once 15 s are).
+  const turn = sn.looks || 0, all = Math.min(cap, Math.floor(heard * 2) / 2);
+  const short = hunting && !guess && all - SND.SHORT >= 1 && turn % 3 !== 0;
+  const WIN = !hunting ? SND.WIN : short ? SND.SHORT : all;
+  if (!pl || !src || !r || heard < (!hunting ? WIN : guess ? 15 : SND.MIN)) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
+  if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
+  sn.seen = { r, n: r.n };
+  if (WIN >= 15) sn.full = (sn.full || 0) + 1; // (looks of a full stretch: what a replay's placing counts by)
+  // (a first place taken on one look, not seen again yet: still looked for widely, so the real
+  // one can take its place if that look was a repeat of the sound a few seconds off)
+  const { wide, long, R } = FoneSound.lookRange({ locked: sn.target != null && !sn.solo, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
   // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
   // a replay, the delay's mapping at p: it changes at the server's file boundaries)
   const cAt = (p) => {
@@ -1284,18 +1306,19 @@ async function sndMeasure(t, vn) {
   const { end, first } = src;
   const pNew0 = r.p0 + r.x.length / SND.SR - WIN, c = cAt(pNew0);
   if (c == null) { sn.why = 'not recorded there'; return; }
-  // The newest stretch of F1 TV's sound; after a look that missed, every other look an older one
-  // (as old as the run allows), so the look reaches R s past where it was within what's recorded:
-  // the streamer's latency grown by more than the commentary's lead puts the newest out of reach.
-  // (Not a silent one: F1 TV's sound may have started after the copy did.)
+  // Which stretch of F1 TV's sound (FoneSound.pickStretch): the newest whose place has the
+  // recording R s after it; in a recording just begun, the newest and the oldest turn about. A
+  // sure look waiting for a second (live): the newest stretch that place has recorded, so the
+  // next look confirms it. (Not a silent one: F1 TV's sound may have started after the copy did.)
   const pEnd = r.p0 + r.x.length / SND.SR, pNew = pEnd - WIN;
   const stretch = (p) => { const i = Math.round((p - r.p0) * SND.SR); return r.x.subarray(i, i + WIN * SND.SR); };
   let pa = pNew, x = stretch(pNew);
-  const pOld = Math.max(r.p0, Math.min(pNew, end - c - WIN - R));
-  // (also when the newest one's window would be cut short by what's recorded: no look, no miss)
-  if ((sn.miss % 2 === 1 || end - (pNew + c - R) < WIN + 2) && pOld < pNew - 1) {
-    const xo = stretch(pOld);
-    if (FoneSound.rms(xo) >= 1e-4) { pa = pOld; x = xo; }
+  const cand = pl.live && sn.target == null ? sn.est.findLast((e) => e.sure !== false && t - e.at < 30) : null;
+  const pPick = FoneSound.pickStretch(cand ? { p0: r.p0, pEnd, WIN, R: 2, c: cand.val, first, end }
+    : { p0: r.p0, pEnd, WIN, R: long ? SND.WIDE : R, c, first, end, turn: short ? (turn % 3) - 1 : Math.floor(turn / 3) });
+  if (pPick < pNew - 0.5) {
+    const xo = stretch(pPick);
+    if (FoneSound.rms(xo) >= 1e-4) { pa = pPick; x = xo; }
   }
   // (F1 TV silent: muted in its own player, or nothing on its sound)
   if (FoneSound.rms(x) < 1e-4) { sn.state = 'quiet'; sn.why = 'F1 TV silent'; return; }
@@ -1305,9 +1328,13 @@ async function sndMeasure(t, vn) {
   if (!(hi - lo >= WIN + 2)) { sn.why = 'not recorded there'; return; }
   sn.busy = true;
   try {
+    const began = performance.now();
     const PL = S.playlist, got = await src.read(lo, hi - lo);
     if (!got || S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while decoding'; return; }
-    const f = wide ? 2 : 1, sr = SND.SR / f;
+    // (a wide look at the full 8 kHz too: 0.1 s of work, and a third more match than at 4 kHz,
+    // where real looks came out at the threshold: half of them not sure, 2026-11. A ±SND.FAR
+    // one at 4 kHz, as ever: eight minutes of sound a look.)
+    const f = long ? 2 : 1, sr = SND.SR / f;
     const y = FoneSound.decimate(got.y, f), xx = FoneSound.decimate(x, f);
     let res;
     if (long) { // (±SND.FAR: a wide look's span at a time, the engine's tick let run between)
@@ -1315,6 +1342,7 @@ async function sndMeasure(t, vn) {
       if (S.snd !== sn || S.liveLock !== L || S.playlist !== PL) { sn.why = 'moved on while looking'; return; }
     } else res = FoneSound.locate(xx, y, sr);
     if (!res) { sn.why = 'no match computed'; return; }
+    sn.cost = (performance.now() - began) / 1000; // (what a look takes here: a slow machine looks less often)
     if (wide) sn.wideAt = t;
     const off = got.m0 + res.lag / sr - pa; // where F1 TV's sound for picture p is in the stream: p + off
     // What it says, in the place's own terms: live, that offset on the lock; a replay, the delay
@@ -1327,16 +1355,22 @@ async function sndMeasure(t, vn) {
     // (sure, and agreeing with another of the last few: FoneSound.judge; a resync asked for: the
     // first sure match will do, but for a ±SND.FAR look's: two agreeing, as ever)
     const J = FoneSound.judge(sn, { val, score: res.score, next: res.next, edge: res.edge, long }, t, SND), sure = J.sure;
-    sn.last = { at: t, off, val, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, sure, wide };
+    sn.last = { at: t, off, val, score: Math.round(res.score * 10) / 10, next: Math.round(res.next * 10) / 10, sure, likely: J.likely || undefined, wide };
     const r2 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
-    diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, wide, c: r2(ca) });
+    diag('sound', { off: r2(off), val: r2(val), score: sn.last.score, next: sn.last.next, sure, likely: J.likely || undefined, wide, c: r2(ca), back: r2(pNew - pa), win: WIN, why: J.why });
     sn.state = sn.target != null ? 'locked' : 'listening';
-    if (!sure) { sn.miss++; sn.why = J.why; return; }
+    sn.est = J.est;
+    // (short of sure: a miss, unless it's where it's locked (still there) or enough of them agree;
+    // a short stretch's, while it's still looked for: no miss either, the next has more to go on)
+    if (!sure && J.o == null) {
+      if (J.same) { sn.miss = 0; sn.okAt = t; } else if (WIN >= 15) sn.miss++;
+      sn.why = J.why;
+      return;
+    }
     // (found well away from where it was: look widely again till that's confirmed, and soon: the
     // commentary is that far off till then)
     sn.miss = J.far ? SND.MISSES : 0;
     if (J.far) sn.measAt = Math.min(sn.measAt, t - SND.EVERY + SND.SOON);
-    sn.est = J.est;
     sn.why = J.why;
     if (J.o == null) return;
     sn.miss = 0;
@@ -1347,6 +1381,7 @@ async function sndMeasure(t, vn) {
     const want = o + sn.bias, err = now_.live ? want - now_.cur : want - S.delay;
     const fresh = sn.target == null;
     sn.target = want;
+    sn.solo = !!J.solo; // (taken on one strong look alone: looked at again at once)
     // (a Bilibili replay: the nudges in the delay now the ones kept for its sound, what the clock leaves out)
     if (S.timeline?.vod && S.vod?.state === 'placed') S.vod.hand = sn.bias;
     sn.state = 'locked';
@@ -1401,9 +1436,42 @@ function sndCheck(t, v) {
   if (deaf) sn.state = 'deaf';
   else if (sn.state === 'deaf') sn.state = sn.target != null ? 'locked' : 'listening';
   if (sn.target != null && t - sn.okAt > SND.LOST) {
-    Object.assign(sn, { target: null, est: [], miss: 0, state: deaf ? 'deaf' : 'lost' });
+    Object.assign(sn, { target: null, solo: false, est: [], miss: 0, state: deaf ? 'deaf' : 'lost' });
     diag('sound', { lost: true });
   }
+}
+// Each tick, live and replays: a look every SND.EVERY s while F1 TV plays (oftener till it's first
+// found, and for a resync), and how it stands, for the panel (base.sound). Also while the
+// commentary for this picture hasn't arrived yet: where it really is may be found meanwhile.
+function sndTick(t, v, vn, base) {
+  const sn = S.snd;
+  // (a resync asked for: looks every SND.QUICK s, by hand too, till one is sure or it gives up)
+  if (sn?.quick != null && t - sn.quick > SND.RESYNC_MAX) {
+    Object.assign(sn, { quick: null, why: 'resync: not found' });
+    if (!S.soundOn) sn.state = 'off';
+    diag('sound', { resync: 'not found' });
+  }
+  if (!sn || !(S.soundOn || sn.quick != null)) return;
+  // Till it's first found (and till a first place taken on one look is seen again): a look every
+  // SND.FAST s for the first SND.FAST_FOR s, each with all that's heard by then; live, every
+  // SND.HUNT s for a while after; a machine a look takes long on, less often. A resync: SND.QUICK.
+  const unfound = sn.target == null || !!sn.solo, since = t - sn.startedAt;
+  const hunt = unfound && (since < SND.FAST_FOR ? SND.FAST : S.clock === 'edge' && since < SND.HUNT_FOR ? SND.HUNT : 0);
+  const every = sn.quick != null ? SND.QUICK : hunt ? Math.min(SND.EVERY, Math.max(hunt, 12 * (sn.cost || 0))) : SND.EVERY;
+  if (!sn.busy && t - sn.measAt >= every && !v.paused && !v.seeking && !v.waiting && (S.clock !== 'edge' || S.liveLock?.cid === S.cid)) {
+    sn.measAt = t;
+    sn.looks = (sn.looks || 0) + 1;
+    sndMeasure(t, vn);
+  }
+  sndCheck(t, v);
+  const pl = sndPlace(), err = sn.target != null && pl ? pl.err : null;
+  base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
+    v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
+    splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)),
+    // (the panel's Resync: looking, or just done)
+    resync: sn.quick != null ? 'looking' : sn.resyncedAt != null && t - sn.resyncedAt < 8 ? 'done' : null,
+    // (a Bilibili replay placed: it carries F1 TV's sound, it was found by it: F1 TV's own off)
+    carries: !!sn.carries || S.vod?.state === 'placed' };
 }
 // The commentary moved by d s on the lock (live) or the delay (a replay's clock): `seek`, at once
 // (the steering seeks), else as part of an eased correction (the speed carries it).
@@ -1684,7 +1752,7 @@ function vodFailed(url) {
 function vodPlace(V, r, T0, delay, how, hand = 0) {
   const was = V.state === 'placed' ? { rep: V.cur, T0: V.cur?.T0, delay: S.delay } : null;
   r.T0 = T0;
-  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.looks || 0, rechecks: 0, chunks: new Map(), cands: [], check: null });
+  Object.assign(V, { cur: r, how, placedAt: now(), looks0: S.snd?.full || 0, rechecks: 0, chunks: new Map(), cands: [], check: null });
   vodSay(V, 'placed', '');
   vodApply(V);
   // (a nudge on this replay's sound, kept for it: on top of where the sound puts it)
@@ -1695,7 +1763,7 @@ function vodPlace(V, r, T0, delay, how, hand = 0) {
   S.delay = P.delay;
   // (what sync by sound found, a delay on the old place, or one this place overrules: found again from here)
   if (sn && FoneVod.placeResets(was, { rep: r, T0, delay: S.delay })) {
-    Object.assign(sn, { target: null, est: [], miss: 0, state: sn.state === 'locked' ? 'listening' : sn.state });
+    Object.assign(sn, { target: null, solo: false, est: [], miss: 0, startedAt: now(), state: sn.state === 'locked' ? 'listening' : sn.state });
   }
   S.delaySource = 'sound';
   S.resync = true;
@@ -1936,7 +2004,7 @@ function vodTick(t, v, outside = false) {
   // The moment outside a place kept from before, no sound looks there: looked at again all the
   // same, a minute after it was put there at the soonest)
   const unsure = V.state === 'placed' && FoneVod.recheckDue({ how: V.how, locked: sn.target != null, rechecks: V.rechecks,
-    since: t - Math.max(V.lastTryAt ?? -Infinity, V.placedAt ?? -Infinity), looks: (sn.looks || 0) - (V.looks0 || 0),
+    since: t - Math.max(V.lastTryAt ?? -Infinity, V.placedAt ?? -Infinity), looks: (sn.full || 0) - (V.looks0 || 0),
     listening: sn.state === 'listening', outside, guessed: vodGuessed() }, { again: VOD.AGAIN, confirm: VOD.CONFIRM });
   if (!due && !unsure && !check) return;
   const Q = vodQuery(V);
@@ -2560,6 +2628,7 @@ function tick() {
       if (edge != null && m > edge - 1) {
         pauseAudio();
         Object.assign(base, { E, W, lead: edge - slack() - m, error: S.error, fixes: fixStats(), p: vn.p, at: t });
+        sndTick(t, v, vn, base); // (listening on: where the commentary really is may be found while it waits)
         return report({ ...base, state: 'waiting', text: `Commentary ${Math.ceil(m - edge + 1)}s behind` });
       }
       const first = S.timeline.pieces[0], last = S.timeline.pieces[S.timeline.pieces.length - 1];
@@ -2617,32 +2686,9 @@ function tick() {
   }
 
   S.lastTarget = map.m;
-  // sync by sound, live and replays: a look every SND.EVERY s while it plays (S.sndRef: where the
-  // commentary sits for the picture this tick); how it stands, for the panel
+  // sync by sound, live and replays (S.sndRef: where the commentary sits for the picture this tick)
   S.sndRef = { p: vn.p, m: map.m };
-  const sn = S.snd;
-  // (a resync asked for: looks every SND.QUICK s, by hand too, till one is sure or it gives up)
-  if (sn?.quick != null && t - sn.quick > SND.RESYNC_MAX) {
-    Object.assign(sn, { quick: null, why: 'resync: not found' });
-    if (!S.soundOn) sn.state = 'off';
-    diag('sound', { resync: 'not found' });
-  }
-  if (sn && (S.soundOn || sn.quick != null)) {
-    if (!sn.busy && t - sn.measAt >= (sn.quick != null ? SND.QUICK : SND.EVERY) && !v.paused && !v.seeking && !v.waiting && (S.clock !== 'edge' || S.liveLock?.cid === S.cid)) {
-      sn.measAt = t;
-      sn.looks = (sn.looks || 0) + 1;
-      sndMeasure(t, vn);
-    }
-    sndCheck(t, v);
-    const pl = sndPlace(), err = sn.target != null && pl ? pl.err : null;
-    base.sound = { state: sn.state, score: sn.last?.score ?? null, at: sn.last?.at ?? null, err: err == null ? null : Math.round(err * 1000) / 1000,
-      v: Math.round(sn.v * 10000) / 10000, bias: sn.bias, last: sn.last, miss: sn.miss, why: sn.why ?? null, looks: sn.looks || 0, breaks: sn.breaks || 0,
-      splices: sn.splices || 0, gap: sn.gap ?? null, runs: sn.runs.map((r) => Math.round(r.x.length / SND.SR)),
-      // (the panel's Resync: looking, or just done)
-      resync: sn.quick != null ? 'looking' : sn.resyncedAt != null && t - sn.resyncedAt < 8 ? 'done' : null,
-      // (a Bilibili replay placed: it carries F1 TV's sound, it was found by it: F1 TV's own off)
-      carries: !!sn.carries || S.vod?.state === 'placed' };
-  }
+  sndTick(t, v, vn, base);
   // by hand on a Bilibili replay: F1 TV's own sound still off (the replay carries it), nothing kept by it
   if (!S.soundOn && S.vod?.state === 'placed') base.sound = { state: 'off', carries: true, why: 'by hand' };
   // team radio, filled in: how it stands, for Details

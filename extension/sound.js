@@ -137,30 +137,77 @@
   // live, not a Bilibili replay; nothing found yet).
   const guessed = ({ live, vod, clock, sessionKey, locked }) => !live && !vod && clock === 'preroll' && sessionKey == null && !locked;
 
+  // Which WIN-long stretch of F1 TV's sound a look takes: where it starts. {p0, pEnd}: what was
+  // heard in one go; c: where its sound is thought to be in the stream (p + c); {first, end}: what
+  // is recorded; R: how far either side the look reaches. The newest stretch, when its place has
+  // R s of the recording after it; else the newest that has (older: the commentary only just
+  // arrived, F1 TV being about as live as the stream). A recording too short for R s both sides
+  // (just begun): turn about (`turn`, the look's number), the newest stretch (the most recorded
+  // before its place) and the oldest heard (the most after): either way the delay it started from
+  // may be wrong, and each is looked at every other time.
+  function pickStretch({ p0, pEnd, WIN, R, c, first, end, turn = 0 }) {
+    const pNew = pEnd - WIN;
+    const room = (p) => Math.min(p + c - first, end - (p + c + WIN));
+    if (room(pNew) >= R) return pNew;
+    const pAfter = Math.max(p0, Math.min(pNew, end - c - WIN - R));
+    return room(pAfter) >= R || turn % 2 ? pAfter : pNew;
+  }
+
   // One look's verdict. st: {target (the place it's locked on, null: none), bias (a nudge of yours
-  // on top), est (the sure looks of the last few minutes, [{at, val}]), quick (a resync asked
-  // for)}; m: the look {val (the place it found; null: not recorded there), score, next, edge,
-  // long (a ±P.FAR one: lookRange's)}; t: now. A look counts when it's sure (P.SCORE, P.NEXT × the
-  // runner-up, not at the window's edge) and agrees with another of the last few (P.AGREE s; a
-  // resync takes the first, but not a ±P.FAR one's: so long a look is sure on a repeat 0.44% of
-  // the time, at 14-106, which no P.SCORE or P.NEXT leaves out, and never twice agreeing: real
-  // replays, 2026-11). {sure, far (found well away from where it was), est (the new list), o
-  // (where to: the median of those agreeing; null: wait for another), why}.
+  // on top), est (the looks of the last few minutes that found a place, [{at, val, sure}]), quick
+  // (a resync asked for)}; m: the look {val (the place it found; null: not recorded there), score,
+  // next, edge}; t: now. A look is sure (P.SCORE, P.NEXT × the runner-up, not at the window's
+  // edge) or, short of that, likely (P.LIKELY, P.LIKELY_NEXT × the runner-up: F1 TV's sound faint
+  // under the streamer's voice puts look after look on the same place, none of them sure). A place
+  // is taken when the looks agreeing on it weigh enough: a sure one 2, a likely one 1, and 4 in all
+  // (3 till it's locked): two sure ones (P.AGREE s apart at most), a sure and a likely one, three
+  // likely ones (P.AGREE_LIKELY s). Likely ones count only P.APART s from the others: looks close
+  // in time share most of their sound, and its chance peaks. A resync takes the first sure look.
+  // The first place of all may be one strong look's alone (P.SOLO: `solo`, till seen again).
+  // {sure, likely, far (a sure look well away from where it was), same (a likely look where it's
+  // locked: still there), est (the new list), o (where to: the median of those agreeing; null:
+  // wait for another), why}.
   function judge(st, m, t, P) {
-    const sure = m.val != null && m.score >= P.SCORE && m.score >= P.NEXT * m.next && !m.edge;
-    if (!sure) return { sure, far: false, est: st.est, o: null, why: 'not sure' };
-    const far = st.target != null && Math.abs(m.val + st.bias - st.target) > 1;
-    const est = [...st.est.filter((e) => t - e.at < 180), { at: t, val: m.val }].slice(-4);
-    const agree = est.filter((e) => Math.abs(e.val - m.val) <= P.AGREE);
+    const ok = m.val != null && !m.edge;
+    const sure = ok && m.score >= P.SCORE && m.score >= P.NEXT * m.next;
+    const likely = ok && !sure && m.score >= (P.LIKELY ?? Infinity) && m.score >= (P.LIKELY_NEXT ?? 1) * m.next;
+    if (!sure && !likely) return { sure, likely, far: false, same: false, solo: false, est: st.est, o: null, why: 'not sure' };
+    // (locked on one look alone, not seen again yet, st.solo: as good as not locked for what may
+    // take its place)
+    const held = st.target != null && !st.solo;
+    const far = sure && st.target != null && Math.abs(m.val + st.bias - st.target) > 1;
+    const same = likely && st.target != null && Math.abs(m.val + st.bias - st.target) <= P.AGREE_LIKELY;
+    const est = [...st.est.filter((e) => t - e.at < 180), { at: t, val: m.val, sure }].slice(-(P.LAST ?? 4));
+    // (a ±P.FAR look, m.long: sure on a repeat 0.44% of the time, at 14-106, which no P.SCORE or
+    // P.NEXT leaves out, and never twice agreeing: real replays, 2026-11. Never taken alone.)
     const quick = st.quick != null && !m.long;
-    if (agree.length < 2 && !quick) return { sure, far, est, o: null, why: 'waiting for a second match' };
-    const o = quick ? m.val : agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
-    return { sure, far, est, o, why: quick ? 'resynced' : 'matched' };
+    if (quick && sure) return { sure, likely, far, same, solo: false, est, o: m.val, why: 'resynced' };
+    const isSure = (e) => e.sure !== false;
+    const agree = est.filter((e) => Math.abs(e.val - m.val) <= (sure && isSure(e) ? P.AGREE : P.AGREE_LIKELY ?? 0));
+    let weight = 0;
+    const counted = [];
+    for (let i = agree.length - 1; i >= 0; i--) {
+      const e = agree[i];
+      if (!counted.every((c) => (isSure(e) && isSure(c)) || Math.abs(c.at - e.at) >= (P.APART ?? 0))) continue;
+      counted.push(e);
+      weight += isSure(e) ? 2 : 1;
+    }
+    if (counted.length >= 2 && weight >= (held ? 4 : 3) && !quick) {
+      const o = agree.map((e) => e.val).sort((a, b) => a - b)[agree.length >> 1];
+      return { sure, likely, far, same, solo: false, est, o, why: sure ? 'matched' : 'matched, faintly' };
+    }
+    // One look alone, well over sure (P.SOLO, P.SOLO_NEXT × the runner-up), while nothing is held
+    // yet: taken at once (the delay it started from was a guess: there's nothing to lose by it, and
+    // seconds to gain), `solo` till a look agrees with it; another such look elsewhere takes its place.
+    if (sure && !held && !quick && !m.long && st.quick == null && m.score >= (P.SOLO ?? Infinity) && m.score >= (P.SOLO_NEXT ?? 1) * m.next) {
+      return { sure, likely, far, same, solo: true, est, o: m.val, why: 'matched (once)' };
+    }
+    return { sure, likely, far, same, solo: false, est, o: null, why: sure ? 'waiting for a second match' : same ? 'still there, faintly' : 'likely: waiting for more' };
   }
   // How far off where it plays a place found is jumped to rather than eased, in s: a resync's
   // (unless it's there already), the first lock's (the delay it started from was a guess), a
   // later one's (a step too big to ease: minutes out of sync).
   const jumpOver = ({ quick, fresh }, P) => (quick ? 0.05 : fresh ? P.JUMP : P.JUMP_LATER);
 
-  root.FoneSound = { fft, locate, locateLong, decimate, rms, pow2, lookRange, guessed, judge, jumpOver };
+  root.FoneSound = { fft, locate, locateLong, decimate, rms, pow2, lookRange, guessed, pickStretch, judge, jumpOver };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
