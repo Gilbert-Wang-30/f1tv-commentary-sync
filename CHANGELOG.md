@@ -12,6 +12,20 @@ machines); those versions are summarised here from the git history.
 <!-- Release checklist for a section: say what changed for someone running fone, not which
      file moved; give it its date when the tag is cut (tools/check_version.py insists). -->
 
+## [1.0.2] - 2026-11-21
+
+### Fixed
+- Sync by sound hears F1 TV's live streams again, and its newest replays (the first few hours
+  after a session). They are protected content, and Chrome refuses to copy a protected video's
+  sound ("Stream capture not supported with EME"): fone heard nothing of F1 TV there, the
+  panel's Sync row stayed at *can't hear F1 TV (its sound on?)*, and the commentary kept the
+  delay it started with. fone now takes that sound through its own audio context instead, so
+  on those streams F1 TV plays through fone's volume: F1 TV's mute button is carried out there
+  (F1 TV muted is still heard by sync by sound, and the mute is held through page loads), and
+  *Own sound: auto off* turns F1 TV's own sound off there while the stream carries it. It
+  starts once Chrome lets the page's audio run (a click or a key press in the page, when F1 TV
+  didn't start with sound by itself). Diagnostics show it as `route>…` in the tap's `seen`.
+
 ## [1.0.1] - 2026-11-18
 
 The first release for other people: the extension as a zip to load in Chrome, the server as an

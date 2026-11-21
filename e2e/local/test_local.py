@@ -20,6 +20,13 @@ the demuxers, the buffer, the MSE player and the live lock all run as they do fo
     server found muted by wall time; rewinding past what's recorded here and back again, in step
     with the picture; the stream refused here: back to the server's; off air when the page
     opened: the server's, and back to the stream once it's on air.
+
+LIVE_EME=1 (run.sh): the page with F1 TV's sound is protected content, as F1 TV's live streams
+and newest replays are. F1 TV plays its sound from a media element never put in the page, and
+no element's stream can be captured (the mock's ?f1audio=element&f1eme=1), so fone takes that
+element through its own audio context: heard there, found in the stream, and played on by
+fone's gain, which carries F1 TV's mute button and turns F1 TV's own sound down while the
+stream has it.
 """
 
 import asyncio
@@ -37,6 +44,7 @@ from playwright.async_api import async_playwright  # noqa: E402
 
 MEDIA = "/media"
 CID = "1000099901"
+EME = bool(os.environ.get("LIVE_EME"))  # (F1 TV's sound from an element whose stream can't be captured)
 HOSTS = ["api.live.bilibili.com", "cn-test-01.bilivideo.com", "hls.test", "f1tv.formula1.com", "fone.test"]
 _TLS = ssl.create_default_context()
 _TLS.check_hostname = False
@@ -87,7 +95,8 @@ async def main():
         page = await ctx.new_page()
 
         async def live_page(fl=32, noclock=False, f1audio=False):
-            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/test-race?action=play&tm=1&ev=live{'&noclock=1' if noclock else ''}{'&f1audio=1' if f1audio else ''}")
+            await page.goto(f"https://f1tv.formula1.com/detail/{CID}/test-race?action=play&tm=1&ev=live{'&noclock=1' if noclock else ''}"
+                            f"{('&f1audio=element&f1eme=1' if EME else '&f1audio=1') if f1audio else ''}")
             await page.wait_for_function("() => document.getElementById('v').readyState >= 3")
             # the live edge 20 s ahead of the playhead (the mock's default), and F1 TV's picture `fl` s
             # behind its own clock (32: where the real one starts, about)
@@ -406,7 +415,15 @@ async def main():
         mute = await page.evaluate("() => [window.__muteCalls.includes(true), window.__foneTap.gain(), window.__foneTap.live()]")
         E.check(mute == [False, 1, True] and "by sound" in (await page.evaluate(f"() => {E.PANEL}.getElementById('text').textContent")),
                 f"sync by sound: F1 TV's sound found in the stream, the commentary there ({placed(st, off0) * 1000:+.0f} ms, match {st['sound']['score']}), "
-                f"F1 TV's sound playing under it, its player not muted (mute calls, gain, heard: {mute})")
+                f"{'F1 TV not muted by fone' if EME else 'its sound playing under it'}, its player not muted (mute calls, gain, heard: {mute})")
+        if EME:
+            # Protected content: no stream of any element to be had, so F1 TV's sound (an element
+            # never put in the page) was taken through fone's own context, which plays it on
+            tp = await page.evaluate("""() => { const T = window.__foneTap, seen = Object.keys(T.seen());
+                return { route: seen.filter((k) => k.startsWith('route>')), capture: seen.filter((k) => k.startsWith('capture>')),
+                         own: T.own(), routed: T.routed(), err: T.err() }; }""")
+            E.check("route>audio:src:detached" in tp["route"] and not tp["capture"] and tp["own"] == "running" and tp["routed"] and tp["err"] is None,
+                    f"protected content (captureStream refused): F1 TV's sound taken through fone's own audio context, and played on by its gain ({tp})")
         # The streamer's latency moves 0.6 s: eased there, no seek, the speed off 1x by 2 % at most
         seeks0 = st["fixes"]["nSeeks"]
         off1 = off0 + 0.6
@@ -421,6 +438,22 @@ async def main():
         E.check(abs(placed(st, off1) - b0) < 0.03 and st["fixes"]["nSeeks"] == seeks0 and 0.003 < vmax <= 0.0201,
                 f"...its latency moved 0.6 s: eased there in {time.time() - t0:.0f}s ({(placed(st, off1) - b0) * 1000:+.0f} ms from the first lock), "
                 f"no seek ({st['fixes']['nSeeks'] - seeks0}), the speed at most {vmax * 100:+.1f}% off 1x")
+        if EME:
+            # F1 TV's own sound, off while the stream carries it: turned down by fone's gain (the
+            # element's volume would silence fone's copy with it), so still heard; kept on with the
+            # panel's Own sound: on, and off again with auto off
+            DUCK = ("() => [window.__foneTap.ducked(), window.__foneTap.duckFailed(), window.__f1El.volume, window.__f1El.muted, "
+                    "window.__gainSets.at(-1), window.__foneTap.live(), window.__foneTap.level() > 0.01]")
+            d0 = await E.wait_js(page, DUCK, lambda d: d[0] is True and d[4] == [0, 0.05], 15, "F1 TV's own sound off")
+            await page.evaluate(f"() => {E.PANEL}.querySelector(\"button[data-own='on']\").click()")
+            d1 = await E.wait_js(page, DUCK, lambda d: d[0] is False and d[4] == [1, 0.05], 10, "kept on")
+            await page.evaluate(f"() => {E.PANEL}.querySelector(\"button[data-own='auto']\").click()")
+            d2 = await E.wait_js(page, DUCK, lambda d: d[0] is True and d[4] == [0, 0.05], 10, "off again")
+            await asyncio.sleep(7)  # (past where a copy gone quiet with it would undo it: audiotap.js, 3-6 s)
+            d3 = await page.evaluate(DUCK)
+            E.check(d0 == d2 == d3 == [True, None, 1, False, [0, 0.05], True, True] and d1 == [False, None, 1, False, [1, 0.05], True, True],
+                    f"...F1 TV's own sound off while the stream carries it: by fone's gain (told {d3[4]}), its element's volume left at {d3[2]}, "
+                    f"still heard by fone ({d3}); the panel's Own sound: on keeps it on (told {d1[4]})")
         # A nudge on top is a preference: kept, not pulled back
         await page.keyboard.press("]")
         await asyncio.sleep(25)
@@ -493,7 +526,9 @@ async def main():
         # not muted, said in the panel; F1 TV's UI asks the new player (not muted) and is told muted
         # again, so its first press unmutes
         await live_page(fl=35, f1audio=True)
-        await E.wait_status(page, lambda s: s.get("state") == "sync", 30, "in sync after a page load")
+        st = await E.wait_status(page, lambda s: s.get("state") == "sync", 30, "in sync after a page load")
+        if EME:  # (its element plays, and fone takes it through its context, only once it has sound to play: where the stream has it now)
+            await page.evaluate(f"() => {{ window.__f1Off = {st['m'] + first - st['p'] - b0}; }}")
         m6 = await E.wait_js(page, TAP, lambda m: m[3] is True and "muted with F1 TV's button" in m[5], 20, "held after a page load")
         g0 = await page.evaluate("() => window.__gain0")
         await page.click("#f1mute")

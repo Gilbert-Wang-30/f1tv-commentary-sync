@@ -569,7 +569,7 @@ where its player happened to start.
 | In `.env` | Default | |
 |---|---|---|
 | `FONE_RECORDINGS` | (required) | the recordings' folder on the host, a folder per streamer: mounted read-only at `/rec`, except `fone-import/` (backfill's); fone's recorders write into `fone/`. Both must exist |
-| `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.1` | the server image (`docker compose build fone` builds `./server` under this name) |
+| `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.2` | the server image (`docker compose build fone` builds `./server` under this name) |
 | `FONE_PORT` | `8788` | the server's port on the host |
 | `FONE_BIND` | (every interface) | the host address the server's port (and fone-ext's) is published on: unset, every interface, IPv4 and IPv6; on a VPS a private one, a VPN's or `127.0.0.1`; an IPv6 one in brackets, `[::1]` ([Run a server](#1-the-server)) |
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |
@@ -719,6 +719,7 @@ docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https
 # (fone:e2e) first, E2E_IMAGE=<tag> E2E_BUILD=0 runs an image you built instead
 ./e2e/run.sh                  # real server + mock F1 TV player: replay, Tiledmedia, 2x, live, danmaku, onboards
 ./e2e/local/run.sh            # no server: the stream recorded in the browser (mock Bilibili, HLS) with a live F1 TV
+LIVE_EME=1 ./e2e/local/run.sh # ...F1 TV's sound as its protected streams play it (no stream capture: through fone's own audio context)
 ./tools/platform_check.sh     # any day, no F1 session needed: a stream live right now on each platform (Bilibili,
                               # Twitch, YouTube, Douyin, Huya, plain HLS) against the mock live F1 TV: in step,
                               # where the commentary sits, Go live after a pause, 20 s back and Go live again,

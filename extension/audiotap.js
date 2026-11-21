@@ -95,11 +95,20 @@
     T.taps.set(ctx, t);
     return t;
   }
+  // (fone's gain on the way to the speakers: F1 TV's mute, held by fone; and in fone's own
+  // context, where only elements fone plays through it are heard, route(), the duck as well)
+  const vol = (t) => (t.ctx === own && D.on && !D.failed ? 0 : T.gain);
   function addGain(t) {
     const g = t.ctx.createGain();
-    g.gain.value = T.gain;
+    g.gain.value = vol(t);
     connect.call(g, t.ctx.destination);
     t.g = g;
+  }
+  function setGains(tau) {
+    for (const t of T.taps.values()) {
+      if (!t.g) continue;
+      try { t.g.gain.setTargetAtTime(vol(t), t.ctx.currentTime, tau); } catch { t.g.gain.value = vol(t); }
+    }
   }
   const kind = (x) => { try { return x?.constructor?.name || typeof x; } catch { return '?'; } };
   function note(src, dest) {
@@ -155,6 +164,52 @@
   // copies a few ms apart sound like a flanger). The copy fone hears must not go with it: if the
   // level copied falls away within 3 s, turning it down deafens the copy too: undone, and not
   // tried again on this page.
+  // An element whose stream can't be captured: protected content (EME), which is F1 TV's live
+  // streams and its newest replays ("Stream capture not supported with EME"; the user's page,
+  // 2026-11-21: nothing of F1 TV heard all session, sync by sound deaf). Its sound is taken
+  // through fone's own context instead (createMediaElementSource does hear it): the element then
+  // plays through that context, by way of fone's gain there, as the page's own Web Audio would
+  // (F1 TV's mute held there, and the duck: its volume would silence the copy too). Only into a
+  // context that runs: one still suspended (no click or key in the page yet) would leave F1 TV
+  // silent. An element no longer playing anything is let go of (its source kept: an element can
+  // only ever have one), and the gain with the last of them.
+  const routed = new Map(); // element -> {src, on (copied and played on), idle}; null: not this way either
+  function route(el) {
+    let r = routed.get(el);
+    if (r === null) return;
+    const ctx = ownCtx();
+    if (ctx.state !== 'running') return;
+    if (!r) {
+      try {
+        r = { src: ctx.createMediaElementSource(el), on: false, idle: 0 };
+      } catch (e) {
+        routed.set(el, null);
+        T.err = `route: ${String(e?.message || e).slice(0, 80)}`;
+        return;
+      }
+      routed.set(el, r);
+      T.seen[`route>${mediaKind(el)}`] = (T.seen[`route>${mediaKind(el)}`] || 0) + 1;
+      if (T.err?.startsWith('capture:')) T.err = null; // (heard this way instead)
+    }
+    if (r.on) return;
+    const t = tapOf(ctx);
+    connect.call(r.src, t.sp);
+    connect.call(r.src, t.g);
+    r.on = true;
+    r.idle = 0;
+  }
+  function unrouteIdle() {
+    let on = 0;
+    for (const [el, r] of routed) {
+      if (!r?.on) continue;
+      r.idle = el.readyState === 0 && el.paused ? r.idle + 1 : 0;
+      if (r.idle < 10) { on++; continue; }
+      try { disconnect.call(r.src); } catch { /* gone */ }
+      r.on = false;
+    }
+    const t = own && T.taps.get(own);
+    if (!on && t?.g) { try { disconnect.call(t.g); } catch { /* gone */ } t.g = null; }
+  }
   const D = { on: false, at: 0, before: 0, vols: new Map(), failed: null };
   function duckTick() {
     if (D.on && !D.failed) {
@@ -164,6 +219,7 @@
       if (Date.now() - D.at > 3000 && Date.now() - D.at < 6000 && D.before > 0.01 && T.peak < D.before * 0.1) {
         D.failed = "fone's copy goes quiet with F1 TV's volume";
         unduck();
+        setGains(0.05);
       }
     }
   }
@@ -206,8 +262,15 @@
         // its sound from a <video> never put in the page, fed by a MediaSource in a worker): the
         // element's own output, captured (captureStream: a copy, the element left playing)
         let ms = el.srcObject instanceof MediaStream ? el.srcObject : caps.get(el);
-        if (!ms && typeof el.captureStream === 'function') {
+        if (!ms && !caps.has(el) && typeof el.captureStream === 'function') {
           try { ms = el.captureStream(); caps.set(el, ms); captured.add(el); T.seen[`capture>${mediaKind(el)}`] = (T.seen[`capture>${mediaKind(el)}`] || 0) + 1; } catch (e) { caps.set(el, null); T.err = `capture: ${String(e?.message || e).slice(0, 80)}`; }
+        }
+        // (no stream to be had of it, protected content: through fone's own context, route(); not
+        // fone's own onboard views, page.js's: other feeds of F1 TV's player, their engines no part
+        // of what the streamer hears)
+        if (!ms && caps.get(el) === null && !(el.srcObject instanceof MediaStream)) {
+          if (!el.closest?.('[data-fone-ob]')) route(el);
+          continue;
         }
         if (!ms) continue;
         for (const tr of ms.getAudioTracks()) {
@@ -221,6 +284,7 @@
         }
       }
       for (const [id, src] of fed) if (!now.has(id)) { try { disconnect.call(src); } catch { /* gone */ } fed.delete(id); }
+      unrouteIdle();
       if (own?.state === 'suspended') own.resume().catch(() => {});
     } catch (e) { T.err = String(e?.message || e).slice(0, 120); }
   }
@@ -231,10 +295,7 @@
     // fone's volume for F1 TV's sound (0: muted with F1 TV's own button), eased so it doesn't click
     setGain(v) {
       T.gain = v;
-      for (const t of T.taps.values()) {
-        if (!t.g) continue;
-        try { t.g.gain.setTargetAtTime(v, t.ctx.currentTime, 0.02); } catch { t.g.gain.value = v; }
-      }
+      setGains(0.02);
     },
     gain: () => T.gain,
     // F1 TV's sound goes through here (something connected to the speakers: fone's gain mutes it)
@@ -251,8 +312,9 @@
       if (on === D.on) return;
       D.on = on;
       if (on) { D.at = Date.now(); D.before = T.peak; duckTick(); } else unduck();
+      setGains(0.05); // (elements fone plays through its own context: turned down by its gain)
     },
-    ducked: () => D.on && !D.failed && captured.size > 0,
+    ducked: () => D.on && !D.failed && (captured.size > 0 || [...routed.values()].some((r) => r?.on)),
     duckFailed: () => D.failed,
     // the media elements seen playing (out of the page too)
     media: () => [...media].map((el) => `${mediaKind(el)}${el.srcObject?.getAudioTracks ? `(a${el.srcObject.getAudioTracks().length})` : ''}${el.paused ? '' : ':playing'}${el.muted ? ':muted' : ''}`),

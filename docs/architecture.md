@@ -514,7 +514,13 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   F1 TV's sound played by a second `<video>`, never in the page, fed by a MediaSource in a worker:
   a playing element that isn't playing a MediaStream is captured, `captureStream()`, a copy that
   leaves it playing; Chrome's capture is taken before the element's volume, so fone can turn
-  F1 TV's own sound down and still hear it: ducking, below),
+  F1 TV's own sound down and still hear it: ducking, below; protected content, EME, which is
+  F1 TV's live streams and its newest replays, refuses that: `captureStream()` throws "Stream
+  capture not supported with EME", and on the user's page of 2026-11-21 nothing of F1 TV was
+  heard all session; such an element is taken through fone's own context instead,
+  `createMediaElementSource`, once that context runs (suspended, it would leave F1 TV silent),
+  and plays on through fone's gain there as the page's own Web Audio would, the copy taken
+  before the gain; let go of 10 s after the element has nothing left to play),
   with a ScriptProcessor
   copy, box-resampled to 8 kHz mono, each chunk stamped with the wall time it's heard. Chrome
   takes `playbackTime` at the event's dispatch, late by render bursts and main-thread work and
@@ -548,8 +554,8 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   is held the same way for that player only (the gain to 0, not stored, let go when the player
   changes: as audible as F1 TV makes a new one), and a mute behind the gain (a press's, or that
   one a poll later, the gain down by then) is undone so the copy isn't silence; a mute is never
-  undone where it would be heard. Without the tap (F1 TV's sound not through Web Audio) F1 TV's
-  button works as it always has, fone out of it. page.js hands the copy over every second
+  undone where it would be heard. Without the tap (F1 TV's sound neither through Web Audio nor,
+  protected, through fone's own context) F1 TV's button works as it always has, fone out of it. page.js hands the copy over every second
   (`fone-f1audio`, Int16 base64) while content.js asks (`tap`: live, `soundSync` on), content.js
   passes it to the engine (`f1audio`).
 - **Ducking** (setting `soundDuck`, on; the panel's *Own sound: auto off / on*, and the
@@ -557,7 +563,9 @@ their latency grows: 4.4 s over the 2026-11-01 race, tuned by ear).
   carries F1 TV's sound in step with the commentary, so F1 TV's own copy would only double it
   (two copies a few ms apart sound like a flanger). content.js asks page.js (`duck` in the
   'audio' command; off again 10 s after the lock is lost) and audiotap.js turns the captured
-  elements' volume to 0, F1 TV's own volume put back after. If the level fone copies falls away
+  elements' volume to 0, F1 TV's own volume put back after (an element fone plays through its
+  own context, protected content, is turned down by fone's gain there instead: its volume
+  would silence the copy too). If the level fone copies falls away
   within 3 s of that, the copy goes with the volume: undone, and not tried again on that page.
 - **Where it was** (`offscreen.js` `sndHeard`, `vAt`): each chunk's wall time is put on F1 TV's
   position by the video reports kept for 90 s (`S.vhist`: both reports either side playing at 1×,
