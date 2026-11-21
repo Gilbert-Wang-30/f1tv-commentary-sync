@@ -569,7 +569,7 @@ where its player happened to start.
 | In `.env` | Default | |
 |---|---|---|
 | `FONE_RECORDINGS` | (required) | the recordings' folder on the host, a folder per streamer: mounted read-only at `/rec`, except `fone-import/` (backfill's); fone's recorders write into `fone/`. Both must exist |
-| `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.1` | the server image (`docker compose build fone` builds `./server` under this name) |
+| `FONE_IMAGE` | `ghcr.io/gilbert-wang-30/fone:1.0.2` | the server image (`docker compose build fone` builds `./server` under this name) |
 | `FONE_PORT` | `8788` | the server's port on the host |
 | `FONE_BIND` | (every interface) | the host address the server's port (and fone-ext's) is published on: unset, every interface, IPv4 and IPv6; on a VPS a private one, a VPN's or `127.0.0.1`; an IPv6 one in brackets, `[::1]` ([Run a server](#1-the-server)) |
 | `FONE_CPUS` | `0` | a cap on the server's CPUs (0: none) |

@@ -18,7 +18,7 @@ services:
   fone:
     # The released image. `docker compose build fone` builds it from ./server instead: give it
     # a name of your own (FONE_IMAGE=fone:dev) so a local build never passes for a release.
-    image: ${FONE_IMAGE:-ghcr.io/gilbert-wang-30/fone:1.0.1}
+    image: ${FONE_IMAGE:-ghcr.io/gilbert-wang-30/fone:1.0.2}
     build: ./server
     container_name: fone
     restart: unless-stopped
