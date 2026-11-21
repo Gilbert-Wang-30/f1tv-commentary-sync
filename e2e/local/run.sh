@@ -3,6 +3,10 @@
 # stream itself (mock Bilibili and HLS platforms, mock_streams.py) in step with a mock F1 TV
 # live player. No fone server anywhere. All in Docker.
 #   e2e/local/run.sh                     the mock platforms (offline): test_local.py
+#   LIVE_EME=1 e2e/local/run.sh          ...with F1 TV's sound as its protected streams play it (live,
+#                                        and its newest replays): from an element never put in the
+#                                        page whose stream can't be captured, so fone takes it
+#                                        through its own audio context
 #   e2e/local/run.sh real <live URL> ...  real streams (internet): real.py; E2E_OUT=<dir> keeps options.png
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -47,6 +51,6 @@ if [ "${1:-}" = real ]; then # the real platforms (real.py), streams given as th
   exit
 fi
 docker run --rm --cpus 4 --cpu-shares 256 --ipc=host \
-  -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro \
+  -v "$PWD/extension":/ext:ro -v "$PWD/e2e":/e2e:ro -v "$WORK/media":/media:ro -e LIVE_EME \
   "$PW_IMAGE" sh -c 'pip install -q --break-system-packages playwright==1.63.0 >/dev/null 2>&1
     python3 /e2e/local/mock_streams.py & sleep 1.5; python3 /e2e/local/test_local.py'

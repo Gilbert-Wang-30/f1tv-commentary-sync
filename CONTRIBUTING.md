@@ -108,6 +108,7 @@ timing from OpenF1 instead (~66 requests a run, to a rate-limited API).
 ```bash
 ./e2e/run.sh                  # replay, Tiledmedia, 2x, live, danmaku, onboards (with the seed above)
 ./e2e/local/run.sh            # no server: a live stream recorded in the browser (mock platforms, offline)
+LIVE_EME=1 ./e2e/local/run.sh # ...with F1 TV's sound as its protected (EME) streams play it: no stream capture
 ./e2e/livepos/run.sh          # the live car-position relay against a mock F1 feed
 DASH=real ./e2e/layout_run.sh # the split view on a mock F1 TV page
 ./e2e/dash_shots.sh           # dashboard screenshots in 20+ window sizes

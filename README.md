@@ -719,6 +719,7 @@ docker run --rm -v $PWD:/r -w /r node:22-alpine node tools/stream_probe.js https
 # (fone:e2e) first, E2E_IMAGE=<tag> E2E_BUILD=0 runs an image you built instead
 ./e2e/run.sh                  # real server + mock F1 TV player: replay, Tiledmedia, 2x, live, danmaku, onboards
 ./e2e/local/run.sh            # no server: the stream recorded in the browser (mock Bilibili, HLS) with a live F1 TV
+LIVE_EME=1 ./e2e/local/run.sh # ...F1 TV's sound as its protected streams play it (no stream capture: through fone's own audio context)
 ./tools/platform_check.sh     # any day, no F1 session needed: a stream live right now on each platform (Bilibili,
                               # Twitch, YouTube, Douyin, Huya, plain HLS) against the mock live F1 TV: in step,
                               # where the commentary sits, Go live after a pause, 20 s back and Go live again,
