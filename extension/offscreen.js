@@ -1293,7 +1293,9 @@ async function sndMeasure(t, vn) {
   if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
   sn.seen = { r, n: r.n };
   if (WIN >= 15) sn.full = (sn.full || 0) + 1; // (looks of a full stretch: what a replay's placing counts by)
-  const { wide, long, R } = FoneSound.lookRange({ locked: sn.target != null, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
+  // (a first place taken on one look, not seen again yet: still looked for widely, so the real
+  // one can take its place if that look was a repeat of the sound a few seconds off)
+  const { wide, long, R } = FoneSound.lookRange({ locked: sn.target != null && !sn.solo, sinceWide: t - sn.wideAt, misses: sn.miss, guess }, SND);
   // where the sound itself was, for picture p: at p + cAt(p) in the stream (live, the lock's offset;
   // a replay, the delay's mapping at p: it changes at the server's file boundaries)
   const cAt = (p) => {
