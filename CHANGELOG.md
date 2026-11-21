@@ -25,6 +25,21 @@ machines); those versions are summarised here from the git history.
   *Own sound: auto off* turns F1 TV's own sound off there while the stream carries it. It
   starts once Chrome lets the page's audio run (a click or a key press in the page, when F1 TV
   didn't start with sound by itself). Diagnostics show it as `route>…` in the tap's `seen`.
+- Sync by sound starts within seconds. It listened for 15 s before its first look and wanted
+  two looks 15 s apart that agreed, so half a minute at best. Now: a look as soon as 2 s of F1
+  TV's sound are heard, one a second for the first half minute (all that's heard so far, then a
+  short stretch at each end of it), and the first strong match is taken at once and checked by
+  the next. With F1 TV's sound plain in the stream that's about 3 s after it starts; while the
+  streamer talks over it, as soon as it comes through. A first place more than 0.15 s off is
+  jumped to rather than eased (it was 1.5 s); the panel's ⟳ resync looks every 1.5 s.
+- Sync by sound, live from a stream recorded in the browser, finds its place whichever way the
+  starting delay was wrong (it took one to three minutes when F1 TV was ahead of the stream, or
+  the stream ahead by more than thought): both ends of what has been heard are looked at in
+  turn, also while the commentary waits for the stream.
+- Looks short of sure that keep landing on the same place (F1 TV's sound faint under the
+  streamer's voice) count together: three of them, or one with a sure look, lock it.
+- A wide look matches at the full 8 kHz like a close one (it was halved): about a third more
+  match where real looks sat at the threshold.
 
 ## [1.0.1] - 2026-11-18
 
