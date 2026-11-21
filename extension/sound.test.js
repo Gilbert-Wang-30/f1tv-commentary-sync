@@ -193,3 +193,68 @@ test("the streamer's latency stepped 4.4 s (2026-11-01, over one race): found fa
 });
 
 chain.then(() => console.log(`${n} passed`), (e) => { console.error(e); process.exit(1); });
+
+// ---- faint sound, and which stretch a look takes (the engine's numbers) -------------------------
+const PL = { ...P, LIKELY: 6, LIKELY_NEXT: 1.15, AGREE_LIKELY: 0.04, APART: 12, LAST: 8 };
+
+test('looks short of sure on one place: three of them lock it, close in time they count once', () => {
+  const lk = (val, score = 6.8, next = 5) => ({ val, score, next, edge: false });
+  const st = { target: null, bias: 0, est: [], quick: null };
+  let J = S.judge(st, lk(-2.113), 100, PL);
+  assert.ok(!J.sure && J.likely && J.o === null && J.why === 'likely: waiting for more', JSON.stringify(J));
+  st.est = J.est;
+  J = S.judge(st, lk(-2.118), 106, PL); // (6 s on: mostly the same sound, it doesn't count yet)
+  assert.equal(J.o, null);
+  st.est = J.est;
+  J = S.judge(st, lk(-2.120), 112, PL);
+  assert.equal(J.o, null, 'two apart: not enough');
+  st.est = J.est;
+  J = S.judge(st, lk(-2.122), 124, PL);
+  assert.ok(J.o != null && Math.abs(J.o + 2.118) < 0.005 && J.why === 'matched, faintly', JSON.stringify(J));
+  // under 6, or barely over the runner-up, or elsewhere: nothing
+  assert.ok(!S.judge(st, lk(-2.12, 5.9), 140, PL).likely);
+  assert.ok(!S.judge(st, lk(-2.12, 6.5, 5.9), 140, PL).likely);
+  assert.equal(S.judge({ ...st, est: [] }, lk(7.5), 140, PL).o, null);
+  // a sure look and a likely one: enough till it's locked, not to move it once it is
+  const one = [{ at: 100, val: 4.613, sure: false }];
+  assert.ok(S.judge({ target: null, bias: 0, est: one, quick: null }, lk(4.62, 9, 5), 115, PL).o != null);
+  assert.equal(S.judge({ target: 9, bias: 0, est: one, quick: null }, lk(4.62, 9, 5), 115, PL).o, null);
+  // locked: a likely look on the place it holds says it's still there; a resync wants a sure one
+  J = S.judge({ target: 4.9, bias: 0.3, est: [], quick: null }, lk(4.62), 200, PL);
+  assert.ok(J.same && J.o === null && J.why === 'still there, faintly');
+  assert.equal(S.judge({ target: null, bias: 0, est: st.est, quick: 1 }, lk(-2.12), 130, PL).o, null);
+});
+
+test('which stretch a look takes: the newest its place has recorded; a recording just begun, both ends in turn', () => {
+  const pick = (o) => Math.round(S.pickStretch({ p0: 1000, pEnd: 1070, WIN: 25, R: 4, c: 500, first: 1400, end: 1580, ...o }) * 10) / 10;
+  assert.equal(pick({}), 1045); // (10 s recorded past the newest one's place: the newest)
+  assert.equal(pick({ end: 1571.5 }), 1042.5); // (1.5 s past it only: one 2.5 s older)
+  assert.equal(pick({ R: 25, end: 1576 }), 1026); // (looking widely, 6 s past it: 19 s older)
+  // a recording just begun (22 s of it, as much heard): the newest 15 s, then the oldest, in turn
+  const young = { R: 25, WIN: 15, p0: 1000, pEnd: 1022, first: 1500, end: 1522 };
+  assert.equal(pick({ ...young, turn: 4 }), 1007); // (sees a place up to 7 s earlier than thought)
+  assert.equal(pick({ ...young, turn: 5 }), 1000); // (…and up to 7 s later)
+  // a sure look waiting for its second, found 9.85 s later than thought: the newest stretch that place has recorded
+  assert.equal(pick({ ...young, pEnd: 1034, end: 1534, c: 509.85, R: 2 }), 1007.2);
+});
+
+test('the first place of all: one strong look alone takes it, seen again it holds; a weaker one waits', () => {
+  const PS = { ...PL, SOLO: 10, SOLO_NEXT: 2 };
+  const lk = (val, score, next = 4.5) => ({ val, score, next, edge: false });
+  // strong, nothing held: at once, on its own
+  let J = S.judge({ target: null, bias: 0, est: [], quick: null }, lk(4.62, 14), 3, PS);
+  assert.ok(J.sure && J.solo && J.o === 4.62 && J.why === 'matched (once)', JSON.stringify(J));
+  // sure but not that strong (or too near its runner-up): waits for a second, as ever
+  assert.equal(S.judge({ target: null, bias: 0, est: [], quick: null }, lk(4.62, 9.5), 3, PS).o, null);
+  assert.equal(S.judge({ target: null, bias: 0, est: [], quick: null }, lk(4.62, 11, 6), 3, PS).o, null);
+  // held on that one look: the next that agrees makes it a place like any other
+  const st = { target: 4.62, bias: 0, solo: true, est: J.est, quick: null };
+  let K = S.judge(st, lk(4.625, 9), 4, PS);
+  assert.ok(K.o != null && !K.solo && K.why === 'matched', JSON.stringify(K));
+  // ...another strong look elsewhere takes its place; a weaker one elsewhere only waits
+  K = S.judge(st, lk(-2.1, 15), 4, PS);
+  assert.ok(K.solo && K.o === -2.1);
+  assert.equal(S.judge(st, lk(-2.1, 9), 4, PS).o, null);
+  // once a place is held by two, one strong look elsewhere doesn't move it
+  assert.equal(S.judge({ target: 4.62, bias: 0, solo: false, est: J.est, quick: null }, lk(-2.1, 15), 20, PS).o, null);
+});
