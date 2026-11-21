@@ -1076,7 +1076,7 @@ function goLive(held = false, chase = false, pMax = null) {
 const SND = { EVERY: 15, WIN: 25, WIDE: 25, FAR: 240, NEAR: 4, REWIDE: 300, MISSES: 2, SCORE: 8, NEXT: 1.6, AGREE: 0.08, KEEP: 75, SPLICE: 0.02, BREAK: 1,
   VMAX: 0.02, AMAX: 0.001, JUMP: 0.15, JUMP_LATER: 3, LOST: 600, DEAF: 30, SR: 8000, DECODE_LAG: 0, SOON: 5, QUICK: 1.5, RESYNC_MAX: 90,
   HUNT: 6, HUNT_FOR: 150, LIKELY: 6, LIKELY_NEXT: 1.15, AGREE_LIKELY: 0.04, APART: 12, LAST: 8,
-  MIN: 2, FAST: 1, FAST_FOR: 30, SOLO: 10, SOLO_NEXT: 2 };
+  MIN: 2, SHORT: 3, FAST: 1, FAST_FOR: 30, SOLO: 10, SOLO_NEXT: 2 };
 // (SOON: the look after one that found it moved; QUICK: looks this often while a resync asked for
 // looks for it, given up after RESYNC_MAX s; HUNT: live, looks this often till it's first found,
 // for HUNT_FOR s; LIKELY…: looks short of sure that still count together, FoneSound.judge; MIN:
@@ -1283,7 +1283,12 @@ async function sndMeasure(t, vn) {
   const heard = r ? r.x.length / SND.SR : 0;
   const hunting = sn.target == null || !!sn.solo || sn.quick != null;
   const cap = heard < SND.WIN + (pl?.live ? 15 : 0) ? 15 : SND.WIN;
-  const WIN = hunting ? Math.min(cap, Math.floor(heard * 2) / 2) : SND.WIN;
+  // Two looks in three take a short stretch instead, SND.SHORT s, the newest and then an old
+  // one: a short one's place is inside a recording just begun sooner, whichever way the delay
+  // it started from was wrong (all that's heard has its place there only once 15 s are).
+  const turn = sn.looks || 0, all = Math.min(cap, Math.floor(heard * 2) / 2);
+  const short = hunting && !guess && all - SND.SHORT >= 1 && turn % 3 !== 0;
+  const WIN = !hunting ? SND.WIN : short ? SND.SHORT : all;
   if (!pl || !src || !r || heard < (!hunting ? WIN : guess ? 15 : SND.MIN)) { sn.why = !r || !pl || !src ? 'nothing to look in' : 'too little heard in one go'; return; }
   if (sn.seen?.r === r && sn.seen.n === r.n) { sn.why = 'nothing new heard'; return; }
   sn.seen = { r, n: r.n };
@@ -1308,7 +1313,7 @@ async function sndMeasure(t, vn) {
   let pa = pNew, x = stretch(pNew);
   const cand = pl.live && sn.target == null ? sn.est.findLast((e) => e.sure !== false && t - e.at < 30) : null;
   const pPick = FoneSound.pickStretch(cand ? { p0: r.p0, pEnd, WIN, R: 2, c: cand.val, first, end }
-    : { p0: r.p0, pEnd, WIN, R: long ? SND.WIDE : R, c, first, end, turn: sn.looks || 0 });
+    : { p0: r.p0, pEnd, WIN, R: long ? SND.WIDE : R, c, first, end, turn: short ? (turn % 3) - 1 : Math.floor(turn / 3) });
   if (pPick < pNew - 0.5) {
     const xo = stretch(pPick);
     if (FoneSound.rms(xo) >= 1e-4) { pa = pPick; x = xo; }
